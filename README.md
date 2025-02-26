@@ -24,3 +24,5 @@ Here’s a sneak peek of the recipes available in this cookbook:
    - Deploy a distributed training job using Kubernetes.
    - Leverage NVIDIA GPUs for accelerated training.
    - Monitor and scale your training workload.
+
+### 2. test
