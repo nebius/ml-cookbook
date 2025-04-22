@@ -1,6 +1,10 @@
 # To launch this job, run:
 # export HF_TOKEN=<your_huggingface_token>
 # sky launch llama4-sglang.yaml -c llama4 --env HF_TOKEN -y
+# OR to deploy as a service:
+# sky serve up -n llama4-serve llama4-sglang.yaml --env HF_TOKEN
+#
+# For the Maverick model, use a different run command (see README)
 
 resources:
   accelerators: H100:8
@@ -14,15 +18,41 @@ num_nodes: 1
 envs:
   MODEL_NAME: meta-llama/Llama-4-Scout-17B-16E-Instruct
   HF_TOKEN: 
+  # Optional: For production deployments
+  # AUTH_TOKEN: your_secure_api_key  # Consider using env vars instead of hardcoding
 
 setup: |
   uv pip install "sglang[all]>=0.4.5" --find-links https://flashinfer.ai/whl/cu124/torch2.5/flashinfer-python
+  uv pip install hf_xet
+  # Set up shared memory for better performance
+  sudo bash -c "echo 'vm.max_map_count=655300' >> /etc/sysctl.conf"
+  sudo sysctl -p
 
 run: |
   python -m sglang.launch_server \
-  --model-path $MODEL_NAME \
-  --tp-size $SKYPILOT_NUM_GPUS_PER_NODE \
-  --context-length 1000000 \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --trust-remote-code 
+    --model-path $MODEL_NAME \
+    --tp $SKYPILOT_NUM_GPUS_PER_NODE \
+    --context-length 1000000 \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --trust-remote-code \
+    --chat-template llama-4
+    # Uncomment for API key authentication in production
+    # --api-key $AUTH_TOKEN
+
+# Add this section for sky serve deployments
+# Uncomment and modify as needed
+service:
+  readiness_probe:
+    path: /health
+    initial_delay_seconds: 5400  # 1.5 hours because the model is large
+    timeout_seconds: 20
+  replica_policy:
+    min_replicas: 1
+    max_replicas: 2
+    target_qps_per_replica: 2.5
+    upscale_delay_seconds: 300
+    downscale_delay_seconds: 1200
+  # For secure production deployments,
+  # see https://docs.skypilot.co/en/latest/serving/auth.html
+  # and https://docs.skypilot.co/en/latest/serving/https.html

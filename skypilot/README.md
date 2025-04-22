@@ -162,7 +162,19 @@ This example launches 2 nodes and tests the Infiniband bandwidth between them us
 
 ### Llama 4 Inference with SGLang
 
-Run [Llama 4](https://ai.meta.com/blog/llama-4-multimodal-intelligence/) inference server using [SGLang](https://docs.sglang.ai/index.html):
+This section explains how to deploy Meta's Llama 4 models on Nebius AI Cloud using SkyPilot and SGLang.
+
+**Overview**
+
+The configuration provides two deployment options:
+- **Single-node deployment** using `sky launch` (development, testing)
+- **Scalable service** using `sky serve` (production with multiple replicas)
+
+#### Deployment Options
+
+**Option 1: Single Node Deployment with `sky launch`**
+
+Run Llama 4 on a single node (good for development and testing):
 
 ```bash
 # Set your HuggingFace token
@@ -172,39 +184,27 @@ export HF_TOKEN=<your_huggingface_token>
 sky launch -c llama4 examples/llama4-sglang.yaml --env HF_TOKEN -y
 ```
 
-This example launches a Llama 4 inference server:
-- Uses 8xH100 GPUs with tensor parallelism for efficient inference
-- Supports massive context length: 8xH100 supports 1M tokens, 8xH200 supports up to 2.5M tokens (see https://docs.sglang.ai/references/llama4.html)
-- Exposes an API server on port 8000 for sending inference requests
-
-After launching, you can send requests to the inference API:
+After deployment, you can access the endpoint:
 
 ```bash
+# Get endpoint
 export ENDPOINT=$(sky status --endpoint 8000 llama4)
+
+# Make API calls
 curl http://$ENDPOINT/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
     "messages": [
       {
-        "role": "user",
+        "role": "user", 
         "content": "Tell me about Nebius AI"
       }
     ]
   }' | jq .
-> {
-  "id": "a71c00a45ede482cb049d5ecbe6c3143",
-  "object": "chat.completion",
-  "created": 1744567791,
-  "model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "Nebius AI! After conducting research, here's what I found:\n\n**Overview**\nNebius AI is a relatively new player in the artificial intelligence (AI) 
-        ...
 ```
+
+The server is compatible with the OpenAI API format, so you can also use the Python SDK:
 
 ```python
 import os
@@ -222,11 +222,67 @@ response = client.chat.completions.create(
 )
 
 print(response.choices[0].message.content)
-> Nebius AI! After conducting research, I found that Nebius AI is a relatively new player in the artificial intelligence (AI) landscape. 
-...
 ```
 
-The server supports various parameters like temperature, top_p, max_tokens, etc., for controlling the generation.
+**Option 2: Scalable Service with `sky serve`**
+
+Deploy as a scalable service with multiple replicas, load balancing, and autoscaling:
+
+```bash
+# Set your HuggingFace token
+export HF_TOKEN=<your_huggingface_token>
+
+# Launch as a service
+sky serve up -n llama4-serve examples/llama4-sglang.yaml --env HF_TOKEN
+```
+
+The service configuration includes:
+- Readiness probe with appropriate delay for model loading
+- Autoscaling configuration (min/max replicas, target QPS)
+- Optional security features for production
+
+To check service status:
+
+```bash
+sky serve status
+```
+
+To access the service endpoint:
+
+```bash
+ENDPOINT=$(sky serve status --endpoint llama4-serve)
+```
+
+**Performance Considerations**
+
+- **Scout model (17B, 16 experts)**: Fits on a single node, good performance/cost ratio
+- **Maverick model (17B, 128 experts)**: Requires multi-node setup, provides higher quality
+
+For the Maverick model, modify the configuration:
+- Set `num_nodes: 2`
+- Change `MODEL_NAME: meta-llama/Llama-4-Maverick-17B-128E-Instruct`
+- Increase `disk_size: 1024`
+- Update the `run` section with distributed settings:
+  ```bash
+  run: |
+    export GLOO_SOCKET_IFNAME=$(ip -o -4 route show to default | awk '{print $5}')
+    MASTER_ADDR=$(echo "$SKYPILOT_NODE_IPS" | head -n1)
+    TOTAL_GPUS=$(($SKYPILOT_NUM_GPUS_PER_NODE * $SKYPILOT_NUM_NODES))
+
+    python -m sglang.launch_server \
+      --model-path $MODEL_NAME \
+      --tp $TOTAL_GPUS \
+      --dp 8 \
+      --enable-dp-attention \
+      --dist-init-addr ${MASTER_ADDR}:5000 \
+      --nnodes ${SKYPILOT_NUM_NODES} \
+      --node-rank ${SKYPILOT_NODE_RANK} \
+      --trust-remote-code \
+      --torch-compile-max-bs 8 \
+      --host 0.0.0.0 \
+      --port 8000 \
+      --chat-template llama-4
+  ```
 
 ### Managing Clusters
 
@@ -242,10 +298,17 @@ Terminate a specific cluster:
 sky down <cluster-name>
 ```
 
-Terminate all clusters:
+Terminate a specific service:
 
 ```bash
-sky down -a
+sky serve down <service-name>
+```
+
+Terminate all clusters and services:
+
+```bash
+sky down --all
+sky serve down --all
 ```
 
 ## Debugging
