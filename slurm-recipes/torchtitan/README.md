@@ -30,8 +30,6 @@ As for the configs in the `flux_schnell_model.toml` file, these will modify main
 ### 📊 Flux 1 Schnell — Dataset Flow
 As its currently setup load_dataset shards lazily (HTTP range-requests to grab files from HuggingFace), with an additional metadata cache on the local filesystem. datasets.distributed.split_dataset_by_node then ensures that each GPU (or data-parallel rank) sees a disjoint slice of the stream without any extra disk traffic. Some extra details:
 
-if env var `HF_DATASETS_CACHE` is set to a shared filesystem path, all nodes in your cluster will reuse the same cached dataset shards instead of each node re-downloading and re-preprocessing data independently.
-
 **_Optional:_**: To improve latency, you can download the cc12m dataset locally by running the `download_CC12M.py` file. This will take advantage of the Soperator shared FS, all nodes in your cluster will reuse the same cached dataset shards instead of each node re-downloading and re-preprocessing data independently. If you choose this option, you will need to add the following lines:
 ```
 # Add to flux_schnell_model.toml: 
@@ -83,8 +81,11 @@ sbatch multinode_flux.slurm
 ### 👀 Monitor the job
 
 We would reccomend using wandb to monitor your TorchTitan jobs. You can do this by setting up your wandb account and logging into via CLI.
-Weights and Biases will automatically send metrics to a remote server named `torchtitan` if you login with `wandb login`.
-When training is launched each run will receive its own name and metrics.
+
+Weights and Biases will automatically send metrics to a remote server named `torchtitan` if you login with `wandb login`. When training is launched each run will receive its own name and metrics. Here is an example of the dashboard:
+
+![WandB Example Dashboard](wandb_example.png)
+
 
 ### 📊 Expected output
 
