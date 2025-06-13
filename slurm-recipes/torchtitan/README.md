@@ -1,4 +1,4 @@
-# 🚀 Running FLUX.1-schnell (12B) Text-To-Image Multi-Node Pretraining with TorchTitan and Slurm (Soperator)
+# 🧬 Running FLUX.1-schnell (12B) Text-To-Image Multi-Node Pretraining with TorchTitan and Slurm (Soperator)
 This document provides a step-by-step guide to launching a pretraining job for [FLUX.1-schnell](https://github.com/black-forest-labs/flux/tree/main) with [TorchTitan](https://github.com/pytorch/torchtitan) on a Nebius Slurm (Soperator) cluster. Flux-1-Schnell (12B) is a distilled text-to-image diffusion model capable of generating high-quality images in just 1–4 sampling steps, allowing you to turn written descriptions into realistic images. We will utilize the cc12m-wds dataset that contains 12 million image-text pairs specifically meant to be used for vision and-language pre-training.
 
 ## ✅ Prerequisites
@@ -21,39 +21,70 @@ Execute the setup script with `source setup_flux.sh`. It will create a Python vi
 One notable point is that here we use a Python virtual environment with all the necessary dependencies installed. This is made possible by the fact that Soperator uses shared root filesystem which allows us to consistently use the same virtual environment on all nodes, making the setup more portable and easier to manage.
 
 As for the configs in the `flux_schnell_model.toml` file, these will modify main training parameters. Some noteworthy options:
-- `root_dir`: update with where your ml-cookbook/slurm-recipes root dir is
-- `batch_size`: keep low with memory profiling on, batch size of 16 gives high throughput on 2x8h100s
-- `epochs`: set to one, feel free to change 
-- `tensor_parallel_dim`: Increase / decrease amount of model parallelism, good to keep equivalent to the number of gpus per node (8) or 0 for only data paralellism
-- `profiler: True`: Set to True for detailed tracking of memory at runtime for debugging, reduce batch size if turning this on, stack trace will be saved to ./profiling_outputs
+- `data_parallel_replicate_degree`: set equal to the number of nodes you’re training on so every node hosts one full model replica
+- `data_parallel_shard_degree`:set equal to the GPUs per node so parameters are evenly sharded across local devices
+- `fsdp_reshard_after_forward`: leave it false (keep parameters resident through backward) unless you’re running out of GPU memory
+- `fsdp_overlap_comm`: Keep it false for safer defaults; enable (true) only after verifying your NCCL/network can overlap communication with compute.
+- `fsdp_prefetch_params`: start at 2 (prefetch the next two layers), ensures gpu memory is better fed throughout training
 
-TorchTune has many prebuilt [recipes](https://github.com/pytorch/torchtune/tree/main/recipes) that you can plug into this tutorial to train different types of models, you will need to adjust the config parameter in the `tune run` command in the .slurm file and link to the associated .yaml config file.
+### 📊 Flux 1 Schnell — Dataset Flow
+As its currently setup load_dataset shards lazily (HTTP range-requests to grab files from HuggingFace), with an additional metadata cache on the local filesystem. datasets.distributed.split_dataset_by_node then ensures that each GPU (or data-parallel rank) sees a disjoint slice of the stream without any extra disk traffic. Some extra details:
 
-### 🔌 Plug in your own dataset
-To plug in your own chat-style dataset follow these [instructions](https://docs.pytorch.org/torchtune/0.3/basics/chat_datasets.html). Other dataset styles are also supported in the documentation.
+if env var `HF_DATASETS_CACHE` is set to a shared filesystem path, all nodes in your cluster will reuse the same cached dataset shards instead of each node re-downloading and re-preprocessing data independently.
 
-An example is as follows, you can  pass in the Hugging Face dataset repo name, select the appropriate conversation style, and specify the conversation_column:
+**_Optional:_**: To improve latency, you can download the cc12m dataset locally by running the `download_CC12M.py` file. This will take advantage of the Soperator shared FS, all nodes in your cluster will reuse the same cached dataset shards instead of each node re-downloading and re-preprocessing data independently. If you choose this option, you will need to add the following lines:
 ```
-dataset:
-  _component_: torchtune.datasets.chat_dataset
-  source: NewEden/xlam-function-calling-60k-shareGPT
-  conversation_column: conversations
-  conversation_style: sharegpt
-  split: train
+# Add to flux_schnell_model.toml: 
+[training]
+    dataset_path = "/root/hf_cache/datasets/pixparse___cc12m-wds" # This line
+
+# Add to multinode_flux.slurm:
+   export HF_HOME=/root/hf_cache
+   export HF_DATASETS_CACHE=/root/hf_cache/datasets
 ```
-***IMPORTANT: The tokenizer's vocabulary and special tokens must match your model and dataset. For example, Llama 3.1 requires its exact tokenizer, and you must specify its path in the YAML***
+
+Some additional details about how the data is processed in this pipline:
+```
+1. Source & Registration
+   ↪ `flux_dataset.py → DATASETS`
+     Register a dataset name + loader + preprocessor. All other logic (tokenisers, encoders, dataloaders) works out of the box.
+
+2. Per-sample Processor
+   ↪ `_process_cc12m_image()`
+     • Rejects small images (<256px), Rescales shorter edge to 256, random-crops square
+     • Converts to RGB, normalises to [-1, 1]
+     • Tokenises text twice:
+         - `clip_tokens`  ➜ [1 × 77]
+         - `t5_tokens`    ➜ [1 × max_t5_encoding_len]
+
+3. FluxDataset
+   ↪ Streams dataset (e.g. cc12m-wds), splits across nodes
+     • Applies classifier-free guidance dropout
+     • Yields: { 'image', 'clip_tokens', 't5_tokens' }
+
+4. ParallelAwareDataloader
+   ↪ Batches tuples and supports checkpoint-resume
+     (via internal iterator state tracking)
+
+5. Preprocess Data (GPU)
+   ↪ `preprocess_data(...)`
+     • Runs T5/CLIP encoders → text embeddings
+     • Runs AutoEncoder → image latents
+     • Outputs dict to feed into Flux model
+```
 
 ### 🚀 Submit the job
 
-To submitt the job, simply run:
+To submitt the distributed training job, simply run:
 ```
-sbatch full_finetune_multinode.slurm  # For full parameter 
-sbatch lora_finetune_multinode.slurm  # For LORA adapters
+sbatch multinode_flux.slurm
 ```
 
 ### 👀 Monitor the job
 
-You can monitor the job status using `squeue` command. Once the job is running, you can check the output in the log file specified in the script (`slurm_out/torchtune-%j.out`).
+We would reccomend using wandb to monitor your TorchTitan jobs. You can do this by setting up your wandb account and logging into via CLI.
+Weights and Biases will automatically send metrics to a remote server named `torchtitan` if you login with `wandb login`.
+When training is launched each run will receive its own name and metrics.
 
 ### 📊 Expected output
 
@@ -63,34 +94,3 @@ The script will run the training process on 2 nodes with 8 GPUs each (16 GPUs to
 [titan] 2025-06-11 14:51:50,202 - root - INFO - [31mstep: 8200  [32mloss:  0.5149  [33mmemory: 76.90GiB(97.11%)  [34mtps: 1,567,390  [36mtflops: 0.00  [35mmfu: 0.00%[39m
 [titan] 2025-06-11 15:05:19,178 - root - INFO - [31mstep: 8300  [32mloss:  0.5146  [33mmemory: 76.82GiB(97.01%)  [34mtps: 1,555,416  [36mtflops: 0.00  [35mmfu: 0.00%[39m
 ```
-
-### 🧠 Monitoring & Debugging Training (TensorBoard + Nebius Console)
-
-#### 🔧 Monitor GPU Metrics (Nebius Console)
-You can monitor some of the GPU metrics by logging into the clicking the following in Nebius console: 
-Compute -> GPU Clusters -> Locate your GPU cluster and select it -> Virtual Machines -> Select desired node -> Monitoring -> GPU metrics. Here there are useful metrics such as:
-- `Memory Utilization` - 60%-90%
-- `Power usage for the device` - Aim for 700W
-- `The number of bytes of active NVLink (RX/TX)` - Check inter-gpu comms
-
-#### 📉 Enable TensorBoard Profiling (PyTorch Profiler)
-To look at more detailed memory profiling via Tensorboard, make sure you initiated training with `profiling` config set to True. You can also modify these parameters to modify how much of your run is profiled (Profiling outputs can grow very large, good to keep it to a limited number of steps):
-  `wait_steps: 5`
-  `warmup_steps: 3`
-  `active_steps: 20`
-  `num_cycles: 1 `
-
-Once the run is complete you can go to the folder `output/profiling_outputs/iteration_{number}`. It's better to select a few ranks you want to visualize and transfer their `.pt.trace.json.gz` files to their own folder. Example:
-
-```
-mkdir vis
-mv r0-2025-6-5-21-26.1749158791382875441.pt.trace.json.gz vis
-tensorboard --logdir ./vis  --port 6006 --host 0.0.0.0
-```
-
-Tensorboard is now running, but you have to port forward your ip to view on your local machines web browser. On your local machine run the following:
-
-```
-ssh -N -L 6006:localhost:6006 root@{YOUR SOPERATOR IP}
-```
-You can now go to http://localhost:6006/#pytorch_profiler and view the Tensorboard profiling outputs.

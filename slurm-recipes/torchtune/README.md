@@ -23,7 +23,7 @@ The script contains a number of arguments which configure Slurm job. If you want
 One notable point is that here we use a Python virtual environment with all the necessary dependencies installed. This is made possible by the fact that Soperator uses shared root filesystem which allows us to consistently use the same virtual environment on all nodes, making the setup more portable and easier to manage.
 
 As for the configs in the `llama3_3_70B_full_multinode.yaml` or `llama3_3_70B_lora_multinode.yaml` file, these will modify main training parameters. Some noteworthy options:
-- `root_dir`: update with where your ml-cookbook/slurm-recipes root dir is
+- `root_dir`: ! MAKE SURE TO update with where your ml-cookbook/slurm-recipes root dir is
 - `batch_size`: keep low with memory profiling on, batch size of 16 gives high throughput on 2x8h100s
 - `epochs`: set to one, feel free to change 
 - `tensor_parallel_dim`: Increase / decrease amount of model parallelism, good to keep equivalent to the number of gpus per node (8) or 0 for only data paralellism
@@ -32,6 +32,9 @@ As for the configs in the `llama3_3_70B_full_multinode.yaml` or `llama3_3_70B_lo
 TorchTune has many prebuilt [recipes](https://github.com/pytorch/torchtune/tree/main/recipes) that you can plug into this tutorial to train different types of models, you will need to adjust the config parameter in the `tune run` command in the .slurm file and link to the associated .yaml config file.
 
 ### 🔌 Plug in your own dataset
+
+In our example we use `tune download` to download the model weights to our shared jail filesystem. This automatically syncs to all Soperoator nodes to be read for training.
+
 To plug in your own chat-style dataset follow these [instructions](https://docs.pytorch.org/torchtune/0.3/basics/chat_datasets.html). Other dataset styles are also supported in the documentation.
 
 An example is as follows, you can  pass in the Hugging Face dataset repo name, select the appropriate conversation style, and specify the conversation_column:

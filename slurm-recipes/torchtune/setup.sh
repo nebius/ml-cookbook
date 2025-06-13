@@ -18,7 +18,7 @@ if [ ! -d "torchtune" ]; then
 fi
 pip install -e torchtune
 
-# Download LLaMA-3 model
+# Download LLaMA-3 model to shared FS --> Syncs to all Soperoator nodes
 tune download meta-llama/Llama-3.3-70B-Instruct \
   --ignore-patterns "original/consolidated*.pth" \
   --output-dir ./models/Llama-3.3-70B-Instruct

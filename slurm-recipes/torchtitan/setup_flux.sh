@@ -8,6 +8,7 @@ if ! command -v python3.11 &> /dev/null; then
   echo ">>> python3.11 not found – installing via apt..."
   sudo apt update
   sudo apt install -y python3.11 python3.11-venv
+fi
 
 # 2) Create & activate a 3.11 venv
 python3.11 -m venv .env

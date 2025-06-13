@@ -9,7 +9,7 @@
 #
 # This config is only tested on 2 nodes w/ 8 H100 machines.
 
-root_dir: /root/ml-cookbook/slurm-recipes
+root_dir: /root/ml-cookbook/slurm-recipes/torchtune/ # <-- Update this to your ml-cookbook/slurm-recipes root dir
 output_dir: ${root_dir}/output
 
 # Tokenizer
