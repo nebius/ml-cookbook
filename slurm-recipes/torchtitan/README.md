@@ -4,11 +4,11 @@ This document provides a step-by-step guide to launching a pretraining job for [
 ## ✅ Prerequisites
 Before you start, make sure you have the following:
 - Access to a [Soperator cluster](https://nebius.com/services/soperator). You can also provision a new cluster following these [steps](https://github.com/nebius/nebius-solution-library/tree/main/soperator).
-- Have cloned this repo into your Soperator cluster with `git clone https://github.com/nebius/ml-cookbook.git`
+- Have cloned this repo on your Soperator cluster with `git clone https://github.com/nebius/ml-cookbook.git`
 
 ## 📋 Steps
 
-For running this workload, you will need to SSH to the login node of the Soperator cluster and clone this repository to the shared filesystem (by default, Sopeartor has `/` mounted as a shared filesystem).
+For running this workload, you will need to SSH to the login node of the Soperator cluster and clone this repository to the shared filesystem (by default, Soperator has `/` mounted as a shared filesystem).
 
 ### 🔧 Setup the environment
 
@@ -16,21 +16,20 @@ Execute the setup script with `source setup_flux.sh`. It will create a Python vi
 
 ### 📄 Examine the `.slurm` script and .toml configs
 
-`multinode_flux.slurm`: This file will kick off multinode training, its setup for 2 nodes of 8xh100s at the moment. Adjust `--nodes --ntasks --nnodes --nproc_per_node --gpus-per-task --nproc_per_node` as needed for your hardware.
+`multinode_flux.slurm`: This file will kick off multinode training, its setup for 2 nodes of 8xh100s. Adjust `--nodes --ntasks --nnodes --nproc_per_node --gpus-per-task --nproc_per_node` as needed for your hardware.
 
 One notable point is that here we use a Python virtual environment with all the necessary dependencies installed. This is made possible by the fact that Soperator uses shared root filesystem which allows us to consistently use the same virtual environment on all nodes, making the setup more portable and easier to manage.
 
 As for the configs in the `flux_schnell_model.toml` file, these will modify main training parameters. Some noteworthy options:
-- `data_parallel_replicate_degree`: set equal to the number of nodes you’re training on so every node hosts one full model replica
-- `data_parallel_shard_degree`:set equal to the GPUs per node so parameters are evenly sharded across local devices
-- `fsdp_reshard_after_forward`: leave it false (keep parameters resident through backward) unless you’re running out of GPU memory
+- `data_parallel_replicate_degree`: Set equal to the number of nodes you’re training on, every node hosts one full model replica
+- `data_parallel_shard_degree`:Set equal to the GPUs per node, parameters are evenly sharded across local devices
 - `fsdp_overlap_comm`: Keep it false for safer defaults; enable (true) only after verifying your NCCL/network can overlap communication with compute.
-- `fsdp_prefetch_params`: start at 2 (prefetch the next two layers), ensures gpu memory is better fed throughout training
+- `fsdp_prefetch_params`: Start at 2 (prefetch the next two layers), ensures gpu memory is better fed throughout training
 
 ### 📊 Flux 1 Schnell — Dataset Flow
 As its currently setup load_dataset shards lazily (HTTP range-requests to grab files from HuggingFace), with an additional metadata cache on the local filesystem. datasets.distributed.split_dataset_by_node then ensures that each GPU (or data-parallel rank) sees a disjoint slice of the stream without any extra disk traffic. Some extra details:
 
-**_Optional:_**: To improve latency, you can download the cc12m dataset locally by running the `download_CC12M.py` file. This will take advantage of the Soperator shared FS, all nodes in your cluster will reuse the same cached dataset shards instead of each node re-downloading and re-preprocessing data independently. If you choose this option, you will need to add the following lines:
+**_Optional:_** To improve latency, you can download the cc12m dataset locally by running the `download_CC12M.py` file. This will take advantage of the Soperator shared FS, all nodes in your cluster will reuse the same cached dataset shards instead of each node re-downloading and re-preprocessing data independently. If you choose this option, you will need to add the following lines:
 ```
 # Add to flux_schnell_model.toml: 
 [training]
@@ -57,30 +56,27 @@ Some additional details about how the data is processed in this pipline:
 
 3. FluxDataset
    ↪ Streams dataset (e.g. cc12m-wds), splits across nodes
-     • Applies classifier-free guidance dropout
      • Yields: { 'image', 'clip_tokens', 't5_tokens' }
 
 4. ParallelAwareDataloader
    ↪ Batches tuples and supports checkpoint-resume
-     (via internal iterator state tracking)
 
 5. Preprocess Data (GPU)
    ↪ `preprocess_data(...)`
-     • Runs T5/CLIP encoders → text embeddings
-     • Runs AutoEncoder → image latents
+     • Runs T5/CLIP encoders, AutoEncoder → text embeddings
      • Outputs dict to feed into Flux model
 ```
 
 ### 🚀 Submit the job
 
-To submitt the distributed training job, simply run:
+To submit the distributed training job, simply run:
 ```
 sbatch multinode_flux.slurm
 ```
 
 ### 👀 Monitor the job
 
-We would reccomend using wandb to monitor your TorchTitan jobs. You can do this by setting up your wandb account and logging into via CLI.
+It's recommended to use wandb to monitor your TorchTitan jobs. You can do this by setting up your wandb account and logging into via CLI.
 
 Weights and Biases will automatically send metrics to a remote server named `torchtitan` if you login with `wandb login`. When training is launched each run will receive its own name and metrics. Here is an example of the dashboard:
 

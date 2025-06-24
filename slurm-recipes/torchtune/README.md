@@ -1,5 +1,5 @@
 # 🚀 Running Multi-Node LLama3.3-70B Finetuning (Full / LORA) with TorchTune and Slurm (Soperator)
-This document provides a step-by-step guide to launching a finetuning job for Llama3.3 70B with [TorchTune](https://github.com/pytorch/torchtune) on a provisioned Nebius Slurm (Soperator) cluster. We will use pre-built torchtune recipes, with configs that can easily be modified to support many different models including Llama3, Llama4, Qwen, Mistral. This library supoprts both full and LORA- based finetuning, and is tested on 2 nodes of 8xh100 gpus on Nebius Soperator.
+This document provides a step-by-step guide to launching a finetuning job for Llama3.3 70B with [TorchTune](https://github.com/pytorch/torchtune) on a provisioned Nebius Slurm (Soperator) cluster. We will use pre-built TorchTune recipes with configuration files that can be easily modified to support various models, including Llama3, Llama4, Qwen, and Mistral. This library supports both full and LoRA-based finetuning and is tested on 2 nodes with 8×H100 GPUs each on Nebius Soperator.
 
 ## ✅ Prerequisites
 Before you start, make sure you have the following:
@@ -8,13 +8,13 @@ Before you start, make sure you have the following:
 
 ## 📋 Steps
 
-For running this workload, you will need to SSH to the login node of the Soperator cluster and clone this repository to the shared filesystem (by default, Sopeartor has `/` mounted as a shared filesystem).
+For running this workload, you will need to SSH to the login node of the Soperator cluster and clone this repository to the shared filesystem (by default, Soperator has `/` mounted as a shared filesystem).
 
 ### 🔧 Setup the environment
 
 Execute the setup script with `source setup.sh`. It will create a Python virtual environment, install the necessary dependencies, and grab necessary dataset. For Tensorboard to work correctly you will need Python ≤3.12
 
-*** Important note! For the Llama models in this tutorial `you will need to request access from the [HuggingFace](https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct) repo BEFORE running setup.sh.***
+**_Important note:_** For the Llama models in this tutorial you will need to request access from the [HuggingFace](https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct) repo BEFORE running setup.sh.
 
 ### 📄 Examine the `sbatch` script and .yaml configs
 
@@ -23,13 +23,13 @@ The script contains a number of arguments which configure Slurm job. If you want
 One notable point is that here we use a Python virtual environment with all the necessary dependencies installed. This is made possible by the fact that Soperator uses shared root filesystem which allows us to consistently use the same virtual environment on all nodes, making the setup more portable and easier to manage.
 
 As for the configs in the `llama3_3_70B_full_multinode.yaml` or `llama3_3_70B_lora_multinode.yaml` file, these will modify main training parameters. Some noteworthy options:
-- `root_dir`: ! MAKE SURE TO update with where your ml-cookbook/slurm-recipes root dir is
-- `batch_size`: keep low with memory profiling on, batch size of 16 gives high throughput on 2x8h100s
-- `epochs`: set to one, feel free to change 
-- `tensor_parallel_dim`: Increase / decrease amount of model parallelism, good to keep equivalent to the number of gpus per node (8) or 0 for only data paralellism
+- `root_dir`: **Important** Update with where your ml-cookbook/slurm-recipes root dir is
+- `batch_size`: Keep low with memory profiling on, batch size of 16 gives high throughput on 2x8h100s
+- `epochs`: Set to one, feel free to increase 
+- `tensor_parallel_dim`: Increase / decrease amount of model parallelism, good to keep equivalent to the number of gpus per node (8) or 0 for only data parallelism
 - `profiler: True`: Set to True for detailed tracking of memory at runtime for debugging, reduce batch size if turning this on, stack trace will be saved to ./profiling_outputs
 
-TorchTune has many prebuilt [recipes](https://github.com/pytorch/torchtune/tree/main/recipes) that you can plug into this tutorial to train different types of models, you will need to adjust the config parameter in the `tune run` command in the .slurm file and link to the associated .yaml config file.
+TorchTune has many prebuilt [recipes](https://github.com/pytorch/torchtune/tree/main/recipes) that you can plug into this tutorial to train different types of models, you will need to adjust the config parameter in the `tune run` command in the `.slurm` file and link to the associated `.yaml` config file.
 
 ### 🔌 Plug in your own dataset
 
@@ -37,7 +37,7 @@ In our example we use `tune download` to download the model weights to our share
 
 To plug in your own chat-style dataset follow these [instructions](https://docs.pytorch.org/torchtune/0.3/basics/chat_datasets.html). Other dataset styles are also supported in the documentation.
 
-An example is as follows, you can  pass in the Hugging Face dataset repo name, select the appropriate conversation style, and specify the conversation_column:
+An example is as follows, you can  pass the Hugging Face dataset repo name, select the appropriate conversation style, and specify the conversation_column:
 ```
 dataset:
   _component_: torchtune.datasets.chat_dataset
@@ -46,11 +46,11 @@ dataset:
   conversation_style: sharegpt
   split: train
 ```
-***IMPORTANT: The tokenizer's vocabulary and special tokens must match your model and dataset. For example, Llama 3.1 requires its exact tokenizer, and you must specify its path in the YAML***
+**IMPORTANT: The tokenizer's vocabulary and special tokens must match your model and dataset. For example, Llama 3.1 requires its exact tokenizer, and you must specify its path in the YAML**
 
 ### 🚀 Submit the job
 
-To submitt the job, simply run:
+To submit the job, simply run:
 ```
 sbatch full_finetune_multinode.slurm  # For full parameter 
 sbatch lora_finetune_multinode.slurm  # For LORA adapters
