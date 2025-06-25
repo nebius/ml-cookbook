@@ -1,15 +1,14 @@
 # Config for multi-device LoRA in lora_finetune_distributed.py
 # using a Llama3.3 70B model
 #
-# This config assumes that you've run the following command before launching
-# this run:
+# This config assumes that you've run the following command before launching:
 #   tune download meta-llama/Llama-3.3-70B-Instruct --ignore-patterns "original/consolidated*" --output-dir /tmp/Llama-3.3-70B-Instruct
 #
 # This config needs 8 GPUs to run
 #   tune run --nproc_per_node 8 lora_finetune_distributed --config llama3_3/70B_lora
 
-root_dir: /root/ml-cookbook/slurm-recipes/torchtune/ # <-- Update this to your ml-cookbook/slurm-recipes root dir
-output_dir: ${root_dir}/output_lora70B
+root_dir: __ROOT_DIR__  # Path automatically injected by SLURM script
+output_dir: ${root_dir}/output_lora
 
 # Model Arguments
 model:
@@ -112,4 +111,4 @@ profiler:
   wait_steps: 5
   warmup_steps: 3
   active_steps: 2
-  num_cycles: 1
+  num_cycles: 1 

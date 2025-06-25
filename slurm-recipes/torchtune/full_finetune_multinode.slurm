@@ -38,11 +38,6 @@ export TORCH_DIST_INIT_BARRIER=1
 export LOGLEVEL=INFO
 
 # ---------- Launch training ---------- #
-# You probably want to load in a virtual env w/ conda...
-# module load conda
-# conda activate torchtune
-# ...or venv
-# source torchtune/bin/activate
 source .env/bin/activate
 
 SHARED_FS=$(pwd)

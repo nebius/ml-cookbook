@@ -12,7 +12,13 @@ For running this workload, you will need to SSH to the login node of the Soperat
 
 ### 🔧 Setup the environment
 
-Execute the setup script with `source setup_flux.sh`. It will create a Python virtual environment, install the necessary dependencies, and grab necessary files.
+`setup_flux.sh` will create a Python virtual environment, install the necessary dependencies, and grab necessary files.
+
+**HF_TOKEN required** The setup script expects your Hugging Face access token to be available in the `HF_TOKEN` environment variable. 
+```
+export HF_TOKEN=<your-hf-access-token>
+source source setup_flux.sh
+```
 
 ### 📄 Examine the `.slurm` script and .toml configs
 

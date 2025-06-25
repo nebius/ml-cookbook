@@ -9,7 +9,7 @@
 #
 # This config is only tested on 2 nodes w/ 8 H100 machines.
 
-root_dir: /root/ml-cookbook/slurm-recipes/torchtune/ # <-- Update this to your ml-cookbook/slurm-recipes root dir
+root_dir: __ROOT_DIR__  # Path automatically injected by SLURM script 
 output_dir: ${root_dir}/output
 
 # Tokenizer
@@ -72,11 +72,6 @@ gradient_accumulation_steps: 1  # Use to increase effective batch size
 # Training env
 device: cuda
 
-# LRScheduler
-# lr_scheduler:
-#   _component_: torchtune.training.lr_schedulers.get_cosine_schedule_with_warmup
-#   num_warmup_steps: 100  # or sometimes 50-200 depending on the model size
-
 # Memory management
 enable_activation_checkpointing: False  # True reduces memory
 enable_activation_offloading: False  # True reduces memory
@@ -100,7 +95,7 @@ log_level: INFO  # DEBUG, WARN, etc.
 # Profiler (disabled)
 profiler:
   _component_: torchtune.training.setup_torch_profiler
-  enabled: True
+  enabled: False
 
   #Output directory of trace artifacts
   output_dir: ${output_dir}/profiling_outputs
@@ -110,10 +105,10 @@ profiler:
   cuda: True
 
   #trace options passed to `torch.profiler.profile`
-  profile_memory: True
-  with_stack: True
+  profile_memory: False
+  with_stack: False
   record_shapes: True
-  with_flops: True
+  with_flops: False
 
   # `torch.profiler.schedule` options:
   # wait_steps -> wait, warmup_steps -> warmup, active_steps -> active, num_cycles -> repeat

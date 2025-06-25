@@ -38,10 +38,9 @@ export TORCH_DIST_INIT_BARRIER=1
 export LOGLEVEL=INFO
 
 # ---------- Launch training ---------- #
-# source torchtune/bin/activate
 source .env/bin/activate
 
-SHARED_FS=/root
+SHARED_FS=$(pwd)
 CHECKPOINT_DIR="$SHARED_FS/checkpoint"
 OUTPUT_DIR="$SHARED_FS/output_lora"
 
