@@ -38,7 +38,6 @@ export CUDA_LAUNCH_BLOCKING=0
 export NCCL_SOCKET_IFNAME="eth0"
 
 # Set working directory
-cd torchtitan
 export PYTHONPATH="$(pwd)/torchtitan:$PYTHONPATH"
 
 # dcgmi profile --pause
