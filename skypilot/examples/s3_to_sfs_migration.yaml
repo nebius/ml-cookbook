@@ -120,8 +120,14 @@ run: |
     echo "Object distribution complete."
   fi
   
-  # Wait for 5 seconds to ensure files are uploaded
-  sleep 5
+  # Workers wait for head node to assign files to workers
+  if [ "${NODE_RANK}" -gt "0" ]; then
+    echo "Worker node ${NODE_RANK}: Waiting for object list assignment..."
+    while [ ! -f "$TEMP_DIR/node_${NODE_RANK}_objects.txt" ]; do
+      sleep 10
+    done
+    echo "Worker node ${NODE_RANK}: Received object list assignment."
+  fi
 
   # Each node processes its assigned files
   echo "Processing node ${NODE_RANK}"
