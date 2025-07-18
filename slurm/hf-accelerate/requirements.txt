@@ -1,0 +1,12 @@
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0 
+torchvision==0.21.0 
+torchaudio==2.6.0
+accelerate==1.6.0
+evaluate==0.4.3
+scikit-learn==1.6.1
+scipy==1.15.2
+datasets==3.5.0
+schedulefree==1.4.1
+huggingface_hub==0.30.2
+transformers==4.51.3
