@@ -1,0 +1,62 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: knative-python-demo--chat
+  labels:
+    app: knative-python-demo--chat
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "4"
+        autoscaling.knative.dev/maxScale: "24"
+        autoscaling.knative.dev/scale-down-delay: "1h"
+    spec:
+      containerConcurrency: 1
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: l3test
+          image: ghcr.io/nebius/ml-cookbook/knative-llamacpp:main
+          imagePullPolicy: Always
+          env:
+            - name: LLAMA_ARG_CTX_SIZE
+              value: "131072"
+            - name: LLAMA_ARG_MODEL
+              value: "/mnt/models/l3.1-8B-F16.gguf"
+            - name: LLAMA_ARG_PORT
+              value: "8080"
+            - name: LLAMA_ARG_N_GPU_LAYERS
+              value: "100"
+            - name: LLAMA_ARG_HOST
+              value: "0.0.0.0"
+            - name: S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: object-storage-auth
+                  key: bucket
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: object-storage-auth
+                  key: access_key_id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: object-storage-auth
+                  key: secret_access_key
+            - name: AWS_DEFAULT_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: object-storage-auth
+                  key: region
+            - name: AWS_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: object-storage-auth
+                  key: endpoint
+            - name: MODEL_KEY
+              value: "model.gguf"
+          resources:
+            limits:
+              nvidia.com/gpu: 1
