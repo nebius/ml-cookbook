@@ -1,0 +1,11 @@
+apiVersion: scheduling.volcano.sh/v1beta1
+kind: Queue
+metadata:
+  name: test-queue
+spec:
+  weight: 1
+  reclaimable: false
+  capability:
+    cpu: 512
+    memory: 6400Gi
+    nvidia.com/gpu: 32 
