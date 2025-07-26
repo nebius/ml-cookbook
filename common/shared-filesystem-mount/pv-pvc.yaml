@@ -9,7 +9,7 @@ spec:
   accessModes:
     - ReadWriteMany
   hostPath:
-    path: "/mnt/data/csi-mounted-fs-path-sc"
+    path: "/mnt/data"
 ---
 kind: PersistentVolumeClaim
 apiVersion: v1
@@ -23,3 +23,4 @@ spec:
   resources:
     requests:
       storage: 1Ti
+      
