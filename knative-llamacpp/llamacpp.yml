@@ -48,7 +48,7 @@ spec:
               name: object-storage-auth
               key: endpoint
         - name: MODEL_KEY
-          value: "l3.1-8B-F16.gguf"
+          value: "model.gguf"
       resources:
         limits:
           nvidia.com/gpu: 1
