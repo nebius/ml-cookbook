@@ -1,6 +1,5 @@
-# `llama.cpp` Serverless Inference with Knative
-Knative is a super easy way to deploy serverless applications in a Kubernetes cluster.
-This guide will show you how to deploy a serverless inference application with Knative on Kubernetes.
+# `llama.cpp` Inference on Kubernetes
+
 
 ## Prerequisites
 * Access to gated Llama repositories on HuggingFace
@@ -17,13 +16,8 @@ Before we run inference against our model, we need to convert it to GGUF and upl
 4. Make sure to rename the model to `model.gguf`
 4. Follow our guide for getting started with Object Storage and uploading a file to upload the GGUF model to object storage: https://docs.nebius.com/object-storage/quickstart
 
-
-### Part II: Setup Knative
-To install Knative, follow their official documentation for installing Knative Serving: https://knative.dev/docs/install/yaml-install/serving/install-serving-with-yaml/
-Keep in mind this project only uses Knative Serving, so it's unnecessary to install Knative Eventing.
-
 ### Part III: Configure and deploy application
-Now that we've done all the necessary preparation work, we can move on to actually deploying our application as a Knative service.
+Now that we've done all the necessary preparation work, we can move on to actually deploying our application as a Pod.
 1. Clone the repository that this README belongs to
 2. Edit `object_storage_auth.yml` to include the necessary authentication, region, and bucket where your GGUF model is stored
 3. Deploy the Knative service with `kubectl create -f llamacpp.yml`
@@ -31,4 +25,6 @@ Now that we've done all the necessary preparation work, we can move on to actual
 ### Part IV: Interact with llama.cpp server: 
 Follow the official llama.cpp docs to interact with the server: https://llama-cpp-python.readthedocs.io/en/latest/#openai-compatible-web-server
 
-Make sure to replace `localhost` with the endpoint URL from `kubectl get ksvc`
+You can connect to the service by:
+1) `kubectl port-forward <pod name> 8080`
+2) Open a browser and point it at http://localhost:8080
