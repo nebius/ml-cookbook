@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=pt-ddp-train           # Set the job name
-#SBATCH --account=research                # Specify the account to charge
+##SBATCH --account=research                # Specify the account to charge
 #SBATCH --nodes=1                         # Number of nodes to use
 #SBATCH --gpus-per-node=8                 # Number of GPUs per node
 #SBATCH --ntasks-per-node=8               # Number of tasks per node
 #SBATCH --gpus-per-task=1                 # Number of GPUs per task
 #SBATCH --cpus-per-task=8                 # CPU cores per task
-#SBATCH --mem=400G                        # Memory per node
-#SBATCH --time=02:00:00                   # Wall time limit
+##SBATCH --mem=400G                        # Memory per node
+#SBATCH --time=02:00:00                   # (2 hours) Wall time limit, days-hours:minutes:seconds
 #SBATCH --output=/shared/slurm_logs/distilbert-base/%x-%j.out # Standard output log
 #SBATCH --error=/shared/slurm_logs/distilbert-base/%x-%j.err  # Standard error log
 
