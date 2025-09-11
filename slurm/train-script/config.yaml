@@ -1,0 +1,11 @@
+# Training configuration file for DDP
+# These paths should be updated based on where the model and data are downloaded already
+model_dir: /shared/model/distilbert-base-uncased
+data_dir: /shared/data/glue_sst2
+checkpoint_path: /shared/checkpoints/distilbert-base-uncased/checkpoint.pt
+
+# Per model and experiment/cluster parameters
+batch_size: 16
+learning_rate: 2e-5
+num_epochs: 3
+num_warmup_steps: 0
