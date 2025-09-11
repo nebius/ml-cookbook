@@ -30,7 +30,7 @@ export SLURM_CPU_BIND=cores      # Slurm will bind each task to a set of CPU cor
 # Get the first node's hostname for rendezvous
 RDZV_HOST=$(scontrol show hostnames "$SLURM_NODELIST" | head -n 1)
 
-torchrun \
+srun torchrun \
     --nnodes=$SLURM_JOB_NUM_NODES \
     --nproc_per_node=$SLURM_GPUS_ON_NODE \
     --rdzv_id=$SLURM_JOB_ID \

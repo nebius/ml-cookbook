@@ -38,7 +38,8 @@ pip install -r requirements.txt
 
 
 # Create full model, data, and checkpoint and log directories as in config.yaml to be prepopulated
-MODEL_DIR="/shared/model/distilbert-base-uncased"
+# Since the HF downloader creates a nested folder for the model, we create the parent folder here only for the model_dir
+MODEL_DIR="/shared/model"
 DATA_DIR="/shared/data/glue_sst2"
 CHECKPOINT_DIR="/shared/checkpoints/distilbert-base-uncased"
 SLURM_LOGS_DIR="/shared/slurm_logs/distilbert-base"

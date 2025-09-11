@@ -1,6 +1,6 @@
 # Training configuration file for DDP
-# These paths should be updated based on where the model and data are downloaded already
-model_dir: /shared/model/distilbert-base-uncased
+# These paths should be updated based on where the model and data are downloaded
+model_dir: /shared/model/models--distilbert-base-uncased
 data_dir: /shared/data/glue_sst2
 checkpoint_path: /shared/checkpoints/distilbert-base-uncased/checkpoint.pt
 
