@@ -17,7 +17,7 @@ source /shared/venvs/distbert-train/bin/activate
 # Set NCCL and OMP env vars for performance
 export OMP_NUM_THREADS=8      # Set number of OpenMP threads per process equal to cpus-per-task
 export NCCL_DEBUG=INFO        # Enable NCCL debug logging for troubleshooting
-export NCCL_ASYNC_ERROR_HANDLING=1  # Enable async error handling (recommended). NCCL will attempt to handle the error in the background without immediately stopping all processes.
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # Enable async error handling (recommended). NCCL will attempt to handle the error in the background without immediately stopping all processes.
 export SLURM_CPU_BIND=cores      # Slurm will bind each task to a set of CPU cores rather than OS (improves performance)
 
 # Run distributed training using torchrun
