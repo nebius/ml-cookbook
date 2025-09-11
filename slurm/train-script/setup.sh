@@ -6,9 +6,24 @@ echo "run: export HF_TOKEN=your_token"
 SHARED_DIR="/shared"
 VENV_DIR="$SHARED_DIR/venvs/distbert-train"
 
+# Check for Python 3.11, install if not present
 
-# Create project-specific Python virtual environment
-python3 -m venv "$VENV_DIR"
+if command -v python3.11 &> /dev/null; then
+	PYTHON_BIN=$(command -v python3.11)
+	echo "Found Python 3.11 at $PYTHON_BIN"
+else
+	echo "Python 3.11 not found. Attempting to install..."
+	sudo apt-get update
+	sudo apt-get install -y python3.11 python3.11-venv python3.11-distutils
+	PYTHON_BIN=$(command -v python3.11)
+	if [ -z "$PYTHON_BIN" ]; then
+		echo "Python 3.11 installation failed. Exiting."
+		exit 1
+	fi
+fi
+
+# Create project-specific Python virtual environment with Python 3.11
+$PYTHON_BIN -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
 
 # Upgrade pip and install requirements
