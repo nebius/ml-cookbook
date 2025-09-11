@@ -1,3 +1,4 @@
+
 import os
 import argparse
 import yaml
@@ -11,6 +12,9 @@ from datasets import load_from_disk
 from torch.optim import AdamW
 from tqdm import tqdm
 import numpy as np
+import signal
+import sys
+import atexit
 
 # -----------------------------
 # Utility Functions
@@ -45,6 +49,18 @@ def load_checkpoint(model, optimizer, scheduler, path):
 # Training Function
 # -----------------------------
 def train(rank, world_size, config):
+    # Register cleanup for normal exit and signals
+    def handle_exit(signum=None, frame=None):
+        try:
+            cleanup()
+        except Exception:
+            pass
+        if signum is not None:
+            sys.exit(0)
+
+    atexit.register(handle_exit)
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT):
+        signal.signal(sig, handle_exit)
     # -----------------------------
     # 1. Setup DDP
     # -----------------------------
