@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=pt-ddp-train           # Set the job name
 #SBATCH --account=research                # Specify the account to charge
-#SBATCH --nodes=2                         # Number of nodes to use
+#SBATCH --nodes=1                         # Number of nodes to use
 #SBATCH --gpus-per-node=8                 # Number of GPUs per node
 #SBATCH --ntasks-per-node=8               # Number of tasks per node
 #SBATCH --gpus-per-task=1                 # Number of GPUs per task
