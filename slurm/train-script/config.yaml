@@ -1,6 +1,7 @@
 # Training configuration file for DDP
-# These paths should be updated based on where the model and data are downloaded
-model_dir: /shared/model/models--distilbert-base-uncased
+# These paths should be updated based on where the model and data are downloaded. 
+# The model_dir should point to the specific snapshot folder created by the HF downloader that includes the tokenizer and config json files.
+model_dir: /shared/model/models--distilbert-base-uncased/snapshots/12040accade4e8a0f71eabdb258fecc2e7e948be
 data_dir: /shared/data/glue_sst2
 checkpoint_path: /shared/checkpoints/distilbert-base-uncased/checkpoint.pt
 
