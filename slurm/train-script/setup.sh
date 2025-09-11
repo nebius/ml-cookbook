@@ -1,5 +1,11 @@
 #!/bin/bash
 set -euo pipefail
+
+# Color codes
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+
 echo "if the HF repo is private, make sure you have set up a token with access and"
 echo "run: export HF_TOKEN=your_token"
 
@@ -10,14 +16,14 @@ VENV_DIR="$SHARED_DIR/venvs/distbert-train"
 
 if command -v python3.11 &> /dev/null; then
 	PYTHON_BIN=$(command -v python3.11)
-	echo "Found Python 3.11 at $PYTHON_BIN"
+	echo -e "${GREEN}Found Python 3.11 at $PYTHON_BIN${NC}"
 else
-	echo "Python 3.11 not found. Attempting to install..."
+	echo -e "${RED}Python 3.11 not found. Attempting to install...${NC}"
 	sudo apt-get update
 	sudo apt-get install -y python3.11 python3.11-venv python3.11-distutils
 	PYTHON_BIN=$(command -v python3.11)
 	if [ -z "$PYTHON_BIN" ]; then
-		echo "Python 3.11 installation failed. Exiting."
+	echo -e "${RED}Python 3.11 installation failed. Exiting.${NC}"
 		exit 1
 	fi
 fi
@@ -50,4 +56,4 @@ python download_data_model.py \
 	--model_dir "$MODEL_DIR" \
 	--data_dir "$DATA_DIR"
 
-echo "Download and Setup complete."
+echo -e "${GREEN}Download and Setup complete.${NC}"

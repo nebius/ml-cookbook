@@ -1,6 +1,6 @@
-torch=2.8.0
-transformers=4.56.1
-datasets=4.0.0
-pyyaml=6.0.2
-huggingface_hub=0.34.4
-tqdm=4.67.1
+torch==2.8.0
+transformers==4.56.1
+datasets==4.0.0
+pyyaml==6.0.2
+huggingface_hub==0.34.4
+tqdm==4.67.1
