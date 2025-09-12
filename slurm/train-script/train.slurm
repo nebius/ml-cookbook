@@ -32,7 +32,7 @@ RDZV_HOST=$(scontrol show hostnames "$SLURM_NODELIST" | head -n 1)
 
 srun torchrun \
     --nnodes=$SLURM_JOB_NUM_NODES \
-    --nproc_per_node=$SLURM_GPUS_ON_NODE \
+    --nproc_per_node=8 \
     --rdzv_id=$SLURM_JOB_ID \
     --rdzv_backend=c10d \
     --rdzv_endpoint=$RDZV_HOST:29500 \
