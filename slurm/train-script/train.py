@@ -91,8 +91,9 @@ def train(config):
     checkpoint_path = config['checkpoint_path']
     dataset = load_from_disk(data_dir)
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
-    # Tokenize dataset in-place so collator can pad tensors
-    dataset = dataset.map(lambda examples: tokenizer(examples['sentence'], truncation=True), batched=True)
+    # Tokenize dataset in-place so collator can pad tensors.
+    # Remove the original text column so the collator doesn't try to convert raw strings into tensors.
+    dataset = dataset.map(lambda examples: tokenizer(examples['sentence'], truncation=True), batched=True, remove_columns=['sentence'])
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer, return_tensors="pt")
 
     model = AutoModelForSequenceClassification.from_pretrained(model_dir, num_labels=config.get('num_labels', 2))
