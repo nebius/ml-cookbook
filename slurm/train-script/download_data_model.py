@@ -1,6 +1,8 @@
+
 import argparse
 import os
 from huggingface_hub import login, snapshot_download
+from datasets import load_dataset
 
 # -----------------------------
 # Download Utility
@@ -20,16 +22,11 @@ def download_model(model_name, model_dir, hf_token=None):
     print(f"Model snapshot downloaded to {snapshot_dir}")
 
 def download_dataset(dataset_name, data_dir, hf_token=None):
-    print(f"Downloading dataset {dataset_name} to {data_dir} (no symlinks)")
-    snapshot_dir = snapshot_download(
-        repo_id=dataset_name,
-        repo_type="dataset",
-        local_dir=data_dir,
-        local_dir_use_symlinks=False,
-        resume_download=True,
-        token=hf_token
-    )
-    print(f"Dataset snapshot downloaded to {snapshot_dir}")
+    print(f"Downloading and saving dataset {dataset_name} to {data_dir} using datasets.load_dataset/save_to_disk")
+    # Download the dataset (default to 'train', 'validation', 'test' splits if available)
+    dataset = load_dataset(dataset_name, use_auth_token=hf_token)
+    dataset.save_to_disk(data_dir)
+    print(f"Dataset saved to {data_dir} (load_from_disk compatible)")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Download HF model and dataset to shared folder")
