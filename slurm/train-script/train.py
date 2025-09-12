@@ -22,8 +22,22 @@ def setup():
     global_rank = int(os.environ.get("RANK", "0"))
     local_rank  = int(os.environ.get("LOCAL_RANK", "0"))
     world_size  = int(os.environ.get("WORLD_SIZE", "1"))
-    dist.init_process_group(backend="nccl", rank=global_rank, world_size=world_size)
-    torch.cuda.set_device(local_rank)
+    # Initialize the default process group only if not already initialized.
+    # When running with torchrun, env vars are provided and a simple init without explicit rank/world_size is OK.
+    if not dist.is_initialized():
+        try:
+            dist.init_process_group(backend="nccl")
+        except Exception as e:
+            # If init fails but we're running single-process (world_size==1), proceed without raising
+            # so 1 GPU doesn't break. Raise for multi-process failures.
+            if world_size and int(world_size) > 1:
+                raise
+    # Bind this process to the correct CUDA device
+    try:
+        torch.cuda.set_device(local_rank)
+    except Exception:
+        # In case CUDA not available or invalid local_rank, raise a clearer error
+        raise RuntimeError(f"Failed to set CUDA device to local_rank={local_rank}")
     return global_rank, local_rank, world_size
 
 def cleanup():
@@ -90,11 +104,49 @@ def train(config):
     data_dir = config['data_dir']
     checkpoint_path = config['checkpoint_path']
     dataset = load_from_disk(data_dir)
+
+    # Validate expected splits
+    expected_splits = ("train", "validation")
+    missing = [s for s in expected_splits if s not in dataset]
+    if missing:
+        raise RuntimeError(f"Dataset at {data_dir} missing expected splits: {missing}. "
+                           "Ensure dataset was saved with 'train' and 'validation' splits or adjust config/data preparation.")
+
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
     # Tokenize dataset in-place so collator can pad tensors.
+    # Use an explicit tokenize function to ensure consistent fields and types.
+    def tokenize_fn(examples):
+        return tokenizer(examples['sentence'], truncation=True, return_attention_mask=True)
+
     # Remove the original text column so the collator doesn't try to convert raw strings into tensors.
-    dataset = dataset.map(lambda examples: tokenizer(examples['sentence'], truncation=True), batched=True, remove_columns=['sentence'])
+    dataset = dataset.map(tokenize_fn, batched=True, remove_columns=['sentence'])
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer, return_tensors="pt")
+
+    # Lightweight validation on rank 0: print dataset columns and a sample, and check for unexpected string fields.
+    if global_rank == 0:
+        try:
+            print("Dataset columns (train):", dataset['train'].column_names)
+            sample = dataset['train'][0]
+            print("Sample keys and types:")
+            for k, v in sample.items():
+                print(f"  {k}: {type(v)} -> {v if (isinstance(v, (int, float)) or (isinstance(v, list) and len(v)<=5)) else type(v)}")
+
+            # Quick scan first 10 examples for any plain str values in tokenized fields
+            bad = []
+            for i in range(min(10, len(dataset['train']))):
+                ex = dataset['train'][i]
+                for k, v in ex.items():
+                    if k == 'label':
+                        continue
+                    # tokenized fields should be lists/ints/floats, not plain str
+                    if isinstance(v, str):
+                        bad.append((i, k, v))
+            if bad:
+                print("Found unexpected string values in tokenized fields (first 10 examples):", bad)
+                raise RuntimeError("Tokenization produced string values in token fields; check tokenizer usage and dataset columns.")
+        except Exception as e:
+            print("Dataset validation error:", e)
+            raise
 
     model = AutoModelForSequenceClassification.from_pretrained(model_dir, num_labels=config.get('num_labels', 2))
     model.to(device)
@@ -108,6 +160,13 @@ def train(config):
     train_loader = DataLoader(dataset['train'], batch_size=config['batch_size'], sampler=train_sampler, collate_fn=data_collator)
     val_loader = DataLoader(dataset['validation'], batch_size=config['batch_size'], sampler=val_sampler, collate_fn=data_collator)
 
+    # Fail early if loaders are empty to avoid zero-division or silent runtime errors
+    if len(train_loader) == 0:
+        raise RuntimeError("Training dataloader is empty. Check dataset size, batch_size, and sampler configuration.")
+    if len(val_loader) == 0:
+        # Allow training to proceed without validation only if explicitly intended; here we raise to surface misconfigurations.
+        raise RuntimeError("Validation dataloader is empty. Provide a validation split or adjust dataset preparation.")
+
     # -----------------------------
     # 4. Optimizer and Scheduler
     # -----------------------------
@@ -115,7 +174,7 @@ def train(config):
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
         num_warmup_steps=config['num_warmup_steps'],
-        num_training_steps=config['num_epochs'] * len(train_loader)
+        num_training_steps=max(1, config['num_epochs'] * len(train_loader))
     )
 
     # -----------------------------
@@ -209,6 +268,24 @@ if __name__ == "__main__":
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
     config['resume'] = args.resume
+
+    # ---- Validate config types ----
+    expected_types = {
+        "batch_size": int,
+        "learning_rate": float,
+        "num_epochs": int,
+        "num_warmup_steps": int,
+        "num_labels": int,
+    }
+    for k, t in expected_types.items():
+        if k not in config:
+            raise ValueError(f"Missing required config key: {k}")
+        try:
+            config[k] = t(config[k])  # force cast
+        except Exception as e:
+            raise TypeError(f"Config key {k} has invalid value {config[k]} ({type(config[k])}): {e}")
+
+
 
     # Coerce common numeric config fields to correct types to avoid runtime type errors
     if 'learning_rate' in config:
