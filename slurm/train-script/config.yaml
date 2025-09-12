@@ -10,3 +10,4 @@ batch_size: 16
 learning_rate: 2e-5
 num_epochs: 3
 num_warmup_steps: 0
+num_labels: 2

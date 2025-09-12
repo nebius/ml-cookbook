@@ -1,4 +1,3 @@
-
 import os
 import argparse
 import yaml
@@ -75,7 +74,7 @@ def train(rank, world_size, config):
     checkpoint_path = config['checkpoint_path']
     dataset = load_from_disk(data_dir)
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
-    model = AutoModelForSequenceClassification.from_pretrained(model_dir, num_labels=2)
+    model = AutoModelForSequenceClassification.from_pretrained(model_dir, num_labels=config.get('num_labels', 2))
     model.to(device)
     model = DDP(model, device_ids=[rank])
 
@@ -116,7 +115,8 @@ def train(rank, world_size, config):
         correct = 0
         total = 0
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]", disable=rank!=0):
-            inputs = tokenizer(batch['sentence'], padding=True, truncation=True, return_tensors="pt").to(device)
+            inputs = tokenizer(batch['sentence'], padding=True, truncation=True, return_tensors="pt")
+            inputs = {k: v.to(device) for k, v in inputs.items()}
             labels = batch['label'].to(device)
             outputs = model(**inputs, labels=labels)
             loss = outputs.loss
