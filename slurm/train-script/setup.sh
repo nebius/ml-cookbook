@@ -40,7 +40,7 @@ pip install -r requirements.txt
 # Create full model, data, and checkpoint and log directories as in config.yaml to be prepopulated
 # Since the HF downloader creates a nested folder for the model, we create the parent folder here only for the model_dir
 MODEL_DIR="/shared/model"
-DATA_DIR="/shared/data/glue_sst2"
+DATA_DIR="/shared/data/sst2"
 CHECKPOINT_DIR="/shared/checkpoints/distilbert-base-uncased"
 SLURM_LOGS_DIR="/shared/slurm_logs/distilbert-base"
 mkdir -p "$MODEL_DIR"
@@ -50,9 +50,8 @@ mkdir -p "$SLURM_LOGS_DIR"
 
 # Download model and dataset into these subfolders
 python download_data_model.py \
-	--model distilbert-base-uncased \
-	--dataset glue \
-	--subset sst2 \
+	--model distilbert/distilbert-base-uncased \
+	--dataset stanfordnlp/sst2 \
 	--shared_folder "$SHARED_DIR" \
 	--model_dir "$MODEL_DIR" \
 	--data_dir "$DATA_DIR"
