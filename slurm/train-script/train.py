@@ -209,4 +209,31 @@ if __name__ == "__main__":
         config = yaml.safe_load(f)
     config['resume'] = args.resume
 
+    # Coerce common numeric config fields to correct types to avoid runtime type errors
+    if 'learning_rate' in config:
+        try:
+            config['learning_rate'] = float(config['learning_rate'])
+        except Exception:
+            pass
+    if 'batch_size' in config:
+        try:
+            config['batch_size'] = int(config['batch_size'])
+        except Exception:
+            pass
+    if 'num_warmup_steps' in config:
+        try:
+            config['num_warmup_steps'] = int(config['num_warmup_steps'])
+        except Exception:
+            pass
+    if 'num_epochs' in config:
+        try:
+            config['num_epochs'] = int(config['num_epochs'])
+        except Exception:
+            pass
+    if 'num_labels' in config:
+        try:
+            config['num_labels'] = int(config['num_labels'])
+        except Exception:
+            pass
+
     train(config)
