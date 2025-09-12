@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=8                 # CPU cores per task
 ##SBATCH --mem=400G                        # Memory per node
 #SBATCH --time=02:00:00                   # (2 hours) Wall time limit, days-hours:minutes:seconds
-#SBATCH --output=/shared/slurm_logs/distilbert-base/%x-%j.out # Standard output log
-#SBATCH --error=/shared/slurm_logs/distilbert-base/%x-%j.err  # Standard error log
+#SBATCH --output=/shared/slurm_logs/distilbert-base-uncased/%x-%j.out # Standard output log
+#SBATCH --error=/shared/slurm_logs/distilbert-base-uncased/%x-%j.err  # Standard error log
 
 # activate environment
 source /shared/venvs/distbert-train/bin/activate
