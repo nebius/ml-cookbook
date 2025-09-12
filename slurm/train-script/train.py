@@ -6,7 +6,7 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, get_linear_schedule_with_warmup
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, get_linear_schedule_with_warmup, DataCollatorWithPadding
 from datasets import load_from_disk
 from torch.optim import AdamW
 from tqdm import tqdm
@@ -18,10 +18,13 @@ import atexit
 # -----------------------------
 # Utility Functions
 # -----------------------------
-def setup(rank, world_size):
-    """Initialize distributed environment."""
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
-    torch.cuda.set_device(rank)
+def setup():
+    global_rank = int(os.environ.get("RANK", "0"))
+    local_rank  = int(os.environ.get("LOCAL_RANK", "0"))
+    world_size  = int(os.environ.get("WORLD_SIZE", "1"))
+    dist.init_process_group(backend="nccl", rank=global_rank, world_size=world_size)
+    torch.cuda.set_device(local_rank)
+    return global_rank, local_rank, world_size
 
 def cleanup():
     """Clean up distributed environment."""
@@ -29,8 +32,9 @@ def cleanup():
 
 def save_checkpoint(model, optimizer, scheduler, epoch, path):
     """Save model and optimizer state."""
+    sd = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
     torch.save({
-        'model_state_dict': model.state_dict(),
+        'model_state_dict': sd,
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict(),
         'epoch': epoch
@@ -39,7 +43,8 @@ def save_checkpoint(model, optimizer, scheduler, epoch, path):
 def load_checkpoint(model, optimizer, scheduler, path):
     """Load model and optimizer state."""
     checkpoint = torch.load(path, map_location='cpu')
-    model.load_state_dict(checkpoint['model_state_dict'])
+    target_model = model.module if hasattr(model, "module") else model
+    target_model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
     return checkpoint['epoch']
@@ -47,7 +52,7 @@ def load_checkpoint(model, optimizer, scheduler, path):
 # -----------------------------
 # Training Function
 # -----------------------------
-def train(rank, world_size, config):
+def train(config):
     # Register cleanup for normal exit and signals
     def handle_exit(signum=None, frame=None):
         try:
@@ -63,8 +68,20 @@ def train(rank, world_size, config):
     # -----------------------------
     # 1. Setup DDP
     # -----------------------------
-    setup(rank, world_size)
-    device = torch.device(f"cuda:{rank}")
+    global_rank, local_rank, world_size = setup()
+    device = torch.device(f"cuda:{local_rank}")
+
+    # Sanity checks, ensure ranks and visible GPUs align
+    try:
+        visible_gpu_count = torch.cuda.device_count()
+    except Exception:
+        visible_gpu_count = 0
+
+    if world_size < 1:
+        raise RuntimeError(f"Invalid world_size={world_size}")
+    if not (0 <= local_rank < max(1, visible_gpu_count)):
+        # This likely indicates a mismatch between SLURM/GPU allocation and torchrun
+        raise RuntimeError(f"local_rank {local_rank} is out of range for visible GPUs ({visible_gpu_count})")
 
     # -----------------------------
     # 2. Load dataset and tokenizer/model
@@ -74,17 +91,21 @@ def train(rank, world_size, config):
     checkpoint_path = config['checkpoint_path']
     dataset = load_from_disk(data_dir)
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    # Tokenize dataset in-place so collator can pad tensors
+    dataset = dataset.map(lambda examples: tokenizer(examples['sentence'], truncation=True), batched=True)
+    data_collator = DataCollatorWithPadding(tokenizer=tokenizer, return_tensors="pt")
+
     model = AutoModelForSequenceClassification.from_pretrained(model_dir, num_labels=config.get('num_labels', 2))
     model.to(device)
-    model = DDP(model, device_ids=[rank])
+    model = DDP(model, device_ids=[local_rank])
 
     # -----------------------------
     # 3. Distributed Samplers for DDP
     # -----------------------------
-    train_sampler = DistributedSampler(dataset['train'], num_replicas=world_size, rank=rank, shuffle=True)
-    val_sampler = DistributedSampler(dataset['validation'], num_replicas=world_size, rank=rank, shuffle=False)
-    train_loader = DataLoader(dataset['train'], batch_size=config['batch_size'], sampler=train_sampler)
-    val_loader = DataLoader(dataset['validation'], batch_size=config['batch_size'], sampler=val_sampler)
+    train_sampler = DistributedSampler(dataset['train'], num_replicas=world_size, rank=global_rank, shuffle=True)
+    val_sampler = DistributedSampler(dataset['validation'], num_replicas=world_size, rank=global_rank, shuffle=False)
+    train_loader = DataLoader(dataset['train'], batch_size=config['batch_size'], sampler=train_sampler, collate_fn=data_collator)
+    val_loader = DataLoader(dataset['validation'], batch_size=config['batch_size'], sampler=val_sampler, collate_fn=data_collator)
 
     # -----------------------------
     # 4. Optimizer and Scheduler
@@ -102,8 +123,8 @@ def train(rank, world_size, config):
     start_epoch = 0
     if config.get('resume') and os.path.exists(checkpoint_path):
         start_epoch = load_checkpoint(model, optimizer, scheduler, checkpoint_path) + 1
-        if rank == 0:
-            print(f"[Rank {rank}] Resumed from checkpoint at epoch {start_epoch}")
+        if global_rank == 0:
+            print(f"[Rank {global_rank}] Resumed from checkpoint at epoch {start_epoch}")
 
     # -----------------------------
     # 6. Training and Validation Loop
@@ -114,9 +135,8 @@ def train(rank, world_size, config):
         total_loss = 0
         correct = 0
         total = 0
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]", disable=rank!=0):
-            inputs = tokenizer(batch['sentence'], padding=True, truncation=True, return_tensors="pt")
-            inputs = {k: v.to(device) for k, v in inputs.items()}
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]", disable=global_rank!=0):
+            inputs = {k: v.to(device) for k, v in batch.items() if k != 'label'}
             labels = batch['label'].to(device)
             outputs = model(**inputs, labels=labels)
             loss = outputs.loss
@@ -146,8 +166,8 @@ def train(rank, world_size, config):
         val_correct = 0
         val_total = 0
         with torch.no_grad():
-            for batch in tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]", disable=rank!=0):
-                inputs = tokenizer(batch['sentence'], padding=True, truncation=True, return_tensors="pt").to(device)
+            for batch in tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]", disable=global_rank!=0):
+                inputs = {k: v.to(device) for k, v in batch.items() if k != 'label'}
                 labels = batch['label'].to(device)
                 outputs = model(**inputs, labels=labels)
                 loss = outputs.loss
@@ -166,14 +186,14 @@ def train(rank, world_size, config):
         val_acc = val_correct.item() / val_total.item()
 
         # Print only on rank 0
-        if rank == 0:
+        if global_rank == 0:
             print(f"Epoch {epoch+1} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
             save_checkpoint(model, optimizer, scheduler, epoch, checkpoint_path)
         dist.barrier()
     # After training is complete, delete the checkpoint file if it exists (only on rank 0)
-    if rank == 0 and os.path.exists(checkpoint_path):
+    if global_rank == 0 and os.path.exists(checkpoint_path):
         os.remove(checkpoint_path)
-        print(f"[Rank {rank}] Deleted checkpoint file at {checkpoint_path} after successful training.")
+        print(f"[Rank {global_rank}] Deleted checkpoint file at {checkpoint_path} after successful training.")
     cleanup()
 
 # -----------------------------
@@ -189,6 +209,4 @@ if __name__ == "__main__":
         config = yaml.safe_load(f)
     config['resume'] = args.resume
 
-    local_rank = int(os.environ.get('LOCAL_RANK', 0))
-    world_size = int(os.environ.get('WORLD_SIZE', 1))
-    train(local_rank, world_size, config)
+    train(config)
