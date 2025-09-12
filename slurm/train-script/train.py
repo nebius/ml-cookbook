@@ -6,7 +6,9 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, get_linear_schedule_with_warmup, DataCollatorWithPadding
+import transformers as hf
+from transformers import get_linear_schedule_with_warmup
+from transformers import DataCollatorWithPadding, DataCollatorForSeq2Seq
 from datasets import load_from_disk
 from torch.optim import AdamW
 from tqdm import tqdm
@@ -42,17 +44,28 @@ def setup():
 
 def cleanup():
     """Clean up distributed environment."""
-    dist.destroy_process_group()
+    if dist.is_initialized():
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass
 
 def save_checkpoint(model, optimizer, scheduler, epoch, path):
     """Save model and optimizer state."""
     sd = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
+    tmp_path = path + ".tmp"
     torch.save({
         'model_state_dict': sd,
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict(),
         'epoch': epoch
-    }, path)
+    }, tmp_path)
+    # atomic replace
+    try:
+        os.replace(tmp_path, path)
+    except Exception:
+        # fallback to rename
+        os.rename(tmp_path, path)
 
 def load_checkpoint(model, optimizer, scheduler, path):
     """Load model and optimizer state."""
@@ -102,25 +115,119 @@ def train(config):
     # -----------------------------
     model_dir = config['model_dir']
     data_dir = config['data_dir']
-    checkpoint_path = config['checkpoint_path']
+    checkpoint_path = config.get('checkpoint_path', os.path.join('.', 'checkpoint.pt'))
     dataset = load_from_disk(data_dir)
 
-    # Validate expected splits
-    expected_splits = ("train", "validation")
-    missing = [s for s in expected_splits if s not in dataset]
-    if missing:
-        raise RuntimeError(f"Dataset at {data_dir} missing expected splits: {missing}. "
-                           "Ensure dataset was saved with 'train' and 'validation' splits or adjust config/data preparation.")
+    # Detect splits: prefer 'train' and a validation split, but allow other names
+    if 'train' not in dataset:
+        raise RuntimeError(f"Dataset at {data_dir} does not contain a 'train' split. Found: {list(dataset.keys())}")
+    val_split = config.get('validation_split', None)
+    if val_split is None:
+        # prefer common names
+        for candidate in ('validation', 'validation_holdout', 'val', 'dev'):
+            if candidate in dataset:
+                val_split = candidate
+                break
+    if val_split is None:
+        # allow training without validation if explicitly requested
+        if not config.get('allow_no_validation', False):
+            raise RuntimeError(f"No validation split found in dataset and 'allow_no_validation' not set. Splits: {list(dataset.keys())}")
 
-    tokenizer = AutoTokenizer.from_pretrained(model_dir)
-    # Tokenize dataset in-place so collator can pad tensors.
-    # Use an explicit tokenize function to ensure consistent fields and types.
-    def tokenize_fn(examples):
-        return tokenizer(examples['sentence'], truncation=True, return_attention_mask=True)
+    # Load tokenizer
+    tokenizer = hf.AutoTokenizer.from_pretrained(model_dir)
 
-    # Remove the original text column so the collator doesn't try to convert raw strings into tensors.
-    dataset = dataset.map(tokenize_fn, batched=True, remove_columns=['sentence'])
-    data_collator = DataCollatorWithPadding(tokenizer=tokenizer, return_tensors="pt")
+    # Infer task: explicit config['task'] preferred, otherwise use model config if available
+    task = config.get('task', None)
+    try:
+        model_cfg = hf.AutoConfig.from_pretrained(model_dir)
+        if task is None:
+            if getattr(model_cfg, 'is_encoder_decoder', False):
+                task = 'seq2seq'
+            else:
+                task = 'classification'
+    except Exception:
+        if task is None:
+            task = 'classification'
+
+    # Detect input and label/target columns heuristically
+    train_cols = dataset['train'].column_names
+    # common text column candidates
+    text_candidates = [config.get('text_column')] if config.get('text_column') else []
+    text_candidates += ['text', 'sentence', 'input_text', 'article', 'document']
+    text_column = None
+    for c in text_candidates:
+        if c and c in train_cols:
+            text_column = c
+            break
+    if text_column is None:
+        # fallback: pick first string column that is not an index/label
+        for c in train_cols:
+            if c in ('label', 'labels', 'id', 'idx'):
+                continue
+            # sample a few rows to see if values are strings
+            try:
+                v = dataset['train'][0][c]
+                if isinstance(v, str) or (isinstance(v, list) and len(v) and isinstance(v[0], str)):
+                    text_column = c
+                    break
+            except Exception:
+                continue
+    if text_column is None:
+        raise RuntimeError(f"Could not auto-detect a text input column in dataset columns: {train_cols}; set 'text_column' in config.")
+
+    # label/target column detection
+    label_column = config.get('label_column', None)
+    target_column = config.get('target_column', None)
+    if task == 'seq2seq':
+        # target text column candidates
+        tgt_candidates = [target_column] if target_column else []
+        tgt_candidates += ['target', 'summary', 'labels', 'label_text']
+        for c in tgt_candidates:
+            if c and c in train_cols:
+                target_column = c
+                break
+        if target_column is None:
+            raise RuntimeError("Could not detect target text column for seq2seq task; set 'target_column' in config.")
+    else:
+        if label_column is None:
+            for c in ('label', 'labels', 'target'):
+                if c in train_cols:
+                    label_column = c
+                    break
+    # tokenized dataset path
+    tokenized_dir = config.get('tokenized_dir', f"{data_dir.rstrip('/')}_tokenized")
+
+    # Tokenization function depends on task
+    if task == 'seq2seq':
+        def tokenize_fn(examples):
+            return tokenizer(examples[text_column], text_target=examples[target_column], truncation=True)
+        token_presence_key = 'input_ids'
+    else:
+        def tokenize_fn(examples):
+            return tokenizer(examples[text_column], truncation=True)
+        token_presence_key = 'input_ids'
+
+    # If dataset already tokenized (has input_ids), skip. Otherwise have rank 0 create a tokenized copy.
+    already_tokenized = False
+    try:
+        already_tokenized = token_presence_key in dataset['train'].column_names
+    except Exception:
+        already_tokenized = False
+
+    if not already_tokenized:
+        if global_rank == 0:
+            print(f"[Rank 0] Tokenizing dataset (task={task}) and saving to {tokenized_dir} ...")
+            remove_cols = [text_column]
+            if task == 'seq2seq' and target_column:
+                remove_cols.append(target_column)
+            tokenized = dataset.map(tokenize_fn, batched=True, remove_columns=list(dict.fromkeys(remove_cols)))
+            tokenized.save_to_disk(tokenized_dir)
+        # Wait for rank 0 to finish tokenization and saving
+        dist.barrier()
+        # All ranks load the tokenized dataset from disk
+        dataset = load_from_disk(tokenized_dir)
+
+    # Data collator will be constructed after model is loaded (seq2seq collator sometimes needs model)
 
     # Lightweight validation on rank 0: print dataset columns and a sample, and check for unexpected string fields.
     if global_rank == 0:
@@ -148,24 +255,45 @@ def train(config):
             print("Dataset validation error:", e)
             raise
 
-    model = AutoModelForSequenceClassification.from_pretrained(model_dir, num_labels=config.get('num_labels', 2))
+    # -----------------------------
+    # Load model dynamically and build collator
+    # -----------------------------
+    if task == 'seq2seq':
+        model = hf.AutoModelForSeq2SeqLM.from_pretrained(model_dir)
+    else:
+        num_labels = int(config.get('num_labels', 2))
+        model = hf.AutoModelForSequenceClassification.from_pretrained(model_dir, num_labels=num_labels)
     model.to(device)
     model = DDP(model, device_ids=[local_rank])
+
+    # Build appropriate data collator
+    if task == 'seq2seq':
+        data_collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, model=model, return_tensors="pt")
+    else:
+        data_collator = DataCollatorWithPadding(tokenizer=tokenizer, return_tensors="pt")
 
     # -----------------------------
     # 3. Distributed Samplers for DDP
     # -----------------------------
-    train_sampler = DistributedSampler(dataset['train'], num_replicas=world_size, rank=global_rank, shuffle=True)
-    val_sampler = DistributedSampler(dataset['validation'], num_replicas=world_size, rank=global_rank, shuffle=False)
-    train_loader = DataLoader(dataset['train'], batch_size=config['batch_size'], sampler=train_sampler, collate_fn=data_collator)
-    val_loader = DataLoader(dataset['validation'], batch_size=config['batch_size'], sampler=val_sampler, collate_fn=data_collator)
+    train_split = 'train'
+    val_split = val_split if val_split is not None else None
+    train_sampler = DistributedSampler(dataset[train_split], num_replicas=world_size, rank=global_rank, shuffle=True)
+    if val_split:
+        val_sampler = DistributedSampler(dataset[val_split], num_replicas=world_size, rank=global_rank, shuffle=False)
+    else:
+        val_sampler = None
+    train_loader = DataLoader(dataset[train_split], batch_size=config['batch_size'], sampler=train_sampler, collate_fn=data_collator)
+    val_loader = DataLoader(dataset[val_split], batch_size=config['batch_size'], sampler=val_sampler, collate_fn=data_collator) if val_split else None
 
     # Fail early if loaders are empty to avoid zero-division or silent runtime errors
     if len(train_loader) == 0:
         raise RuntimeError("Training dataloader is empty. Check dataset size, batch_size, and sampler configuration.")
-    if len(val_loader) == 0:
-        # Allow training to proceed without validation only if explicitly intended; here we raise to surface misconfigurations.
-        raise RuntimeError("Validation dataloader is empty. Provide a validation split or adjust dataset preparation.")
+    if val_loader is None:
+        if not config.get('allow_no_validation', False):
+            raise RuntimeError("Validation dataloader not found. Set 'allow_no_validation' in config to proceed without validation.")
+    else:
+        if len(val_loader) == 0:
+            raise RuntimeError("Validation dataloader is empty. Provide a validation split or adjust dataset preparation.")
 
     # -----------------------------
     # 4. Optimizer and Scheduler
@@ -187,67 +315,139 @@ def train(config):
             print(f"[Rank {global_rank}] Resumed from checkpoint at epoch {start_epoch}")
 
     # -----------------------------
-    # 6. Training and Validation Loop
+    # 6. Training and Validation Loop (task-agnostic)
     # -----------------------------
     for epoch in range(start_epoch, config['num_epochs']):
         model.train()
         train_sampler.set_epoch(epoch)
-        total_loss = 0
-        correct = 0
-        total = 0
+        total_loss = 0.0
+        train_correct = 0
+        train_total = 0
+        train_samples = 0
+
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]", disable=global_rank!=0):
-            inputs = {k: v.to(device) for k, v in batch.items() if k != 'label'}
-            labels = batch['label'].to(device)
-            outputs = model(**inputs, labels=labels)
+            # move tensors to device where applicable
+            batch = {k: (v.to(device) if hasattr(v, 'to') else v) for k, v in batch.items()}
+
+            if task == 'seq2seq':
+                labels = batch.get('labels') or batch.get('label') or batch.get('target_ids')
+                inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label', 'target_ids')}
+                outputs = model(**inputs, labels=labels)
+            else:
+                labels = batch.get('labels') or batch.get('label')
+                inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label')}
+                outputs = model(**inputs, labels=labels)
+
             loss = outputs.loss
-            logits = outputs.logits
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             scheduler.step()
-            total_loss += loss.item()
-            preds = torch.argmax(logits, dim=1)
-            correct += (preds == labels).sum().item()
-            total += labels.size(0)
-        # Gather train loss and accuracy from all processes
-        train_loss = torch.tensor(total_loss / len(train_loader), device=device)
-        train_correct = torch.tensor(correct, device=device)
-        train_total = torch.tensor(total, device=device)
-        dist.all_reduce(train_loss, op=dist.ReduceOp.SUM)
-        dist.all_reduce(train_correct, op=dist.ReduceOp.SUM)
-        dist.all_reduce(train_total, op=dist.ReduceOp.SUM)
-        train_loss = train_loss.item() / world_size
-        train_acc = train_correct.item() / train_total.item()
+            # Attempt to determine batch size from first tensor in batch
+            bs = None
+            for v in batch.values():
+                if torch.is_tensor(v):
+                    try:
+                        bs = v.size(0)
+                    except Exception:
+                        bs = None
+                    break
+            if bs is None:
+                bs = 1
+            total_loss += loss.item() * bs
+            train_samples += bs
 
-        # Validation
-        model.eval()
-        val_sampler.set_epoch(epoch)
-        val_loss = 0
+            # classification metrics
+            if task != 'seq2seq' and outputs.logits is not None and labels is not None:
+                preds = torch.argmax(outputs.logits, dim=1)
+                train_correct += (preds == labels).sum().item()
+                train_total += labels.size(0)
+
+        # Aggregate training metrics across ranks by summing raw losses and counts
+        # total_loss is sum of batch losses per rank; better to reduce sum and divide by global sample count
+        local_loss_sum = torch.tensor(total_loss, device=device)
+        local_sample_count = torch.tensor(train_samples, device=device)
+        t_correct = torch.tensor(train_correct, device=device)
+        t_total = torch.tensor(train_total if train_total > 0 else 0, device=device)
+        dist.all_reduce(local_loss_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(local_sample_count, op=dist.ReduceOp.SUM)
+        dist.all_reduce(t_correct, op=dist.ReduceOp.SUM)
+        dist.all_reduce(t_total, op=dist.ReduceOp.SUM)
+        # compute averages
+        train_loss = (local_loss_sum.item() / local_sample_count.item()) if local_sample_count.item() > 0 else 0.0
+        train_acc = (t_correct.item() / t_total.item()) if t_total.item() > 0 else 0.0
+
+        # Validation pass (if available)
+        val_loss = 0.0
         val_correct = 0
         val_total = 0
-        with torch.no_grad():
-            for batch in tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]", disable=global_rank!=0):
-                inputs = {k: v.to(device) for k, v in batch.items() if k != 'label'}
-                labels = batch['label'].to(device)
-                outputs = model(**inputs, labels=labels)
-                loss = outputs.loss
-                logits = outputs.logits
-                val_loss += loss.item()
-                preds = torch.argmax(logits, dim=1)
-                val_correct += (preds == labels).sum().item()
-                val_total += labels.size(0)
-        val_loss = torch.tensor(val_loss / len(val_loader), device=device)
-        val_correct = torch.tensor(val_correct, device=device)
-        val_total = torch.tensor(val_total, device=device)
-        dist.all_reduce(val_loss, op=dist.ReduceOp.SUM)
-        dist.all_reduce(val_correct, op=dist.ReduceOp.SUM)
-        dist.all_reduce(val_total, op=dist.ReduceOp.SUM)
-        val_loss = val_loss.item() / world_size
-        val_acc = val_correct.item() / val_total.item()
+        val_samples = 0
+        model.eval()
+        if val_loader is not None:
+            val_sampler.set_epoch(epoch)
+            with torch.no_grad():
+                for batch in tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]", disable=global_rank!=0):
+                    batch = {k: (v.to(device) if hasattr(v, 'to') else v) for k, v in batch.items()}
+                    if task == 'seq2seq':
+                        labels = batch.get('labels') or batch.get('label') or batch.get('target_ids')
+                        inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label', 'target_ids')}
+                        outputs = model(**inputs, labels=labels)
+                        # determine batch size
+                        bs = None
+                        for v in batch.values():
+                            if torch.is_tensor(v):
+                                try:
+                                    bs = v.size(0)
+                                except Exception:
+                                    bs = None
+                                break
+                        if bs is None:
+                            bs = 1
+                        val_loss += outputs.loss.item() * bs
+                        val_samples += bs
+                    else:
+                        labels = batch.get('labels') or batch.get('label')
+                        inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label')}
+                        outputs = model(**inputs, labels=labels)
+                        # determine batch size
+                        bs = None
+                        for v in batch.values():
+                            if torch.is_tensor(v):
+                                try:
+                                    bs = v.size(0)
+                                except Exception:
+                                    bs = None
+                                break
+                        if bs is None:
+                            bs = 1
+                        val_loss += outputs.loss.item() * bs
+                        val_samples += bs
+                        if outputs.logits is not None and labels is not None:
+                            preds = torch.argmax(outputs.logits, dim=1)
+                            val_correct += (preds == labels).sum().item()
+                            val_total += labels.size(0)
 
-        # Print only on rank 0
+            # aggregate validation metrics by summing raw losses and counts
+            local_val_loss_sum = torch.tensor(val_loss, device=device)
+            local_val_sample_count = torch.tensor(val_samples, device=device)
+            v_correct = torch.tensor(val_correct, device=device)
+            v_total = torch.tensor(val_total if val_total > 0 else 0, device=device)
+            dist.all_reduce(local_val_loss_sum, op=dist.ReduceOp.SUM)
+            dist.all_reduce(local_val_sample_count, op=dist.ReduceOp.SUM)
+            dist.all_reduce(v_correct, op=dist.ReduceOp.SUM)
+            dist.all_reduce(v_total, op=dist.ReduceOp.SUM)
+            val_loss = (local_val_loss_sum.item() / local_val_sample_count.item()) if local_val_sample_count.item() > 0 else 0.0
+            val_acc = (v_correct.item() / v_total.item()) if v_total.item() > 0 else 0.0
+        else:
+            val_loss = 0.0
+            val_acc = 0.0
+
+        # Print and checkpoint on rank 0
         if global_rank == 0:
-            print(f"Epoch {epoch+1} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
+            if val_loader is not None:
+                print(f"Epoch {epoch+1} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
+            else:
+                print(f"Epoch {epoch+1} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Val: None")
             save_checkpoint(model, optimizer, scheduler, epoch, checkpoint_path)
         dist.barrier()
     # After training is complete, delete the checkpoint file if it exists (only on rank 0)
@@ -269,49 +469,29 @@ if __name__ == "__main__":
         config = yaml.safe_load(f)
     config['resume'] = args.resume
 
-    # ---- Validate config types ----
-    expected_types = {
-        "batch_size": int,
-        "learning_rate": float,
-        "num_epochs": int,
-        "num_warmup_steps": int,
-        "num_labels": int,
-    }
-    for k, t in expected_types.items():
+    # ---- Basic config checks and concise coercion ----
+    required = ['model_dir', 'data_dir', 'batch_size', 'learning_rate', 'num_epochs']
+    for k in required:
         if k not in config:
-            raise ValueError(f"Missing required config key: {k}")
-        try:
-            config[k] = t(config[k])  # force cast
-        except Exception as e:
-            raise TypeError(f"Config key {k} has invalid value {config[k]} ({type(config[k])}): {e}")
+            raise ValueError(f"Config must provide '{k}'")
 
+    # concise coercions with simple errors
+    try:
+        config['batch_size'] = int(config['batch_size'])
+        config['learning_rate'] = float(config['learning_rate'])
+        config['num_epochs'] = int(config['num_epochs'])
+           # optional fields with defaults
+        config['num_warmup_steps'] = int(config.get('num_warmup_steps', 0))
+        config['num_labels'] = int(config.get('num_labels', 2))
+    except Exception as e:
+        raise TypeError(f"Config type error: {e}")
 
+    # check data path
+    if not os.path.exists(config['data_dir']):
+        raise ValueError(f"data_dir path does not exist: {config['data_dir']}")
 
-    # Coerce common numeric config fields to correct types to avoid runtime type errors
-    if 'learning_rate' in config:
-        try:
-            config['learning_rate'] = float(config['learning_rate'])
-        except Exception:
-            pass
-    if 'batch_size' in config:
-        try:
-            config['batch_size'] = int(config['batch_size'])
-        except Exception:
-            pass
-    if 'num_warmup_steps' in config:
-        try:
-            config['num_warmup_steps'] = int(config['num_warmup_steps'])
-        except Exception:
-            pass
-    if 'num_epochs' in config:
-        try:
-            config['num_epochs'] = int(config['num_epochs'])
-        except Exception:
-            pass
-    if 'num_labels' in config:
-        try:
-            config['num_labels'] = int(config['num_labels'])
-        except Exception:
-            pass
+    # check model path
+    if not os.path.exists(config['model_dir']):
+        raise ValueError(f"model_dir path does not exist: {config['model_dir']}")
 
     train(config)
