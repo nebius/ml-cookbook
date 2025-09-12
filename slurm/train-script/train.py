@@ -24,6 +24,13 @@ def setup():
     global_rank = int(os.environ.get("RANK", "0"))
     local_rank  = int(os.environ.get("LOCAL_RANK", "0"))
     world_size  = int(os.environ.get("WORLD_SIZE", "1"))
+    # Bind this process to the correct CUDA device first to ensure NCCL sees the correct device
+    try:
+        torch.cuda.set_device(local_rank)
+    except Exception:
+        # In case CUDA not available or invalid local_rank, raise a clearer error for multi-process runs
+        if world_size and int(world_size) > 1:
+            raise RuntimeError(f"Failed to set CUDA device to local_rank={local_rank}")
     # Initialize the default process group only if not already initialized.
     # When running with torchrun, env vars are provided and a simple init without explicit rank/world_size is OK.
     if not dist.is_initialized():
@@ -34,12 +41,6 @@ def setup():
             # so 1 GPU doesn't break. Raise for multi-process failures.
             if world_size and int(world_size) > 1:
                 raise
-    # Bind this process to the correct CUDA device
-    try:
-        torch.cuda.set_device(local_rank)
-    except Exception:
-        # In case CUDA not available or invalid local_rank, raise a clearer error
-        raise RuntimeError(f"Failed to set CUDA device to local_rank={local_rank}")
     return global_rank, local_rank, world_size
 
 def cleanup():
@@ -330,11 +331,17 @@ def train(config):
             batch = {k: (v.to(device) if hasattr(v, 'to') else v) for k, v in batch.items()}
 
             if task == 'seq2seq':
-                labels = batch.get('labels') or batch.get('label') or batch.get('target_ids')
+                labels = batch.get('labels', None)
+                if labels is None:
+                    labels = batch.get('label', None)
+                if labels is None:
+                    labels = batch.get('target_ids', None)
                 inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label', 'target_ids')}
                 outputs = model(**inputs, labels=labels)
             else:
-                labels = batch.get('labels') or batch.get('label')
+                labels = batch.get('labels', None)
+                if labels is None:
+                    labels = batch.get('label', None)
                 inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label')}
                 outputs = model(**inputs, labels=labels)
 
@@ -389,7 +396,11 @@ def train(config):
                 for batch in tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]", disable=global_rank!=0):
                     batch = {k: (v.to(device) if hasattr(v, 'to') else v) for k, v in batch.items()}
                     if task == 'seq2seq':
-                        labels = batch.get('labels') or batch.get('label') or batch.get('target_ids')
+                        labels = batch.get('labels', None)
+                        if labels is None:
+                            labels = batch.get('label', None)
+                        if labels is None:
+                            labels = batch.get('target_ids', None)
                         inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label', 'target_ids')}
                         outputs = model(**inputs, labels=labels)
                         # determine batch size
@@ -406,7 +417,9 @@ def train(config):
                         val_loss += outputs.loss.item() * bs
                         val_samples += bs
                     else:
-                        labels = batch.get('labels') or batch.get('label')
+                        labels = batch.get('labels', None)
+                        if labels is None:
+                            labels = batch.get('label', None)
                         inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label')}
                         outputs = model(**inputs, labels=labels)
                         # determine batch size
