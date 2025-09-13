@@ -28,8 +28,11 @@ else
 	fi
 fi
 
-# Create project-specific Python virtual environment with Python 3.11
-$PYTHON_BIN -m venv "$VENV_DIR"
+# Create project-specific Python virtual environment with Python 3.11 (idempotent)
+if [ ! -d "$VENV_DIR" ]; then
+	echo -e "${GREEN}Creating virtual environment at $VENV_DIR${NC}"
+	$PYTHON_BIN -m venv "$VENV_DIR"
+fi
 source "$VENV_DIR/bin/activate"
 
 # Upgrade pip and install requirements
@@ -37,16 +40,21 @@ pip install --upgrade pip
 pip install -r requirements.txt
 
 
-# Create full model, data, and checkpoint and log directories as in config.yaml to be prepopulated
-# Since the HF downloader creates a nested folder for the model, we create the parent folder here only for the model_dir
+# Create model, data, log, and experiments root directories (global checkpoint dir no longer needed).
+# Per-run checkpoints now live under: $EXPERIMENTS_ROOT/<run_name>/checkpoint.pt
+# Since the HF downloader creates a nested folder for the model, we create only the parent folder here.
 MODEL_DIR="/shared/model/distilbert-base-uncased"
 DATA_DIR="/shared/data/sst2"
-CHECKPOINT_DIR="/shared/checkpoints/distilbert-base-uncased"
+EXPERIMENTS_ROOT="/shared/experiments"
 SLURM_LOGS_DIR="/shared/slurm_logs/distilbert-base-uncased"
-mkdir -p "$MODEL_DIR"
-mkdir -p "$DATA_DIR"
-mkdir -p "$CHECKPOINT_DIR"
-mkdir -p "$SLURM_LOGS_DIR"
+mkdir -p "$MODEL_DIR" "$DATA_DIR" "$SLURM_LOGS_DIR" "$EXPERIMENTS_ROOT"
+
+# Basic permission checks
+for d in "$MODEL_DIR" "$DATA_DIR" "$SLURM_LOGS_DIR" "$EXPERIMENTS_ROOT"; do
+	if [ ! -w "$d" ]; then
+		echo -e "${RED}Warning: Directory $d is not writable by current user.$NC"
+	fi
+done
 
 # Download model and dataset into these subfolders
 python download_data_model.py \

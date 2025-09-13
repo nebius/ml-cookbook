@@ -2,6 +2,8 @@ import os
 import argparse
 import yaml
 import time
+import math
+import random
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -16,31 +18,39 @@ import numpy as np
 import signal
 import sys
 import atexit
+from inspect import signature
+from datetime import timedelta
+from torch.cuda.amp import GradScaler, autocast
+import torch.backends.cudnn as cudnn
+from torch.utils.tensorboard import SummaryWriter
 
 # -----------------------------
 # Utility Functions
 # -----------------------------
-def setup():
+def setup(backend: str = "nccl", timeout_seconds: int = 1800):
+    """Initialize distributed process group with backend fallback and timeout.
+
+    If requested backend is NCCL but CUDA is unavailable, fall back to gloo.
+    """
     global_rank = int(os.environ.get("RANK", "0"))
-    local_rank  = int(os.environ.get("LOCAL_RANK", "0"))
-    world_size  = int(os.environ.get("WORLD_SIZE", "1"))
-    # Bind this process to the correct CUDA device first to ensure NCCL sees the correct device
-    try:
-        torch.cuda.set_device(local_rank)
-    except Exception:
-        # In case CUDA not available or invalid local_rank, raise a clearer error for multi-process runs
-        if world_size and int(world_size) > 1:
-            raise RuntimeError(f"Failed to set CUDA device to local_rank={local_rank}")
-    # Initialize the default process group only if not already initialized.
-    # When running with torchrun, env vars are provided and a simple init without explicit rank/world_size is OK.
-    if not dist.is_initialized():
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+
+    # Decide backend
+    req_backend = backend.lower()
+    if req_backend == "nccl" and not torch.cuda.is_available():
+        req_backend = "gloo"
+
+    # Bind CUDA device early
+    if torch.cuda.is_available():
         try:
-            dist.init_process_group(backend="nccl")
-        except Exception as e:
-            # If init fails but we're running single-process (world_size==1), proceed without raising
-            # so 1 GPU doesn't break. Raise for multi-process failures.
-            if world_size and int(world_size) > 1:
-                raise
+            torch.cuda.set_device(local_rank)
+        except Exception:
+            if world_size > 1:
+                raise RuntimeError(f"Failed to set CUDA device to local_rank={local_rank}")
+
+    if not dist.is_initialized() and world_size > 1:
+        dist.init_process_group(backend=req_backend, timeout=timedelta(seconds=timeout_seconds))
     return global_rank, local_rank, world_size
 
 def cleanup():
@@ -80,6 +90,19 @@ def load_checkpoint(model, optimizer, scheduler, path):
 # -----------------------------
 # Training Function
 # -----------------------------
+def set_seed(seed: int, deterministic: bool = False):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        cudnn.deterministic = True
+        cudnn.benchmark = False
+    else:
+        cudnn.deterministic = False
+        cudnn.benchmark = True
+
+
 def train(config):
     # Register cleanup for normal exit and signals
     def handle_exit(signum=None, frame=None):
@@ -96,8 +119,16 @@ def train(config):
     # -----------------------------
     # 1. Setup DDP
     # -----------------------------
-    global_rank, local_rank, world_size = setup()
+    global_rank, local_rank, world_size = setup(
+        backend=config.get('backend', 'nccl'),
+        timeout_seconds=int(config.get('ddp_timeout_seconds', 1800))
+    )
     device = torch.device(f"cuda:{local_rank}")
+
+    # Set seeds (rank-aware) after we know ranks
+    base_seed = int(config.get('seed', 42))
+    deterministic = bool(config.get('deterministic', False))
+    set_seed(base_seed + global_rank, deterministic=deterministic)
 
     # Sanity checks, ensure ranks and visible GPUs align
     try:
@@ -267,6 +298,9 @@ def train(config):
     model.to(device)
     model = DDP(model, device_ids=[local_rank])
 
+    # Cache forward signature arg names once (post DDP wrap so .forward is the DDP wrapper -> access module.forward)
+    forward_arg_names = set(signature(model.module.forward).parameters.keys()) if hasattr(model, 'module') else set(signature(model.forward).parameters.keys())
+
     # Build appropriate data collator
     if task == 'seq2seq':
         data_collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, model=model, return_tensors="pt")
@@ -283,8 +317,30 @@ def train(config):
         val_sampler = DistributedSampler(dataset[val_split], num_replicas=world_size, rank=global_rank, shuffle=False)
     else:
         val_sampler = None
-    train_loader = DataLoader(dataset[train_split], batch_size=config['batch_size'], sampler=train_sampler, collate_fn=data_collator)
-    val_loader = DataLoader(dataset[val_split], batch_size=config['batch_size'], sampler=val_sampler, collate_fn=data_collator) if val_split else None
+    num_workers = int(config.get('num_workers', 2))
+    pin_memory = bool(config.get('pin_memory', True)) and torch.cuda.is_available()
+    # Ensure reproducibility in DataLoader sharding
+    g = torch.Generator()
+    g.manual_seed(base_seed + global_rank)
+    train_loader = DataLoader(
+        dataset[train_split],
+        batch_size=config['batch_size'],
+        sampler=train_sampler,
+        collate_fn=data_collator,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        generator=g,
+        persistent_workers=num_workers > 0
+    )
+    val_loader = DataLoader(
+        dataset[val_split],
+        batch_size=config['batch_size'],
+        sampler=val_sampler,
+        collate_fn=data_collator,
+        num_workers=max(1, num_workers // 2) if val_split else 0,
+        pin_memory=pin_memory,
+        persistent_workers=(val_split is not None and num_workers > 0)
+    ) if val_split else None
 
     # Fail early if loaders are empty to avoid zero-division or silent runtime errors
     if len(train_loader) == 0:
@@ -300,11 +356,15 @@ def train(config):
     # 4. Optimizer and Scheduler
     # -----------------------------
     optimizer = AdamW(model.parameters(), lr=config['learning_rate'])
+    grad_accum_steps = int(config.get('grad_accum_steps', 1))
+    effective_steps_per_epoch = math.ceil(len(train_loader) / grad_accum_steps)
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
         num_warmup_steps=config['num_warmup_steps'],
-        num_training_steps=max(1, config['num_epochs'] * len(train_loader))
+        num_training_steps=max(1, config['num_epochs'] * effective_steps_per_epoch)
     )
+    use_amp = bool(config.get('use_amp', True)) and torch.cuda.is_available()
+    scaler = GradScaler(enabled=use_amp)
 
     # -----------------------------
     # 5. Optionally resume from checkpoint
@@ -316,6 +376,41 @@ def train(config):
             print(f"[Rank {global_rank}] Resumed from checkpoint at epoch {start_epoch}")
 
     # -----------------------------
+    # Prepare experiment/run directory (rank 0 only) before training loop
+    writer = None
+    run_dir = None
+    if global_rank == 0:
+        experiments_root = config.get('experiments_root', './experiments')
+        run_name = config.get('run_name')
+        if not run_name:
+            # derive from model basename + timestamp
+            base_name = os.path.basename(model_dir.rstrip('/'))
+            run_name = base_name + '-' + time.strftime('%Y%m%d-%H%M%S')
+        run_dir = os.path.join(experiments_root, run_name)
+        os.makedirs(run_dir, exist_ok=True)
+        # If user did not set a specific final_model_dir, nest it inside run_dir
+        if 'final_model_dir' not in config:
+            config['final_model_dir'] = os.path.join(run_dir, 'final_model')
+        # Optionally mirror checkpoint path inside run if checkpoint_path not absolute user location
+        if not config.get('checkpoint_path'):
+            config['checkpoint_path'] = os.path.join(run_dir, 'checkpoint.pt')
+        # TensorBoard
+        if bool(config.get('tensorboard_logging', True)) and SummaryWriter:
+            try:
+                writer = SummaryWriter(log_dir=os.path.join(run_dir, 'tb'))
+            except Exception as e:
+                print(f"[Rank 0] TensorBoard writer init failed: {e}")
+
+    # Broadcast potential updates to final_model_dir / checkpoint_path to all ranks
+    if dist.is_initialized():
+        # simple string broadcast via object list (only small items)
+        obj = {'final_model_dir': config.get('final_model_dir'), 'checkpoint_path': config.get('checkpoint_path')}
+        obj_list = [obj]
+        dist.broadcast_object_list(obj_list, src=0)
+        config.update(obj_list[0])
+        checkpoint_path = config.get('checkpoint_path', checkpoint_path)
+
+    # -----------------------------
     # 6. Training and Validation Loop (task-agnostic)
     # -----------------------------
     for epoch in range(start_epoch, config['num_epochs']):
@@ -325,32 +420,40 @@ def train(config):
         train_correct = 0
         train_total = 0
         train_samples = 0
+        optimizer.zero_grad()
 
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]", disable=global_rank!=0):
-            # move tensors to device where applicable
+        for step, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]", disable=global_rank!=0)):
             batch = {k: (v.to(device) if hasattr(v, 'to') else v) for k, v in batch.items()}
 
             if task == 'seq2seq':
-                labels = batch.get('labels', None)
-                if labels is None:
-                    labels = batch.get('label', None)
-                if labels is None:
-                    labels = batch.get('target_ids', None)
-                inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label', 'target_ids')}
-                outputs = model(**inputs, labels=labels)
+                labels = batch.get('labels') or batch.get('label') or batch.get('target_ids')
+                inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label', 'target_ids') and k in forward_arg_names}
             else:
-                labels = batch.get('labels', None)
-                if labels is None:
-                    labels = batch.get('label', None)
-                inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label')}
-                outputs = model(**inputs, labels=labels)
+                labels = batch.get('labels') or batch.get('label')
+                inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label') and k in forward_arg_names}
 
-            loss = outputs.loss
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-            # Attempt to determine batch size from first tensor in batch
+            with autocast(enabled=use_amp):
+                outputs = model(**inputs, labels=labels)
+                orig_loss = outputs.loss
+            # retain original loss value for reporting
+            loss_value = orig_loss.item()
+            loss = orig_loss / grad_accum_steps
+
+            if use_amp:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
+
+            if (step + 1) % grad_accum_steps == 0 or (step + 1) == len(train_loader):
+                if use_amp:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
+
+            # batch size detection
             bs = None
             for v in batch.values():
                 if torch.is_tensor(v):
@@ -361,10 +464,9 @@ def train(config):
                     break
             if bs is None:
                 bs = 1
-            total_loss += loss.item() * bs
+            total_loss += loss_value * bs
             train_samples += bs
 
-            # classification metrics
             if task != 'seq2seq' and outputs.logits is not None and labels is not None:
                 preds = torch.argmax(outputs.logits, dim=1)
                 train_correct += (preds == labels).sum().item()
@@ -396,13 +498,10 @@ def train(config):
                 for batch in tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]", disable=global_rank!=0):
                     batch = {k: (v.to(device) if hasattr(v, 'to') else v) for k, v in batch.items()}
                     if task == 'seq2seq':
-                        labels = batch.get('labels', None)
-                        if labels is None:
-                            labels = batch.get('label', None)
-                        if labels is None:
-                            labels = batch.get('target_ids', None)
-                        inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label', 'target_ids')}
-                        outputs = model(**inputs, labels=labels)
+                        labels = batch.get('labels') or batch.get('label') or batch.get('target_ids')
+                        inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label', 'target_ids') and k in forward_arg_names}
+                        with autocast(enabled=use_amp):
+                            outputs = model(**inputs, labels=labels)
                         # determine batch size
                         bs = None
                         for v in batch.values():
@@ -417,11 +516,10 @@ def train(config):
                         val_loss += outputs.loss.item() * bs
                         val_samples += bs
                     else:
-                        labels = batch.get('labels', None)
-                        if labels is None:
-                            labels = batch.get('label', None)
-                        inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label')}
-                        outputs = model(**inputs, labels=labels)
+                        labels = batch.get('labels') or batch.get('label')
+                        inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label') and k in forward_arg_names}
+                        with autocast(enabled=use_amp):
+                            outputs = model(**inputs, labels=labels)
                         # determine batch size
                         bs = None
                         for v in batch.values():
@@ -455,18 +553,43 @@ def train(config):
             val_loss = 0.0
             val_acc = 0.0
 
-        # Print and checkpoint on rank 0
+        # Print / log / checkpoint on rank 0
         if global_rank == 0:
             if val_loader is not None:
-                print(f"Epoch {epoch+1} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
+                msg = f"Epoch {epoch+1} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}"
             else:
-                print(f"Epoch {epoch+1} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Val: None")
+                msg = f"Epoch {epoch+1} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | Val: None"
+            print(msg)
+            if writer:
+                writer.add_scalar('loss/train', train_loss, epoch)
+                writer.add_scalar('accuracy/train', train_acc, epoch)
+                if val_loader is not None:
+                    writer.add_scalar('loss/val', val_loss, epoch)
+                    writer.add_scalar('accuracy/val', val_acc, epoch)
             save_checkpoint(model, optimizer, scheduler, epoch, checkpoint_path)
         dist.barrier()
     # After training is complete, delete the checkpoint file if it exists (only on rank 0)
-    if global_rank == 0 and os.path.exists(checkpoint_path):
-        os.remove(checkpoint_path)
-        print(f"[Rank {global_rank}] Deleted checkpoint file at {checkpoint_path} after successful training.")
+    if global_rank == 0:
+        # Final model export if requested
+        if config.get('save_final_model', True):
+            final_dir = config.get('final_model_dir', os.path.join('.', 'final_model'))
+            os.makedirs(final_dir, exist_ok=True)
+            target_model = model.module if hasattr(model, 'module') else model
+            try:
+                target_model.save_pretrained(final_dir)
+                tokenizer.save_pretrained(final_dir)
+                print(f"[Rank 0] Saved final model + tokenizer to {final_dir}")
+            except Exception as e:
+                print(f"[Rank 0] Warning: failed to save final model: {e}")
+        # Handle checkpoint retention policy
+        if os.path.exists(checkpoint_path):
+            if not config.get('keep_last_checkpoint', False):
+                os.remove(checkpoint_path)
+                print(f"[Rank 0] Deleted checkpoint file at {checkpoint_path} after successful training.")
+            else:
+                print(f"[Rank 0] Retained last checkpoint at {checkpoint_path}")
+        if writer:
+            writer.close()
     cleanup()
 
 # -----------------------------
@@ -493,9 +616,25 @@ if __name__ == "__main__":
         config['batch_size'] = int(config['batch_size'])
         config['learning_rate'] = float(config['learning_rate'])
         config['num_epochs'] = int(config['num_epochs'])
-           # optional fields with defaults
+        # optional fields with defaults
         config['num_warmup_steps'] = int(config.get('num_warmup_steps', 0))
         config['num_labels'] = int(config.get('num_labels', 2))
+        if 'grad_accum_steps' in config:
+            config['grad_accum_steps'] = max(1, int(config['grad_accum_steps']))
+        config['seed'] = int(config.get('seed', 42))
+        config['ddp_timeout_seconds'] = int(config.get('ddp_timeout_seconds', 1800))
+        if 'num_workers' in config:
+            config['num_workers'] = int(config['num_workers'])
+        if 'pin_memory' in config:
+            config['pin_memory'] = bool(config['pin_memory'])
+        if 'deterministic' in config:
+            config['deterministic'] = bool(config['deterministic'])
+        if 'use_amp' in config:
+            config['use_amp'] = bool(config['use_amp'])
+        if 'keep_last_checkpoint' in config:
+            config['keep_last_checkpoint'] = bool(config['keep_last_checkpoint'])
+        if 'save_final_model' in config:
+            config['save_final_model'] = bool(config['save_final_model'])
     except Exception as e:
         raise TypeError(f"Config type error: {e}")
 

@@ -5,3 +5,4 @@ pyyaml==6.0.2
 huggingface_hub>=0.21.4
 tqdm==4.67.1
 protobuf==6.32.0
+tensorboard>=2.17.0,<2.21.0
