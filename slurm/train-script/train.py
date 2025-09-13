@@ -20,9 +20,20 @@ import sys
 import atexit
 from inspect import signature
 from datetime import timedelta
-from torch.cuda.amp import GradScaler, autocast  # Using cuda.amp for broader version compatibility
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
+
+"""Training script with strict NCCL setup and AMP.
+Assumes model and dataset are already downloaded to shared folder.
+"""
+
+# AMP import strategy (new API first, fallback to legacy)
+try:  # New style (preferred): torch.amp
+    from torch import amp as torch_amp  # type: ignore
+    _AMP_USES_DEVICE_ARG = True
+except Exception:  # Fallback: legacy torch.cuda.amp
+    from torch.cuda import amp as torch_amp  # type: ignore
+    _AMP_USES_DEVICE_ARG = False
 
 # -----------------------------
 # Utility Functions
@@ -363,7 +374,10 @@ def train(config):
         num_training_steps=max(1, config['num_epochs'] * effective_steps_per_epoch)
     )
     use_amp = bool(config.get('use_amp', True)) and torch.cuda.is_available()
-    scaler = GradScaler(enabled=use_amp)
+    if _AMP_USES_DEVICE_ARG:
+        scaler = torch_amp.GradScaler('cuda', enabled=use_amp)
+    else:
+        scaler = torch_amp.GradScaler(enabled=use_amp)
 
     # -----------------------------
     # 5. Optionally resume from checkpoint
@@ -438,7 +452,11 @@ def train(config):
                         break
                 inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label') and k in forward_arg_names}
 
-            with autocast(enabled=use_amp):
+            if _AMP_USES_DEVICE_ARG:
+                ctx_mgr = torch_amp.autocast('cuda', enabled=use_amp)
+            else:
+                ctx_mgr = torch_amp.autocast(enabled=use_amp)
+            with ctx_mgr:
                 outputs = model(**inputs, labels=labels)
                 orig_loss = outputs.loss
             # retain original loss value for reporting
@@ -510,7 +528,11 @@ def train(config):
                                 labels = batch[key]
                                 break
                         inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label', 'target_ids') and k in forward_arg_names}
-                        with autocast(enabled=use_amp):
+                        if _AMP_USES_DEVICE_ARG:
+                            v_ctx = torch_amp.autocast('cuda', enabled=use_amp)
+                        else:
+                            v_ctx = torch_amp.autocast(enabled=use_amp)
+                        with v_ctx:
                             outputs = model(**inputs, labels=labels)
                         # determine batch size
                         bs = None
@@ -532,7 +554,11 @@ def train(config):
                                 labels = batch[key]
                                 break
                         inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label') and k in forward_arg_names}
-                        with autocast(enabled=use_amp):
+                        if _AMP_USES_DEVICE_ARG:
+                            v_ctx = torch_amp.autocast('cuda', enabled=use_amp)
+                        else:
+                            v_ctx = torch_amp.autocast(enabled=use_amp)
+                        with v_ctx:
                             outputs = model(**inputs, labels=labels)
                         # determine batch size
                         bs = None
