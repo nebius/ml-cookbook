@@ -15,12 +15,13 @@ source /shared/venvs/distbert-train/bin/activate
 
 # Set NCCL and OMP env vars for performance
 export OMP_NUM_THREADS=8      # Set number of OpenMP threads per process equal to cpus-per-task
-export NCCL_DEBUG=INFO        # Enable NCCL debug logging for troubleshooting
-export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # Enable async error handling (recommended). NCCL will attempt to handle the error in the background without immediately stopping all processes.
+export NCCL_DEBUG=WARN        # Enable NCCL debug logging for troubleshooting
+export NCCL_ASYNC_ERROR_HANDLING=1  # Enable async error handling (recommended). NCCL will attempt to handle the error in the background without immediately stopping all processes.
 export SLURM_CPU_BIND=cores      # Slurm will bind each task to a set of CPU cores rather than OS (improves performance)
-export MKL_NUM_THREADS=$OMP_NUM_THREADS
-export OPENBLAS_NUM_THREADS=$OMP_NUM_THREADS
-export PYTHONFAULTHANDLER=1
+export MKL_NUM_THREADS=$OMP_NUM_THREADS          # Align MKL thread pool with per-process OMP threads to prevent oversubscription
+export OPENBLAS_NUM_THREADS=$OMP_NUM_THREADS     # Keep OpenBLAS thread usage consistent (avoids CPU thrash / context switching)
+export PYTHONFAULTHANDLER=1                      # Emit Python traceback immediately on fatal signals/exceptions (faster debugging)
+export TOKENIZERS_PARALLELISM=false              # Disable HF tokenizers intra-process thread pool (avoids fork warning & CPU contention)
 
 # Optional network tuning (uncomment and set appropriately for your cluster)
 # export NCCL_SOCKET_IFNAME=ib0   # e.g. ib0 for InfiniBand, eth0 for Ethernet

@@ -20,37 +20,37 @@ import sys
 import atexit
 from inspect import signature
 from datetime import timedelta
-from torch.cuda.amp import GradScaler, autocast
+from torch.cuda.amp import GradScaler, autocast  # Using cuda.amp for broader version compatibility
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 
 # -----------------------------
 # Utility Functions
 # -----------------------------
-def setup(backend: str = "nccl", timeout_seconds: int = 1800):
-    """Initialize distributed process group with backend fallback and timeout.
+def setup(timeout_seconds: int = 1800):
+    """Initialize distributed process group with strict NCCL-only requirement.
 
-    If requested backend is NCCL but CUDA is unavailable, fall back to gloo.
+    Assumes NVIDIA GPUs + CUDA + NCCL are always available. Fails fast otherwise.
     """
     global_rank = int(os.environ.get("RANK", "0"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
 
-    # Decide backend
-    req_backend = backend.lower()
-    if req_backend == "nccl" and not torch.cuda.is_available():
-        req_backend = "gloo"
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA not available but NCCL required. Check drivers and environment.")
 
-    # Bind CUDA device early
-    if torch.cuda.is_available():
-        try:
-            torch.cuda.set_device(local_rank)
-        except Exception:
-            if world_size > 1:
-                raise RuntimeError(f"Failed to set CUDA device to local_rank={local_rank}")
+    visible_gpu_count = torch.cuda.device_count()
+    if local_rank >= visible_gpu_count:
+        raise RuntimeError(f"LOCAL_RANK {local_rank} >= visible CUDA devices {visible_gpu_count}")
+
+    torch.cuda.set_device(local_rank)
 
     if not dist.is_initialized() and world_size > 1:
-        dist.init_process_group(backend=req_backend, timeout=timedelta(seconds=timeout_seconds))
+        dist.init_process_group(
+            backend='nccl',
+            device_id=local_rank,
+            timeout=timedelta(seconds=timeout_seconds)
+        )
     return global_rank, local_rank, world_size
 
 def cleanup():
@@ -120,7 +120,6 @@ def train(config):
     # 1. Setup DDP
     # -----------------------------
     global_rank, local_rank, world_size = setup(
-        backend=config.get('backend', 'nccl'),
         timeout_seconds=int(config.get('ddp_timeout_seconds', 1800))
     )
     device = torch.device(f"cuda:{local_rank}")
@@ -424,12 +423,19 @@ def train(config):
 
         for step, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]", disable=global_rank!=0)):
             batch = {k: (v.to(device) if hasattr(v, 'to') else v) for k, v in batch.items()}
-
             if task == 'seq2seq':
-                labels = batch.get('labels') or batch.get('label') or batch.get('target_ids')
+                labels = None
+                for key in ('labels', 'label', 'target_ids'):
+                    if key in batch and batch[key] is not None:
+                        labels = batch[key]
+                        break
                 inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label', 'target_ids') and k in forward_arg_names}
             else:
-                labels = batch.get('labels') or batch.get('label')
+                labels = None
+                for key in ('labels', 'label'):
+                    if key in batch and batch[key] is not None:
+                        labels = batch[key]
+                        break
                 inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label') and k in forward_arg_names}
 
             with autocast(enabled=use_amp):
@@ -498,7 +504,11 @@ def train(config):
                 for batch in tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]", disable=global_rank!=0):
                     batch = {k: (v.to(device) if hasattr(v, 'to') else v) for k, v in batch.items()}
                     if task == 'seq2seq':
-                        labels = batch.get('labels') or batch.get('label') or batch.get('target_ids')
+                        labels = None
+                        for key in ('labels', 'label', 'target_ids'):
+                            if key in batch and batch[key] is not None:
+                                labels = batch[key]
+                                break
                         inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label', 'target_ids') and k in forward_arg_names}
                         with autocast(enabled=use_amp):
                             outputs = model(**inputs, labels=labels)
@@ -516,7 +526,11 @@ def train(config):
                         val_loss += outputs.loss.item() * bs
                         val_samples += bs
                     else:
-                        labels = batch.get('labels') or batch.get('label')
+                        labels = None
+                        for key in ('labels', 'label'):
+                            if key in batch and batch[key] is not None:
+                                labels = batch[key]
+                                break
                         inputs = {k: v for k, v in batch.items() if k not in ('labels', 'label') and k in forward_arg_names}
                         with autocast(enabled=use_amp):
                             outputs = model(**inputs, labels=labels)

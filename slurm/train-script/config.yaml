@@ -30,8 +30,9 @@ deterministic: false
 num_workers: 2
 pin_memory: true # Pin host memory to speed up host->GPU transfer (only beneficial with CUDA)
 
-# Distributed backend
-backend: nccl # nccl (GPU, fastest), gloo (CPU / fallback)
+# NCCL timeout (for process group init and collective ops)
+# Increase if you see frequent "NCCL operation timed out" errors, especially during init
+# on large clusters or with slow interconnects
 ddp_timeout_seconds: 1800 # Timeout for process group init (seconds)
 
 # Validation behavior
