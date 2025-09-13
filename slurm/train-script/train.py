@@ -135,6 +135,20 @@ def train(config):
     )
     device = torch.device(f"cuda:{local_rank}")
 
+    # Optional suppression of duplicate HF warnings on non-zero ranks
+    suppress_hf = bool(config.get('suppress_hf_warnings', True))
+    if suppress_hf:
+        try:
+            from transformers.utils import logging as hf_logging  # type: ignore
+            if global_rank == 0:
+                # Keep default (WARNING). Users can still raise via env if desired.
+                hf_logging.set_verbosity_warning()
+            else:
+                # Silence to ERROR so only real problems surface.
+                hf_logging.set_verbosity_error()
+        except Exception:
+            pass
+
     # Set seeds (rank-aware) after we know ranks
     base_seed = int(config.get('seed', 42))
     deterministic = bool(config.get('deterministic', False))
@@ -675,6 +689,8 @@ if __name__ == "__main__":
             config['keep_last_checkpoint'] = bool(config['keep_last_checkpoint'])
         if 'save_final_model' in config:
             config['save_final_model'] = bool(config['save_final_model'])
+        if 'suppress_hf_warnings' in config:
+            config['suppress_hf_warnings'] = bool(config['suppress_hf_warnings'])
     except Exception as e:
         raise TypeError(f"Config type error: {e}")
 

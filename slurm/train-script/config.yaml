@@ -51,3 +51,9 @@ keep_last_checkpoint: false # delete rolling checkpoint after successful trainin
 # run_name: distilbert-test-run
 # tensorboard --logdir /shared/experiments
 tensorboard_logging: true
+
+# Logging / verbosity
+# suppress_hf_warnings: When true (default) only rank 0 shows Hugging Face model initialization
+# warnings (e.g., newly initialized classification head). Other ranks silence them to reduce log noise.
+# Set to false if you want every rank's warnings for debugging initialization anomalies.
+suppress_hf_warnings: true
