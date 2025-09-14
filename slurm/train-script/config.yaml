@@ -28,6 +28,7 @@ deterministic: false
 # Increase if input pipeline is the bottleneck (low GPU utilization due to waiting on data).
 # Decrease if seeing CPU contention, excessive RAM usage, or I/O saturation.
 num_workers: 2
+
 pin_memory: true # Pin host memory to speed up host->GPU transfer (only beneficial with CUDA)
 
 # NCCL timeout (for process group init and collective ops)
@@ -47,8 +48,10 @@ use_amp: true
 # Output / persistence behavior
 save_final_model: true # save final fine-tuned HF model + tokenizer
 keep_last_checkpoint: false # delete rolling checkpoint after successful training
+
 # Optional explicit run name (otherwise auto: <model-basename>-<timestamp>)
 # run_name: distilbert-test-run
+
 # tensorboard --logdir /shared/experiments
 tensorboard_logging: true
 
