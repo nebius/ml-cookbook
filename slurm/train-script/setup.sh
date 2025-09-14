@@ -7,10 +7,19 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 echo "if the HF repo is private, make sure you have set up a token with access and"
+
 echo "run: export HF_TOKEN=your_token"
 
 SHARED_DIR="/shared"
-VENV_DIR="$SHARED_DIR/venvs/distbert-train"
+# Set project name for flexible directory management
+PROJECT_NAME="distilbert-train"
+
+# All key directories use PROJECT_NAME for easy switching
+VENV_DIR="$SHARED_DIR/venvs/$PROJECT_NAME"
+MODEL_DIR="$SHARED_DIR/model/$PROJECT_NAME"
+DATA_DIR="$SHARED_DIR/data/$PROJECT_NAME"
+SLURM_LOGS_DIR="$SHARED_DIR/slurm_logs/$PROJECT_NAME"
+EXPERIMENTS_ROOT="$SHARED_DIR/experiments"
 
 # Check for Python 3.11, install if not present
 
@@ -40,13 +49,8 @@ pip install --upgrade pip
 pip install -r requirements.txt
 
 
-# Create model, data, log, and experiments root directories (global checkpoint dir no longer needed).
-# Per-run checkpoints now live under: $EXPERIMENTS_ROOT/<run_name>/checkpoint.pt
-# Since the HF downloader creates a nested folder for the model, we create only the parent folder here.
-MODEL_DIR="/shared/model/distilbert-base-uncased"
-DATA_DIR="/shared/data/sst2"
-EXPERIMENTS_ROOT="/shared/experiments"
-SLURM_LOGS_DIR="/shared/slurm_logs/distilbert-base-uncased"
+# Create model, data, log, and experiments root directories
+# Per-run checkpoint lives under: $EXPERIMENTS_ROOT/<run_name>/checkpoint.pt
 mkdir -p "$MODEL_DIR" "$DATA_DIR" "$SLURM_LOGS_DIR" "$EXPERIMENTS_ROOT"
 
 # Basic permission checks
@@ -57,6 +61,7 @@ for d in "$MODEL_DIR" "$DATA_DIR" "$SLURM_LOGS_DIR" "$EXPERIMENTS_ROOT"; do
 done
 
 # Download model and dataset into these subfolders
+
 python download_data_model.py \
 	--model distilbert/distilbert-base-uncased \
 	--dataset stanfordnlp/sst2 \

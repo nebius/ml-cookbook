@@ -1,62 +1,68 @@
-# Training configuration file for DDP
-# Core paths (update these to your environment)
-model_dir: /shared/model/distilbert-base-uncased
-data_dir: /shared/data/sst2
-experiments_root: /shared/experiments # parent directory for per-run outputs (final model, tb, checkpoint)
+############################################
+# Distributed Training Configuration (DDP)
+############################################
 
-# Per model and experiment/cluster parameters
+# Path to the pretrained model
+model_dir: /shared/model/distilbert-base-uncased
+
+# Dataset root directory containing splits (train/validation/test)
+data_dir: /shared/data/sst2
+
+# Parent directory for per-run artifacts (run subfolder will be created automatically during training time)
+experiments_root: /shared/experiments
+
+# Per-device batch size
 batch_size: 16
+
+# Initial learning rate (AdamW)
 learning_rate: 2e-5
+
+# Total training epochs
 num_epochs: 3
+
+# Number of warmup steps for scheduler (linear warmup then decay)
 num_warmup_steps: 0
+
+# Number of target labels (e.g., classification head output size)
 num_labels: 2
 
-# Optimization / scheduling
-grad_accum_steps: 1 # Gradient accumulation steps (effective batch = batch_size * grad_accum_steps * world_size)
+# Gradient accumulation steps (effective batch = batch_size * grad_accum_steps * world_size)
+grad_accum_steps: 1
 
-# Reproducibility
-# seed: Base seed; each rank actually uses (seed + global_rank) to diversify RNG streams while
-# keeping run-level determinism. Affects: python, numpy, torch CPU/CUDA, DataLoader generator.
-# deterministic: true forces cudnn deterministic kernels (lower throughput, but stabler repeatability)
-# For strict reproducibility across runs also set: use_amp: false, num_workers: 0.
-seed: 42
-deterministic: false
-
-# Data loading performance
-# num_workers controls how many subprocesses each training process (rank) uses to load batches.
-# Total loader worker processes = world_size * num_workers (e.g., 8 GPUs * 4 = 32 workers).
-# Increase if input pipeline is the bottleneck (low GPU utilization due to waiting on data).
-# Decrease if seeing CPU contention, excessive RAM usage, or I/O saturation.
-num_workers: 2
-
-pin_memory: true # Pin host memory to speed up host->GPU transfer (only beneficial with CUDA)
-
-# NCCL timeout (for process group init and collective ops)
-# Increase if you see frequent "NCCL operation timed out" errors, especially during init
-# on large clusters or with slow interconnects
-ddp_timeout_seconds: 1800 # Timeout for process group init (seconds)
-
-# Validation behavior
-# validation_split: validation # (Uncomment to override auto-detect)
-allow_no_validation: false # Set true to skip validation if no split found
-
-# Mixed precision training (Automatic Mixed Precision / AMP)
-# use_amp: true  -> Default: keep it on for modern NVIDIA GPUs (Volta and later), large models, or throughput-sensitive training
-# use_amp: false -> Disable if debugging numerical issues or on unsupported hardware
+# Enable Automatic Mixed Precision (set false to debug numeric issues)
 use_amp: true
 
-# Output / persistence behavior
-save_final_model: true # save final fine-tuned HF model + tokenizer
-keep_last_checkpoint: false # delete rolling checkpoint after successful training
+# Allow training to proceed with no validation split detected
+allow_no_validation: false
 
-# Optional explicit run name (otherwise auto: <model-basename>-<timestamp>)
-# run_name: distilbert-test-run
+# Number of DataLoader worker processes per rank
+num_workers: 2
 
-# tensorboard --logdir /shared/experiments
+# Pin host memory to speed up host->GPU transfer (CUDA only benefit)
+pin_memory: true
+
+# Timeout (seconds) for DDP process group init / collectives
+ddp_timeout_seconds: 600
+
+# Save final fine-tuned model & tokenizer at end of training
+save_final_model: true
+
+# Keep last intermediate checkpoint (false deletes it after success)
+keep_last_checkpoint: false
+
+# Enable TensorBoard logging (events in run directory)
 tensorboard_logging: true
 
-# Logging / verbosity
-# suppress_hf_warnings: When true (default) only rank 0 shows Hugging Face model initialization
-# warnings (e.g., newly initialized classification head). Other ranks silence them to reduce log noise.
-# Set to false if you want every rank's warnings for debugging initialization anomalies.
+# Only rank 0 emits Hugging Face warnings (head init etc.) when true
 suppress_hf_warnings: true
+
+# Base seed (each rank uses seed + global_rank)
+seed: 42
+
+# Force deterministic cudnn kernels (slower; reproducibility focus)
+deterministic: false
+
+# Optional explicit run name (otherwise auto-generated)
+# run_name: distilbert-test-run
+# Optional Explicit validation split name override
+# validation_split: validation
