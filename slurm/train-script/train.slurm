@@ -5,7 +5,7 @@
 #SBATCH --gpus-per-node=8                 # Number of GPUs per node
 #SBATCH --ntasks-per-node=1               # Number of tasks per node, meaning one srun command per node
 #SBATCH --cpus-per-task=64                # CPU cores per task, per each srun command
-##SBATCH --mem=400G                        # Memory per node
+#SBATCH --mem=400G                        # Memory per node
 #SBATCH --time=02:00:00                   # (2 hours) Wall time limit, days-hours:minutes:seconds
 #SBATCH --output=/shared/slurm_logs/distilbert-base-uncased/%x-%j.out # Standard output log
 #SBATCH --error=/shared/slurm_logs/distilbert-base-uncased/%x-%j.err  # Standard error log
