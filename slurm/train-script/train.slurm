@@ -52,7 +52,7 @@ python -V || true
 command -v torchrun >/dev/null 2>&1 || { echo "[ERROR] torchrun not found in PATH after venv activation" >&2; exit 14; }
 
 # Set NCCL and OMP env vars for performance
-export OMP_NUM_THREADS=8      # (CPUs per task 64 ÷ 8 GPU processes) adjust if cpus-per-task changes
+export OMP_NUM_THREADS=64      # (CPUs per task 64 ÷ 8 GPU processes) adjust if cpus-per-task changes
 export NCCL_DEBUG=WARN        # Enable NCCL debug logging for troubleshooting
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # PyTorch expects this (replaces deprecated NCCL_ASYNC_ERROR_HANDLING warning)
 export SLURM_CPU_BIND=cores      # Slurm will bind each task to a set of CPU cores rather than OS (improves performance)
