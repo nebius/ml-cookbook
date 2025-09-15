@@ -10,18 +10,29 @@ echo "if the HF repo is private, make sure you have set up a token with access a
 
 echo "run: export HF_TOKEN=your_token"
 
-SHARED_DIR="/shared"
 # Set project name for flexible directory management
 PROJECT_NAME="distilbert-train"
 
 # All key directories use PROJECT_NAME for easy switching
+SHARED_DIR="/shared"
 VENV_DIR="$SHARED_DIR/venvs/$PROJECT_NAME"
 MODEL_DIR="$SHARED_DIR/model/$PROJECT_NAME"
 DATA_DIR="$SHARED_DIR/data/$PROJECT_NAME"
 SLURM_LOGS_DIR="$SHARED_DIR/slurm_logs/$PROJECT_NAME"
 EXPERIMENTS_ROOT="$SHARED_DIR/experiments"
 
-# Check for Python 3.11, install if not present
+# Write all key environment variables to a project.env file for use in Slurm and config.yaml
+cat > "$VENV_DIR/project.env" <<EOF
+export PROJECT_NAME="$PROJECT_NAME"
+export SHARED_DIR="$SHARED_DIR"
+export VENV_DIR="$VENV_DIR"
+export MODEL_DIR="$MODEL_DIR"
+export DATA_DIR="$DATA_DIR"
+export SLURM_LOGS_DIR="$SLURM_LOGS_DIR"
+export EXPERIMENTS_ROOT="$EXPERIMENTS_ROOT"
+EOF
+
+source "$VENV_DIR/project.env"
 
 if command -v python3.11 &> /dev/null; then
 	PYTHON_BIN=$(command -v python3.11)

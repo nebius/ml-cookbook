@@ -1,4 +1,13 @@
 #!/bin/bash
+# -----------------------------------------------------------------------------
+# Usage Examples:
+#   export VENV_DIR=/shared/venvs/distilbert-train
+#   export SLURM_LOGS_DIR=/shared/slurm_logs/distilbert-base-uncased
+#   sbatch train.slurm
+# Or
+# (with wrapper script)
+#   ./submit.sh
+# -----------------------------------------------------------------------------
 #SBATCH --job-name=pt-ddp-train           # Set the job name
 ##SBATCH --account=research               # Specify the account to charge
 #SBATCH --nodes=1                         # Number of nodes to use
@@ -7,14 +16,18 @@
 #SBATCH --cpus-per-task=64                # CPU cores per task, per each srun command
 #SBATCH --mem=400G                        # Memory per node
 #SBATCH --time=02:00:00                   # (2 hours) Wall time limit, days-hours:minutes:seconds
-#SBATCH --output=/shared/slurm_logs/distilbert-base-uncased/%x-%j.out # Standard output log
-#SBATCH --error=/shared/slurm_logs/distilbert-base-uncased/%x-%j.err  # Standard error log
+#SBATCH --output=${SLURM_LOGS_DIR}/%x-%j.out # Standard output log
+#SBATCH --error=${SLURM_LOGS_DIR}/%x-%j.err  # Standard error log
 
-# activate environment
-source /shared/venvs/distbert-train/bin/activate
+
+# Expect VENV_DIR to be exported before submission (see usage header).
+
+
+# Activate Python virtual environment
+source "$VENV_DIR/bin/activate"
 
 # Set NCCL and OMP env vars for performance
-export OMP_NUM_THREADS=8      # Set number of OpenMP threads per process equal to cpus-per-task
+export OMP_NUM_THREADS=8      # Set number of OpenMP threads per process (set to cpus-per-task divided by number of GPUs per node)
 export NCCL_DEBUG=WARN        # Enable NCCL debug logging for troubleshooting
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # PyTorch expects this (replaces deprecated NCCL_ASYNC_ERROR_HANDLING warning)
 export SLURM_CPU_BIND=cores      # Slurm will bind each task to a set of CPU cores rather than OS (improves performance)
@@ -22,10 +35,6 @@ export MKL_NUM_THREADS=$OMP_NUM_THREADS          # Align MKL thread pool with pe
 export OPENBLAS_NUM_THREADS=$OMP_NUM_THREADS     # Keep OpenBLAS thread usage consistent (avoids CPU thrash / context switching)
 export PYTHONFAULTHANDLER=1                      # Emit Python traceback immediately on fatal signals/exceptions (faster debugging)
 export TOKENIZERS_PARALLELISM=false              # Disable HF tokenizers intra-process thread pool (avoids fork warning & CPU contention)
-
-# Optional network tuning (uncomment and set appropriately for your cluster)
-# export NCCL_SOCKET_IFNAME=ib0   # e.g. ib0 for InfiniBand, eth0 for Ethernet
-# export NCCL_IB_DISABLE=0       # set to 1 to disable InfiniBand if unsupported
 
 # Run distributed training using torchrun
 # --nnodes: Total number of nodes to use (from Slurm allocation by srun)
