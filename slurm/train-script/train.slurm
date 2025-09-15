@@ -1,9 +1,11 @@
 #!/bin/bash
+set -x
+source "$VENV_DIR/project.env"
 # -----------------------------------------------------------------------------
 # Usage Examples:
 #   export VENV_DIR=/shared/venvs/distilbert-train
-#   export SLURM_LOGS_DIR=/shared/slurm_logs/distilbert-base-uncased
-#   sbatch train.slurm
+#   export SLURM_LOGS_DIR=/shared/slurm_logs/distilbert-train/
+#   sbatch --export=ALL train.slurm
 # Or
 # (with wrapper script)
 #   ./submit.sh
@@ -46,6 +48,8 @@ export TOKENIZERS_PARALLELISM=false              # Disable HF tokenizers intra-p
 # Get the first node's hostname for rendezvous
 RDZV_HOST=$(scontrol show hostnames "$SLURM_NODELIST" | head -n 1)
 
+echo "Running srun torchrun on $SLURM_JOB_NUM_NODES nodes with $SLURM_GRES gpus total"
+echo "Rendezvous endpoint: $RDZV_HOST:29500"
 srun torchrun \
     --nnodes=$SLURM_JOB_NUM_NODES \
     --nproc_per_node=8 \

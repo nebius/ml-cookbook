@@ -33,4 +33,4 @@ if [ ! -f "$VENV_DIR/project.env" ]; then
 fi
 
 source "$VENV_DIR/project.env"
-sbatch train.slurm
+sbatch --export=ALL train.slurm
