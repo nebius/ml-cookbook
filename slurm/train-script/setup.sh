@@ -21,19 +21,6 @@ DATA_DIR="$SHARED_DIR/data/$PROJECT_NAME"
 SLURM_LOGS_DIR="$SHARED_DIR/slurm_logs/$PROJECT_NAME"
 EXPERIMENTS_ROOT="$SHARED_DIR/experiments"
 
-# Write all key environment variables to a project.env file for use in Slurm and config.yaml
-cat > "$VENV_DIR/project.env" <<EOF
-export PROJECT_NAME="$PROJECT_NAME"
-export SHARED_DIR="$SHARED_DIR"
-export VENV_DIR="$VENV_DIR"
-export MODEL_DIR="$MODEL_DIR"
-export DATA_DIR="$DATA_DIR"
-export SLURM_LOGS_DIR="$SLURM_LOGS_DIR"
-export EXPERIMENTS_ROOT="$EXPERIMENTS_ROOT"
-EOF
-
-source "$VENV_DIR/project.env"
-
 if command -v python3.11 &> /dev/null; then
 	PYTHON_BIN=$(command -v python3.11)
 	echo -e "${GREEN}Found Python 3.11 at $PYTHON_BIN${NC}"
@@ -53,6 +40,19 @@ if [ ! -d "$VENV_DIR" ]; then
 	echo -e "${GREEN}Creating virtual environment at $VENV_DIR${NC}"
 	$PYTHON_BIN -m venv "$VENV_DIR"
 fi
+
+# Write all key environment variables to a project.env file for use in Slurm and config.yaml
+cat > "$VENV_DIR/project.env" <<EOF
+export PROJECT_NAME="$PROJECT_NAME"
+export SHARED_DIR="$SHARED_DIR"
+export VENV_DIR="$VENV_DIR"
+export MODEL_DIR="$MODEL_DIR"
+export DATA_DIR="$DATA_DIR"
+export SLURM_LOGS_DIR="$SLURM_LOGS_DIR"
+export EXPERIMENTS_ROOT="$EXPERIMENTS_ROOT"
+EOF
+
+source "$VENV_DIR/project.env"
 source "$VENV_DIR/bin/activate"
 
 # Upgrade pip and install requirements
