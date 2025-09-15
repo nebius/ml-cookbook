@@ -1,10 +1,22 @@
 #!/bin/bash
+set -euo pipefail
 set -x
-source "$VENV_DIR/project.env"
+
+# Early validation: ensure required env vars are present for SBATCH header expansion.
+: "${VENV_DIR:?VENV_DIR not set at submission time}" || exit 10
+: "${SLURM_LOGS_DIR:?SLURM_LOGS_DIR not set at submission time}" || exit 11
+
+# Source project environment if present (allows variable expansion inside script portion)
+if [ -f "$VENV_DIR/project.env" ]; then
+    # shellcheck disable=SC1090
+    source "$VENV_DIR/project.env"
+else
+    echo "[WARN] project.env not found at $VENV_DIR/project.env (continuing)" >&2
+fi
 # -----------------------------------------------------------------------------
 # Usage Examples:
 #   export VENV_DIR=/shared/venvs/distilbert-train
-#   export SLURM_LOGS_DIR=/shared/slurm_logs/distilbert-train/
+#   export SLURM_LOGS_DIR=/shared/slurm_logs/distilbert-train
 #   sbatch --export=ALL train.slurm
 # Or
 # (with wrapper script)
@@ -23,13 +35,24 @@ source "$VENV_DIR/project.env"
 
 
 # Expect VENV_DIR to be exported before submission (see usage header).
+echo "[DEBUG] Host=$(hostname) JobID=${SLURM_JOB_ID:-N/A} GPUsPerNode=${SLURM_GPUS_PER_NODE:-N/A} TotalNodes=${SLURM_JOB_NUM_NODES:-1}" >&2
+echo "[DEBUG] SLURM_CPUS_ON_NODE=${SLURM_CPUS_ON_NODE:-unknown} SLURM_CPUS_PER_TASK=${SLURM_CPUS_PER_TASK:-unknown}" >&2
+echo "[DEBUG] VENV_DIR=$VENV_DIR SLURM_LOGS_DIR=$SLURM_LOGS_DIR" >&2
 
+
+if [ ! -d "$VENV_DIR" ]; then
+    echo "[ERROR] VENV_DIR does not exist: $VENV_DIR" >&2; exit 12; fi
+if [ ! -f "$VENV_DIR/bin/activate" ]; then
+    echo "[ERROR] Missing activate script in venv: $VENV_DIR/bin/activate" >&2; exit 13; fi
 
 # Activate Python virtual environment
 source "$VENV_DIR/bin/activate"
+echo "[DEBUG] Python after activate: $(command -v python)" >&2
+python -V || true
+command -v torchrun >/dev/null 2>&1 || { echo "[ERROR] torchrun not found in PATH after venv activation" >&2; exit 14; }
 
 # Set NCCL and OMP env vars for performance
-export OMP_NUM_THREADS=8      # Set number of OpenMP threads per process (set to cpus-per-task divided by number of GPUs per node)
+export OMP_NUM_THREADS=8      # (CPUs per task 64 ÷ 8 GPU processes) adjust if cpus-per-task changes
 export NCCL_DEBUG=WARN        # Enable NCCL debug logging for troubleshooting
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # PyTorch expects this (replaces deprecated NCCL_ASYNC_ERROR_HANDLING warning)
 export SLURM_CPU_BIND=cores      # Slurm will bind each task to a set of CPU cores rather than OS (improves performance)
