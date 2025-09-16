@@ -1,6 +1,6 @@
 #!/bin/bash
-# Minimal submit helper: prompts for VENV_DIR, sources project.env, then submits job.
 # Usage:
+# Set the project venv path in VENV_DIR variable below, then run:
 #   ./submit.sh
 
 set -euo pipefail
@@ -16,7 +16,6 @@ case $yn in
 		exit 0
 		;;
 esac
-
 
 export VENV_DIR
 

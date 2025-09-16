@@ -1,17 +1,6 @@
 ############################################
-# Distributed Training Configuration (DDP)
+# Distributed Training Configuration (Pytorch DDP based)
 ############################################
-
-############################################
-# Path Handling
-# train.py now reads MODEL_DIR, DATA_DIR, EXPERIMENTS_ROOT directly from the
-# environment (project.env). The values below are informational only and are
-# ignored for path resolution to avoid drift / duplication. You may leave them
-# synchronized manually or delete them entirely.
-############################################
-
-# Parent directory for per-run artifacts (run subfolder will be created automatically during training time)
-# Base directory for run artifacts (literal or ${EXPERIMENTS_ROOT})
 
 # Per-device batch size
 batch_size: 16
@@ -64,7 +53,7 @@ seed: 42
 # Force deterministic cudnn kernels (slower; reproducibility focus)
 deterministic: false
 
-# Optional explicit run name (otherwise auto-generated)
+# Optional explicit run name (otherwise auto-generated at the run time)
 # run_name: distilbert-test-run
 # Optional Explicit validation split name override
 # validation_split: validation

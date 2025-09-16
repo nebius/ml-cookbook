@@ -7,7 +7,6 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 echo "if the HF repo is private, make sure you have set up a token with access and"
-
 echo "run: export HF_TOKEN=your_token"
 
 # Set project name for flexible directory management

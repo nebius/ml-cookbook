@@ -8,7 +8,7 @@
 #     --output="${SLURM_LOGS_DIR}/%x-%j.out" \
 #     --error="${SLURM_LOGS_DIR}/%x-%j.err" \
 #     train.slurm
-# Or simpler way with wrapper script
+# Or easier way with wrapper script
 #   ./submit.sh
 # -----------------------------------------------------------------------------
 #SBATCH --job-name=pt-ddp-train           # Set the job name
@@ -19,21 +19,17 @@
 #SBATCH --cpus-per-task=64                # CPU cores per task, per each srun command
 #SBATCH --mem=400G                        # Memory per node
 #SBATCH --time=02:00:00                   # (2 hours) Wall time limit, days-hours:minutes:seconds
-# NOTE: We intentionally do NOT set --output/--error here because we want to use
-# an environment variable (SLURM_LOGS_DIR) that may not expand within the
-# scheduler's parsing of #SBATCH directives depending on cluster configuration.
-# These are instead supplied dynamically from submit.sh via command-line:
+# -----------------------------------------------------------------------------
+# NOTE: The --output/--error are set dynamically from submit.sh via command-line:
 #   sbatch --export=ALL \
 #     --output="${SLURM_LOGS_DIR}/%x-%j.out" \
 #     --error="${SLURM_LOGS_DIR}/%x-%j.err" \
 #     train.slurm
 
-
 ###########################################################################
 # Runtime bootstrap (after directives)                                    #
 ###########################################################################
 set -euo pipefail
-set -x
 
 # Validate required env (must be present at submission for SBATCH expansion)
 : "${VENV_DIR:?VENV_DIR not set (export before sbatch)}"
@@ -44,20 +40,12 @@ if [ -f "$VENV_DIR/project.env" ]; then
     source "$VENV_DIR/project.env"
 fi
 
-echo "[DEBUG] Host=$(hostname) JobID=${SLURM_JOB_ID:-N/A} Nodes=${SLURM_JOB_NUM_NODES:-1}" >&2
-echo "[DEBUG] SLURM_CPUS_ON_NODE=${SLURM_CPUS_ON_NODE:-unknown} SLURM_CPUS_PER_TASK=${SLURM_CPUS_PER_TASK:-unknown}" >&2
-echo "[DEBUG] VENV_DIR=$VENV_DIR SLURM_LOGS_DIR=$SLURM_LOGS_DIR" >&2
-
 if [ ! -d "$VENV_DIR" ]; then
     echo "[ERROR] VENV_DIR missing: $VENV_DIR" >&2; exit 12; fi
 if [ ! -f "$VENV_DIR/bin/activate" ]; then
     echo "[ERROR] venv activate script missing: $VENV_DIR/bin/activate" >&2; exit 13; fi
 
 source "$VENV_DIR/bin/activate"
-echo "[DEBUG] Python=$(command -v python)" >&2
-python -V || true
-if ! command -v torchrun >/dev/null 2>&1; then
-    echo "[ERROR] torchrun not found in environment" >&2; exit 14; fi
 
 
 export OMP_NUM_THREADS=8      # Set  cpus-per-task / gpus-per-node (adjust as needed)

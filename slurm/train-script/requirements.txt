@@ -1,7 +1,6 @@
 ############################################################
 # Locked dependency versions for deterministic builds.
-# These are the newest mutually compatible versions
-# and avoid speculative future tags that were previously listed (e.g. torch 2.8.0, protobuf 6.x).
+# These are the newest mutually compatible versions.
 # The extra index below points to official PyTorch wheels including CUDA 12.8 builds.
 ############################################################
 
@@ -17,7 +16,6 @@ transformers==4.42.3    # Pairs well with torch 2.4.x and datasets 2.20.x
 datasets==2.20.0        # Stable; later minors add features you can evaluate separately
 huggingface_hub==0.24.6  # Compatible upper range for transformers 4.42.x
 safetensors==0.4.3       # Explicit pin for model weight loading speed
-
 
 # Utilities
 pyyaml==6.0.2
