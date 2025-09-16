@@ -57,11 +57,13 @@ def setup(timeout_seconds: int = 1800):
     torch.cuda.set_device(local_rank)
 
     if not dist.is_initialized() and world_size > 1:
+        # torch.cuda.set_device(local_rank) above already sets the correct current device
         dist.init_process_group(
             backend='nccl',
-            device_id=local_rank,
             timeout=timedelta(seconds=timeout_seconds)
         )
+        if int(os.environ.get("RANK", "0")) == 0:
+            print(f"[INIT] Initialized process group backend=nccl world_size={world_size}")
     return global_rank, local_rank, world_size
 
 def cleanup():
