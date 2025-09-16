@@ -17,8 +17,14 @@
 #SBATCH --cpus-per-task=64                # CPU cores per task, per each srun command
 #SBATCH --mem=400G                        # Memory per node
 #SBATCH --time=02:00:00                   # (2 hours) Wall time limit, days-hours:minutes:seconds
-#SBATCH --output=${SLURM_LOGS_DIR}/%x-%j.out # Standard output log
-#SBATCH --error=${SLURM_LOGS_DIR}/%x-%j.err  # Standard error log
+# NOTE: We intentionally do NOT set --output/--error here because we want to use
+# an environment variable (SLURM_LOGS_DIR) that may not expand within the
+# scheduler's parsing of #SBATCH directives depending on cluster configuration.
+# These are instead supplied dynamically from submit.sh via command-line:
+#   sbatch --export=ALL \
+#     --output="${SLURM_LOGS_DIR}/%x-%j.out" \
+#     --error="${SLURM_LOGS_DIR}/%x-%j.err" \
+#     train.slurm
 
 
 ###########################################################################

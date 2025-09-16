@@ -33,4 +33,16 @@ if [ ! -f "$VENV_DIR/project.env" ]; then
 fi
 
 source "$VENV_DIR/project.env"
-sbatch --export=ALL train.slurm
+
+# Ensure log directory exists (create if missing)
+if [ -z "${SLURM_LOGS_DIR:-}" ]; then
+		echo "[ERROR] SLURM_LOGS_DIR not set after sourcing project.env" >&2
+		exit 2
+fi
+mkdir -p "$SLURM_LOGS_DIR"
+
+echo "Submitting job with logs in: $SLURM_LOGS_DIR"
+sbatch --export=ALL \
+	--output="${SLURM_LOGS_DIR}/%x-%j.out" \
+	--error="${SLURM_LOGS_DIR}/%x-%j.err" \
+	train.slurm
