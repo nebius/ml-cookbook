@@ -1,18 +1,5 @@
 #!/bin/bash
-set -euo pipefail
-set -x
-
-# Early validation: ensure required env vars are present for SBATCH header expansion.
-: "${VENV_DIR:?VENV_DIR not set at submission time}" || exit 10
-: "${SLURM_LOGS_DIR:?SLURM_LOGS_DIR not set at submission time}" || exit 11
-
-# Source project environment if present (allows variable expansion inside script portion)
-if [ -f "$VENV_DIR/project.env" ]; then
-    # shellcheck disable=SC1090
-    source "$VENV_DIR/project.env"
-else
-    echo "[WARN] project.env not found at $VENV_DIR/project.env (continuing)" >&2
-fi
+# NOTE: All #SBATCH directives must appear before any non-comment commands.
 # -----------------------------------------------------------------------------
 # Usage Examples:
 #   export VENV_DIR=/shared/venvs/distilbert-train
@@ -34,25 +21,53 @@ fi
 #SBATCH --error=${SLURM_LOGS_DIR}/%x-%j.err  # Standard error log
 
 
-# Expect VENV_DIR to be exported before submission (see usage header).
-echo "[DEBUG] Host=$(hostname) JobID=${SLURM_JOB_ID:-N/A} GPUsPerNode=${SLURM_GPUS_PER_NODE:-N/A} TotalNodes=${SLURM_JOB_NUM_NODES:-1}" >&2
+###########################################################################
+# Runtime bootstrap (after directives)                                    #
+###########################################################################
+set -euo pipefail
+set -x
+
+# Validate required env (must be present at submission for SBATCH expansion)
+: "${VENV_DIR:?VENV_DIR not set (export before sbatch)}"
+: "${SLURM_LOGS_DIR:?SLURM_LOGS_DIR not set (export before sbatch)}"
+
+# Source project environment if available
+if [ -f "$VENV_DIR/project.env" ]; then
+    # shellcheck disable=SC1090
+    source "$VENV_DIR/project.env"
+fi
+
+echo "[DEBUG] Host=$(hostname) JobID=${SLURM_JOB_ID:-N/A} Nodes=${SLURM_JOB_NUM_NODES:-1}" >&2
 echo "[DEBUG] SLURM_CPUS_ON_NODE=${SLURM_CPUS_ON_NODE:-unknown} SLURM_CPUS_PER_TASK=${SLURM_CPUS_PER_TASK:-unknown}" >&2
 echo "[DEBUG] VENV_DIR=$VENV_DIR SLURM_LOGS_DIR=$SLURM_LOGS_DIR" >&2
 
-
 if [ ! -d "$VENV_DIR" ]; then
-    echo "[ERROR] VENV_DIR does not exist: $VENV_DIR" >&2; exit 12; fi
+    echo "[ERROR] VENV_DIR missing: $VENV_DIR" >&2; exit 12; fi
 if [ ! -f "$VENV_DIR/bin/activate" ]; then
-    echo "[ERROR] Missing activate script in venv: $VENV_DIR/bin/activate" >&2; exit 13; fi
+    echo "[ERROR] venv activate script missing: $VENV_DIR/bin/activate" >&2; exit 13; fi
 
-# Activate Python virtual environment
 source "$VENV_DIR/bin/activate"
-echo "[DEBUG] Python after activate: $(command -v python)" >&2
+echo "[DEBUG] Python=$(command -v python)" >&2
 python -V || true
-command -v torchrun >/dev/null 2>&1 || { echo "[ERROR] torchrun not found in PATH after venv activation" >&2; exit 14; }
+if ! command -v torchrun >/dev/null 2>&1; then
+    echo "[ERROR] torchrun not found in environment" >&2; exit 14; fi
 
 # Set NCCL and OMP env vars for performance
-export OMP_NUM_THREADS=64      # (CPUs per task 64 ÷ 8 GPU processes) adjust if cpus-per-task changes
+if [ -n "${SLURM_CPUS_PER_TASK:-}" ]; then
+    # Derive threads per GPU process = cpus-per-task / GPUs per node (fallback to 8 if unset)
+    GPUS_PER_NODE=${SLURM_GPUS_PER_NODE:-8}
+    # Avoid division by zero
+    if [ "$GPUS_PER_NODE" -gt 0 ]; then
+        OMP_VAL=$(( SLURM_CPUS_PER_TASK / GPUS_PER_NODE ))
+    else
+        OMP_VAL=8
+    fi
+else
+    # Fallback when directive not applied
+    OMP_VAL=8
+fi
+export OMP_NUM_THREADS=$OMP_VAL
+echo "[DEBUG] OMP_NUM_THREADS=$OMP_NUM_THREADS (derived)" >&2
 export NCCL_DEBUG=WARN        # Enable NCCL debug logging for troubleshooting
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # PyTorch expects this (replaces deprecated NCCL_ASYNC_ERROR_HANDLING warning)
 export SLURM_CPU_BIND=cores      # Slurm will bind each task to a set of CPU cores rather than OS (improves performance)
@@ -71,8 +86,8 @@ export TOKENIZERS_PARALLELISM=false              # Disable HF tokenizers intra-p
 # Get the first node's hostname for rendezvous
 RDZV_HOST=$(scontrol show hostnames "$SLURM_NODELIST" | head -n 1)
 
-echo "Running srun torchrun on $SLURM_JOB_NUM_NODES nodes with $SLURM_GRES gpus total"
-echo "Rendezvous endpoint: $RDZV_HOST:29500"
+echo "Running srun torchrun on ${SLURM_JOB_NUM_NODES:-1} node(s)" >&2
+echo "Rendezvous endpoint: $RDZV_HOST:29500" >&2
 srun torchrun \
     --nnodes=$SLURM_JOB_NUM_NODES \
     --nproc_per_node=8 \
