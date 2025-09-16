@@ -167,11 +167,20 @@ def train(config):
         raise RuntimeError(f"local_rank {local_rank} is out of range for visible GPUs ({visible_gpu_count})")
 
     # -----------------------------
-    # 2. Load dataset and tokenizer/model
+    # 2. Resolve paths & load dataset/model
     # -----------------------------
-    model_dir = config['model_dir']
-    data_dir = config['data_dir']
+    # Resolve required directories from environment variables
+    def _require_env(name: str):
+        v = os.environ.get(name)
+        if not v:
+            raise ValueError(f"Required environment variable '{name}' is not set.")
+        return v
+
+    model_dir = _require_env('MODEL_DIR')
+    data_dir = _require_env('DATA_DIR')
+    experiments_root = _require_env('EXPERIMENTS_ROOT')
     checkpoint_path = config.get('checkpoint_path', os.path.join('.', 'checkpoint.pt'))
+
     dataset = load_from_disk(data_dir)
 
     # Detect splits: prefer 'train' and a validation split, but allow other names
@@ -407,7 +416,7 @@ def train(config):
     writer = None
     run_dir = None
     if global_rank == 0:
-        experiments_root = config.get('experiments_root', './experiments')
+        experiments_root = os.environ['EXPERIMENTS_ROOT']
         run_name = config.get('run_name')
         if not run_name:
             # derive from model basename + timestamp
@@ -660,7 +669,7 @@ if __name__ == "__main__":
     config['resume'] = args.resume
 
     # ---- Basic config checks and concise coercion ----
-    required = ['model_dir', 'data_dir', 'batch_size', 'learning_rate', 'num_epochs']
+    required = ['batch_size', 'learning_rate', 'num_epochs']
     for k in required:
         if k not in config:
             raise ValueError(f"Config must provide '{k}'")
@@ -694,12 +703,10 @@ if __name__ == "__main__":
     except Exception as e:
         raise TypeError(f"Config type error: {e}")
 
-    # check data path
-    if not os.path.exists(config['data_dir']):
-        raise ValueError(f"data_dir path does not exist: {config['data_dir']}")
-
-    # check model path
-    if not os.path.exists(config['model_dir']):
-        raise ValueError(f"model_dir path does not exist: {config['model_dir']}")
+    # Environment-based path validation 
+    for env_key in ('DATA_DIR', 'MODEL_DIR', 'EXPERIMENTS_ROOT'):
+        path_val = os.environ.get(env_key)
+        if not path_val or not os.path.exists(path_val):
+            raise ValueError(f"Environment {env_key} missing or path does not exist: {path_val}")
 
     train(config)

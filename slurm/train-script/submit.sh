@@ -5,17 +5,15 @@
 
 set -euo pipefail
 
-# Default path (edit as needed)
-DEFAULT_VENV_DIR="/shared/venvs/distilbert-train"
+# Set the project venv path
+VENV_DIR="/shared/venvs/distilbert-train"
 
-# Use existing VENV_DIR if set, else default
-VENV_DIR="${VENV_DIR:-$DEFAULT_VENV_DIR}"
-
-echo "Current VENV_DIR is: $VENV_DIR"
-read -p "Is this correct? [Y/n]: " yn
+echo "Project venv path: $VENV_DIR"
+read -p "Proceed with this path? [Y/n]: " yn
 case $yn in
 	[Nn]*)
-		read -p "Enter new VENV_DIR path: " VENV_DIR
+		echo "Aborted by user. Edit submit.sh to change VENV_DIR." >&2
+		exit 0
 		;;
 esac
 

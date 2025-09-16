@@ -2,14 +2,16 @@
 # Distributed Training Configuration (DDP)
 ############################################
 
-# Path to the pretrained model
-model_dir: /shared/model/distilbert-base-uncased
-
-# Dataset root directory containing splits (train/validation/test)
-data_dir: /shared/data/sst2
+############################################
+# Path Handling
+# train.py now reads MODEL_DIR, DATA_DIR, EXPERIMENTS_ROOT directly from the
+# environment (project.env). The values below are informational only and are
+# ignored for path resolution to avoid drift / duplication. You may leave them
+# synchronized manually or delete them entirely.
+############################################
 
 # Parent directory for per-run artifacts (run subfolder will be created automatically during training time)
-experiments_root: /shared/experiments
+# Base directory for run artifacts (literal or ${EXPERIMENTS_ROOT})
 
 # Per-device batch size
 batch_size: 16

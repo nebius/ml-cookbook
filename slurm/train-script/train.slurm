@@ -4,9 +4,11 @@
 # Usage Examples:
 #   export VENV_DIR=/shared/venvs/distilbert-train
 #   export SLURM_LOGS_DIR=/shared/slurm_logs/distilbert-train
-#   sbatch --export=ALL train.slurm
-# Or
-# (with wrapper script)
+#   sbatch --export=ALL \
+#     --output="${SLURM_LOGS_DIR}/%x-%j.out" \
+#     --error="${SLURM_LOGS_DIR}/%x-%j.err" \
+#     train.slurm
+# Or simpler way with wrapper script
 #   ./submit.sh
 # -----------------------------------------------------------------------------
 #SBATCH --job-name=pt-ddp-train           # Set the job name
@@ -39,7 +41,6 @@ set -x
 
 # Source project environment if available
 if [ -f "$VENV_DIR/project.env" ]; then
-    # shellcheck disable=SC1090
     source "$VENV_DIR/project.env"
 fi
 
@@ -58,22 +59,8 @@ python -V || true
 if ! command -v torchrun >/dev/null 2>&1; then
     echo "[ERROR] torchrun not found in environment" >&2; exit 14; fi
 
-# Set NCCL and OMP env vars for performance
-if [ -n "${SLURM_CPUS_PER_TASK:-}" ]; then
-    # Derive threads per GPU process = cpus-per-task / GPUs per node (fallback to 8 if unset)
-    GPUS_PER_NODE=${SLURM_GPUS_PER_NODE:-8}
-    # Avoid division by zero
-    if [ "$GPUS_PER_NODE" -gt 0 ]; then
-        OMP_VAL=$(( SLURM_CPUS_PER_TASK / GPUS_PER_NODE ))
-    else
-        OMP_VAL=8
-    fi
-else
-    # Fallback when directive not applied
-    OMP_VAL=8
-fi
-export OMP_NUM_THREADS=$OMP_VAL
-echo "[DEBUG] OMP_NUM_THREADS=$OMP_NUM_THREADS (derived)" >&2
+
+export OMP_NUM_THREADS=8      # Set  cpus-per-task / gpus-per-node (adjust as needed)
 export NCCL_DEBUG=WARN        # Enable NCCL debug logging for troubleshooting
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # PyTorch expects this (replaces deprecated NCCL_ASYNC_ERROR_HANDLING warning)
 export SLURM_CPU_BIND=cores      # Slurm will bind each task to a set of CPU cores rather than OS (improves performance)
