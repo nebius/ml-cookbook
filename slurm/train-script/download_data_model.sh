@@ -1,10 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 ##########################################################################################
-# Lightweight wrapper to download (or refresh) model + dataset using existing environment.
+# Lightweight wrapper to download model + dataset using existing environment.
 # Assumes `setup.sh` has already been run to create the venv & project.env.
 #
 # Usage:
+#   source $VENV_DIR/project.env
 #   ./download_data_model.sh
 # Adjust MODEL_NAME, DATASET_NAME, FORCE_REFRESH defaults inside this script as needed.
 ##########################################################################################
