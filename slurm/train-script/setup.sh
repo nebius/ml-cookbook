@@ -9,11 +9,20 @@ NC='\033[0m' # No Color
 echo "if the HF repo is private, make sure you have set up a token with access and"
 echo "run: export HF_TOKEN=your_token"
 
+
 # Set project name for flexible directory management
 PROJECT_NAME="distilbert-train"
+SHARED_DIR="/shared"
+
+echo -e "${GREEN}Current PROJECT_NAME: $PROJECT_NAME${NC}"
+echo -e "${GREEN}Current SHARED_DIR: $SHARED_DIR${NC}"
+read -p "Proceed with these settings? [y/N]: " CONFIRM
+if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+	echo -e "${RED}Aborting. Please edit PROJECT_NAME and SHARED_DIR in setup.sh as needed.${NC}"
+	exit 1
+fi
 
 # All key directories use PROJECT_NAME for easy switching
-SHARED_DIR="/shared"
 VENV_DIR="$SHARED_DIR/venvs/$PROJECT_NAME"
 MODEL_DIR="$SHARED_DIR/model/$PROJECT_NAME"
 DATA_DIR="$SHARED_DIR/data/$PROJECT_NAME"
