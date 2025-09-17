@@ -70,13 +70,6 @@ for d in "$MODEL_DIR" "$DATA_DIR" "$SLURM_LOGS_DIR" "$EXPERIMENTS_ROOT"; do
 	fi
 done
 
-# Download model and dataset into these subfolders
-
-python download_data_model.py \
-	--model distilbert/distilbert-base-uncased \
-	--dataset stanfordnlp/sst2 \
-	--shared_folder "$SHARED_DIR" \
-	--model_dir "$MODEL_DIR" \
-	--data_dir "$DATA_DIR"
-
-echo -e "${GREEN}Download and Setup complete.${NC}"
+echo -e "${GREEN}Setup complete.${NC}"
+echo "To download/refresh model + dataset run:"
+echo "  source $VENV_DIR/project.env && ./download_data_model.sh" 

@@ -1,30 +1,58 @@
 
 import argparse
 import os
+import shutil
 from huggingface_hub import login, snapshot_download
 from datasets import load_dataset
 
 # -----------------------------
 # Download Utility
 # -----------------------------
-def download_model(model_name, model_dir, hf_token=None):
+def _purge_dir(path: str):
+    ap = os.path.abspath(path)
+    if len(ap) < 8:
+        raise ValueError(f"Refusing to delete suspiciously short path: {ap}")
+    if os.path.isdir(ap):
+        shutil.rmtree(ap)
+    os.makedirs(ap, exist_ok=True)
+
+def download_model(model_name, model_dir, hf_token=None, force=False):
     if hf_token:
         login(token=hf_token)
-    print(f"Downloading model {model_name} to {model_dir} (no symlinks)")
+    if force:
+        print(f"[force] Purging model directory {model_dir}")
+        _purge_dir(model_dir)
+    else:
+        # If directory already populated, skip silent re-download for determinism
+        if os.path.isdir(model_dir) and any(os.scandir(model_dir)):
+            print(f"[skip] Model directory already populated at {model_dir}; use --force_download to refresh.")
+            return
+        os.makedirs(model_dir, exist_ok=True)
+    print(f"Downloading model {model_name} to {model_dir}")
     snapshot_dir = snapshot_download(
         repo_id=model_name,
         repo_type="model",
         local_dir=model_dir,
-        local_dir_use_symlinks=False,
-        resume_download=True,
-        token=hf_token
+        token=hf_token,
+        force_download=force
     )
     print(f"Model snapshot downloaded to {snapshot_dir}")
 
-def download_dataset(dataset_name, data_dir, hf_token=None):
+def download_dataset(dataset_name, data_dir, hf_token=None, force=False):
     print(f"Downloading and saving dataset {dataset_name} to {data_dir} using datasets.load_dataset/save_to_disk")
-    # Download the dataset (default to 'train', 'validation', 'test' splits if available)
-    dataset = load_dataset(dataset_name, use_auth_token=hf_token)
+    load_args = {}
+    if hf_token:
+        load_args['token'] = hf_token
+    if force:
+        print(f"[force] Purging dataset directory {data_dir}")
+        _purge_dir(data_dir)
+    else:
+        # If directory already has content, skip re-download
+        if os.path.isdir(data_dir) and any(os.scandir(data_dir)):
+            print(f"[skip] Dataset directory already populated at {data_dir}; use --force_download to refresh.")
+            return
+        os.makedirs(data_dir, exist_ok=True)
+    dataset = load_dataset(dataset_name, **load_args)
     dataset.save_to_disk(data_dir)
     print(f"Dataset saved to {data_dir} (load_from_disk compatible)")
 
@@ -35,6 +63,7 @@ if __name__ == "__main__":
     parser.add_argument('--shared_folder', type=str, default='/shared', help='Shared folder path')
     parser.add_argument('--model_dir', type=str, default=None, help='Directory to store/download the model (default: <shared_folder>/model/<model_name>)')
     parser.add_argument('--data_dir', type=str, default=None, help='Directory to store/download the dataset (default: <shared_folder>/data/<dataset_name>)')
+    parser.add_argument('--force_download', action='store_true', help='Force re-download of model and dataset (clears existing)')
     args = parser.parse_args()
 
     hf_token = os.environ.get('HF_TOKEN')
@@ -52,5 +81,5 @@ if __name__ == "__main__":
     if not os.path.exists(data_dir):
         os.makedirs(data_dir, exist_ok=True)
 
-    download_model(args.model, model_dir, hf_token)
-    download_dataset(args.dataset, data_dir, hf_token)
+    download_model(args.model, model_dir, hf_token, force=args.force_download)
+    download_dataset(args.dataset, data_dir, hf_token, force=args.force_download)
