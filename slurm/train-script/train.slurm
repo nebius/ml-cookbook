@@ -12,7 +12,7 @@
 #   ./submit.sh
 # -----------------------------------------------------------------------------
 #SBATCH --job-name=pt-ddp-train           # Set the job name
-#SBATCH --account=research               # Specify the account to charge
+#SBATCH --account=research                # Specify the account to charge
 #SBATCH --nodes=1                         # Number of nodes to use
 #SBATCH --gpus-per-node=8                 # Number of GPUs per node
 #SBATCH --ntasks-per-node=1               # Number of tasks per node, meaning one srun command per node
