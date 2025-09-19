@@ -19,7 +19,8 @@ This project provides a robust, modular solution for distributed training of lar
 - Python 3.8+ and CUDA-compatible GPUs
 - [PyTorch](https://pytorch.org/) and [Hugging Face Transformers](https://huggingface.co/docs/transformers) installed
 - (Optional) Conda or virtualenv for environment isolation
-**Note:** All the prerequisites will be installed by setup.sh
+
+> **Note:** All the prerequisites will be installed by `setup.sh`.
 
 ### 2. Environment Setup
 Run the setup script to create shared directories, configure the Python environment, and install dependencies:
@@ -37,7 +38,7 @@ Use the provided script to download pretrained models and datasets from Hugging 
 bash download_data_model.sh
 ```
 
-- Supports force-refresh and skip-if-exists logic
+- Supports FORCE_REFRESH for download and skip it if exists
 - Only Hugging Face models and datasets are supported by default for download
 
 ### 4. Configure Hyperparameters
