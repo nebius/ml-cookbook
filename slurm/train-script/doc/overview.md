@@ -24,9 +24,7 @@ ml-cookbook/
 │       ├── train.slurm
 │       └── doc/
 │           ├── overview.md
-│           ├── project-structure.md
-│           ├── pytorch-ddp.md
-│           ├── workflow.md
+│           ├── architecture.md
 │           └── images/
 ```
 
