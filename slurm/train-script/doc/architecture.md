@@ -35,7 +35,7 @@ DDP is for data parallelism—each process gets a full copy of the model and a s
 - **find_unused_parameters**: If your model has conditional branches, set this to `True` in DDP to avoid hangs, but note the extra overhead.
 - **Synchronization Order**: All processes must invoke all-reduce operations in the same order to avoid hangs or incorrect results.
 
-![Communication Diagram](.github/images/ddp.png)
+![Communication Diagram](images/ddp.png)
 
 *source: [PyTorch DDP Tutorial](https://docs.pytorch.org/docs/stable/notes/ddp.html)*
 
