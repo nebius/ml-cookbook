@@ -23,23 +23,22 @@ This project provides a robust, modular solution for distributed training of lar
 > **Note:** All the prerequisites will be installed by `setup.sh`.
 
 ### 2. Environment Setup
-Run the setup script to create shared directories, configure the Python environment, and install dependencies:
+Set the key variables `PROJECT_NAME`, `SHARED_DIR` inside the `setup.sh` script and run the setup script to create shared directories, configure the Python environment, and install dependencies:
 
 ```bash
 bash setup.sh
 ```
 
-Follow the prompts to confirm key environment variables (e.g., `PROJECT_NAME`, `SHARED_DIR`).
-
 ### 3. Download Model and Data
-Use the provided script to download pretrained models and datasets from Hugging Face repositories:
+Use the provided script to download pretrained models and datasets from Hugging Face repositories.
+Make sure to set these variables inside the script `MODEL_NAME` and `DATASET_NAME`
 
 ```bash
 bash download_data_model.sh
 ```
-
-- Supports FORCE_REFRESH for download and skip it if exists
-- Only Hugging Face models and datasets are supported by default for download
+**Features**
+  - Supports FORCE_REFRESH for download and skip it if exists
+  - Only Hugging Face models and datasets are supported by default for download
 
 ### 4. Configure Hyperparameters
 Edit `config.yaml` to set your model's hyperparameters:
