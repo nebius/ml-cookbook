@@ -48,7 +48,7 @@ if [ ! -f "$VENV_DIR/bin/activate" ]; then
 source "$VENV_DIR/bin/activate"
 
 
-export OMP_NUM_THREADS=8      # Set  cpus-per-task / gpus-per-node (adjust as needed)
+export OMP_NUM_THREADS=$(( SLURM_CPUS_PER_TASK / SLURM_GPUS_PER_NODE ))   # Set  cpus-per-task / gpus-per-node (adjust as needed)
 export NCCL_DEBUG=WARN        # Enable NCCL debug logging for troubleshooting
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # PyTorch expects this (replaces deprecated NCCL_ASYNC_ERROR_HANDLING warning)
 export SLURM_CPU_BIND=cores      # Slurm will bind each task to a set of CPU cores rather than OS (improves performance)
@@ -71,7 +71,7 @@ echo "Running srun torchrun on ${SLURM_JOB_NUM_NODES:-1} node(s)" >&2
 echo "Rendezvous endpoint: $RDZV_HOST:29500" >&2
 srun torchrun \
     --nnodes=$SLURM_JOB_NUM_NODES \
-    --nproc_per_node=8 \
+    --nproc_per_node=$SLURM_GPUS_PER_NODE \
     --rdzv_id=$SLURM_JOB_ID \
     --rdzv_backend=c10d \
     --rdzv_endpoint=$RDZV_HOST:29500 \
