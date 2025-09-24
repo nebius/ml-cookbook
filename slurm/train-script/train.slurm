@@ -48,7 +48,7 @@ if [ ! -f "$VENV_DIR/bin/activate" ]; then
 source "$VENV_DIR/bin/activate"
 
 
-export OMP_NUM_THREADS=$(( SLURM_CPUS_PER_TASK / SLURM_GPUS_PER_NODE ))   # Set  cpus-per-task / gpus-per-node (adjust as needed)
+export OMP_NUM_THREADS=$(( SLURM_CPUS_PER_TASK / SLURM_GPUS_PER_NODE ))   # Set  cpus-per-task / gpus-per-node e.g. 64/8=8
 export NCCL_DEBUG=WARN        # Enable NCCL debug logging for troubleshooting
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # PyTorch expects this (replaces deprecated NCCL_ASYNC_ERROR_HANDLING warning)
 export SLURM_CPU_BIND=cores      # Slurm will bind each task to a set of CPU cores rather than OS (improves performance)
