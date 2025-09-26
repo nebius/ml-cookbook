@@ -1,0 +1,96 @@
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: pytorch-job
+spec:
+  minAvailable: 3
+  schedulerName: volcano
+  queue: test-queue
+  plugins:
+    pytorch: [
+      "--master=master",
+      "--worker=worker",
+      "--port=29500", 
+    ]
+  tasks:
+    - replicas: 1
+      name: master
+      policies:
+        - event: TaskCompleted
+          action: CompleteJob
+      template:
+        spec: &task-spec
+          containers:
+            - image: registry.gitlab.com/jadnov/nebius/mnode-25.06:latest
+              imagePullPolicy: IfNotPresent
+              name: llama-cookbook-finetuning
+              command: 
+               - /bin/bash
+               - -c
+               - |
+                pip install "numpy==1.26.4" && \
+                torchrun \
+                  --nnodes=4 \
+                  --nproc_per_node=8 \
+                  --node_rank=${RANK} \
+                  --rdzv_backend=c10d \
+                  --rdzv_endpoint=${MASTER_ADDR}:${MASTER_PORT} \
+                  --role `hostname -s`: \
+                  --tee 3 \
+                  getting-started/finetuning/finetuning.py \
+                  --enable_fsdp \
+                  --fsdp_config.pure_bf16 \
+                  --use_fast_kernels \
+                  --model_name=/workspace/persistent-storage/models/hf-meta-llama3-8B/ \
+                  --batch_size_training=4 \
+                  --num_workers_dataloader=2 \
+                  --dist_checkpoint_root_folder=/workspace/persistent-storage/ \
+                  --dataset=samsum_dataset \
+                  --num_epochs 100
+              resources:
+                requests:
+                  nvidia.com/gpu: 8
+                  memory: "1500Gi"
+                limits:
+                  nvidia.com/gpu: 8
+                  memory: "1500Gi"
+              env:
+                - name: NCCL_SOCKET_IFNAME
+                  value: "eth0"
+                - name: GLOO_SOCKET_IFNAME
+                  value: "eth0"
+                - name: CUDA_LAUNCH_BLOCKING
+                  value: "0"
+                - name: HF_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: finetuning-job-secret
+                      key: HF_TOKEN
+                - name: HF_DATASETS_TRUST_REMOTE_CODE
+                  value: "True"
+                - name: TOKENIZERS_PARALLELISM
+                  value: "false"
+              securityContext:
+                privileged: true
+              volumeMounts:
+                - mountPath: /dev/shm
+                  name: dshm
+                - mountPath: /dev/infiniband
+                  name: ib
+                - mountPath: /workspace/persistent-storage
+                  name: persistent-storage
+          restartPolicy: OnFailure
+          volumes:
+            - name: dshm
+              emptyDir:
+                medium: Memory
+            - name: ib
+              hostPath:
+                path: /dev/infiniband
+            - name: persistent-storage
+              persistentVolumeClaim:
+                claimName: external-storage-persistent-volumeclaim
+    - replicas: 3
+      name: worker
+      template:
+        spec: *task-spec
