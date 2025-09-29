@@ -1,0 +1,189 @@
+# azureblob_to_s3_migration.yaml
+# Multi-node Azure Blob -> Nebius S3 with rclone
+# - Shard + marker state uploaded to S3 for recovery
+# - Each worker saves both failed_node_X.txt (errors) and missing_node_X.txt (verification)
+# - Head aggregates at the end but does NOT delete state (manual cleanup only)
+# - Safer recovery: you can re-run per-node retries with either file set
+
+resources:
+  cloud: nebius
+  region: eu-north1
+  cpus: 16
+
+num_nodes: 5   # 1 head + 4 workers
+
+workdir: .
+
+file_mounts:
+  ~/.aws: ~/.aws
+  ~/.azure: ~/.azure
+
+envs:
+  # ---- Azure source ----
+  AZURE_ACCOUNT: <azure_blob_storage_account_name>
+  AZURE_CONTAINER: <azure_blob_container_name>
+  AZURE_STORAGE_KEY: <azure_storage_key>
+
+  # ---- Nebius S3 target ----
+  AWS_ACCESS_KEY_ID: <nebius_s3_access_key>
+  AWS_SECRET_ACCESS_KEY: <nebius_s3_secret_key>
+  TARGET_AWS_PROFILE: <aws_profile_for_destination_s3_bucket>
+  TARGET_ENDPOINT_URL: https://storage.eu-north1.nebius.cloud:443
+  TARGET_BUCKET: <s3_destination_bucket_name>
+
+  # ---- rclone tuning ----
+  RCLONE_TRANSFERS: 32
+  RCLONE_CHECKERS: 16
+  RCLONE_BUFFER_SIZE: 16M
+  RCLONE_LOW_LEVEL_RETRIES: 10
+  RCLONE_RETRIES: 3
+  RCLONE_RETRY_BACKOFF: 2s
+
+  # Optional per-node retry pass on failures
+  RETRY_ONCE: "false"
+
+  # Make SkyPilot’s SSH-wait more patient (upper bound)
+  SKYPILOT_UPTIME_SSH_RETRY_SECONDS: "900"
+
+setup: |
+  set -Eeuo pipefail
+  echo 'Installing rclone...'
+  curl -fsSL https://rclone.org/install.sh | sudo bash
+
+  echo 'Writing rclone config...'
+  mkdir -p ~/.config/rclone
+  cat > ~/.config/rclone/rclone.conf <<EOF
+  [azure-blob]
+  type = azureblob
+  account = ${AZURE_ACCOUNT}
+  key = ${AZURE_STORAGE_KEY}
+
+  [nebius-s3]
+  type = s3
+  provider = AWS
+  env_auth = true
+  profile = ${TARGET_AWS_PROFILE}
+  region = eu-north1
+  endpoint = ${TARGET_ENDPOINT_URL}
+  EOF
+
+run: |
+  set -Eeuo pipefail
+
+  # ---------- Cluster meta ----------
+  CLUSTER="${SKYPILOT_CLUSTER_NAME:-unknown}"
+  NODE_RANK="${SKYPILOT_NODE_RANK:-0}"
+  NUM_NODES="${SKYPILOT_NUM_NODES:-1}"
+  TASK_ID="${SKYPILOT_TASK_ID:-0}"
+
+  SRC="azure-blob:${AZURE_CONTAINER}"
+  DST="nebius-s3:${TARGET_BUCKET}"
+
+  TS_LOCAL="$(date -u +%Y-%m-%d-%H-%M-%S-%N)"
+  RUN_ID="sky-${TS_LOCAL}_${CLUSTER}_${TASK_ID}_${NODE_RANK}"
+  WORKDIR="/tmp/azure_to_s3_${RUN_ID}"
+  mkdir -p "${WORKDIR}/check" "${WORKDIR}/shards" "${WORKDIR}/logs" "${WORKDIR}/markers"
+  LOG="${WORKDIR}/rclone_node_${NODE_RANK}.log"
+  FAILED_LOCAL="${WORKDIR}/failed_node_${NODE_RANK}.txt"
+  MISSING_LOCAL="${WORKDIR}/missing_node_${NODE_RANK}.txt"
+
+  REPORTS_PREFIX="_rclone_reports/task-${TASK_ID}"
+  MARKERS="${DST}/${REPORTS_PREFIX}/markers"
+  SHARDS="${DST}/${REPORTS_PREFIX}/shards"
+  FAILS="${DST}/${REPORTS_PREFIX}/fails"
+  MISSINGS="${DST}/${REPORTS_PREFIX}/missings"
+
+  echo "=== Azure->S3 (multi-node; v10 with per-node missing lists) ==="
+  echo "Nodes: ${NUM_NODES} | This node: ${NODE_RANK}"
+
+  # ---------- HEAD: build master list & shard ----------
+  if [[ "${NODE_RANK}" == "0" ]]; then
+    echo "[Head] Listing Azure objects..."
+    MASTER="${WORKDIR}/master_keys.txt"
+    rclone lsf --files-only -R --format "p" "${SRC}" > "${MASTER}"
+    TOTAL=$(wc -l "${MASTER}" | awk '{print $1}')
+    echo "[Head] Total keys: ${TOTAL}"
+
+    echo "[Head] Sharding..."
+    awk -v N="${NUM_NODES}" '{print > "'${WORKDIR}'/shards/node_" (NR-1)%N ".txt"}' "${MASTER}"
+
+    for i in $(seq 0 $((NUM_NODES-1))); do
+      rclone copyto "${WORKDIR}/shards/node_${i}.txt" "${SHARDS}/node_${i}.txt"
+    done
+
+    # Upload master file for recovery
+    rclone copyto "${MASTER}" "${SHARDS}/master_keys.txt"
+    rclone mkdir "${MARKERS}" >/dev/null 2>&1 || true
+  fi
+
+  # ---------- ALL NODES: fetch shard ----------
+  MY_SHARD_REMOTE="${SHARDS}/node_${NODE_RANK}.txt"
+  MY_SHARD_LOCAL="${WORKDIR}/shard_${NODE_RANK}.txt"
+
+  echo "[Node ${NODE_RANK}] Waiting for my shard..."
+  for _ in $(seq 1 900); do
+    if rclone ls "${MY_SHARD_REMOTE}" >/dev/null 2>&1; then break; fi
+    sleep 2
+  done
+
+  rclone copyto "${MY_SHARD_REMOTE}" "${MY_SHARD_LOCAL}" || true
+  KEYS=$(wc -l "${MY_SHARD_LOCAL}" | awk '{print $1}')
+  echo "[Node ${NODE_RANK}] Keys: ${KEYS}"
+
+  # ---------- Start barrier ----------
+  rclone rcat "${MARKERS}/node_${NODE_RANK}_ready" <<< "ready"
+  if [[ "${NODE_RANK}" == "0" ]]; then
+    for _ in $(seq 1 900); do
+      COUNT=$(rclone lsf "${MARKERS}" | grep -c "_ready" || true)
+      [[ "${COUNT}" == "${NUM_NODES}" ]] && break
+      sleep 2
+    done
+    rclone rcat "${MARKERS}/START" <<< "start"
+  fi
+  for _ in $(seq 1 900); do
+    if rclone ls "${MARKERS}/START" >/dev/null 2>&1; then break; fi
+    sleep 2
+  done
+
+  # ---------- Copy ----------
+  if [[ "${KEYS}" -gt 0 ]]; then
+    rclone copy "${SRC}" "${DST}" \
+      --files-from-raw "${MY_SHARD_LOCAL}" \
+      --transfers "${RCLONE_TRANSFERS}" \
+      --checkers "${RCLONE_CHECKERS}" \
+      --buffer-size "${RCLONE_BUFFER_SIZE}" \
+      --low-level-retries "${RCLONE_LOW_LEVEL_RETRIES}" \
+      --retries "${RCLONE_RETRIES}" \
+      --retries-sleep "${RCLONE_RETRY_BACKOFF}" \
+      --log-file "${LOG}" \
+      --log-level INFO \
+      --progress \
+      --stats 30s || true
+  fi
+
+  # ---------- Per-node failed list ----------
+  if [[ -s "${LOG}" ]]; then
+    grep -E 'ERROR[[:space:]]+:' "${LOG}" \
+      | sed -E 's/^.*ERROR[[:space:]]+:[[:space:]]+([^:]+):.*$/\1/' \
+      | sed 's|^[./]*||' | sort -u > "${FAILED_LOCAL}" || true
+  fi
+  if [[ -s "${FAILED_LOCAL}" ]]; then
+    rclone copyto "${FAILED_LOCAL}" "${FAILS}/failed_node_${NODE_RANK}.txt"
+  fi
+
+  # ---------- Per-node missing list ----------
+  if [[ "${KEYS}" -gt 0 ]]; then
+    rclone check "${SRC}" "${DST}" \
+      --files-from-raw "${MY_SHARD_LOCAL}" \
+      --one-way \
+      --missing-on-dst "${MISSING_LOCAL}" \
+      --differ /dev/null \
+      --error /dev/null \
+      --log-level NOTICE || true
+  fi
+  if [[ -s "${MISSING_LOCAL}" ]]; then
+    rclone copyto "${MISSING_LOCAL}" "${MISSINGS}/missing_node_${NODE_RANK}.txt"
+  fi
+
+  # Done marker
+  rclone rcat "${MARKERS}/node_${NODE_RANK}_done" <<< "done"
