@@ -44,7 +44,7 @@ spec:
                   --batch_size_training=8 \
                   --num_workers_dataloader=4 \
                   --dist_checkpoint_root_folder=/workspace/persistent-storage/ \
-                  --samsum_dataset.trust_remote_code=True \
+                  --dataset=llamaguard_toxicchat_dataset \
                   --use-wandb
               env:
                 - name: NCCL_SOCKET_IFNAME
