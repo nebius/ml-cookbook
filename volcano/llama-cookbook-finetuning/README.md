@@ -1,5 +1,5 @@
 # Running Llama 3.1 8B finetuning with Volcano
-This document provides a step-by-step guide to a full parameter finetuning of Llama 3.1 8B model with [samsum dataset](https://huggingface.co/datasets/Samsung/samsum) using Volcano, a Kubernetes-based batch scheduling system.
+This document provides a step-by-step guide to a full parameter finetuning of Llama 3.1 8B model with [`lmsys/toxic-chat` dataset](https://huggingface.co/datasets/lmsys/toxic-chat) using Volcano, a Kubernetes-based batch scheduling system.
 ## Prerequisites
 
 Before you start, make sure you have the following:
@@ -72,8 +72,9 @@ finetuning.py \
 --batch_size_training=8 \
 --num_workers_dataloader=4 \
 --dist_checkpoint_root_folder=/ # Save checkpoint to ephemeral storage in pod
---samsum_dataset.trust_remote_code=True \
+--dataset=llamaguard_toxicchat_dataset \
 ```
+Use `--num_epochs` to control how long the job will run.
 Please see the corresponding [documentation from Meta](https://github.com/meta-llama/llama-cookbook/blob/faae2fd877995430906e1d0904131ecdaa89a604/getting-started/finetuning/README.md) for configuring additional training parameters.
 
 ### Submit the job
