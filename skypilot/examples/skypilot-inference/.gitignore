@@ -1,0 +1,17 @@
+# Ignore environment and config files with secrets
+.env
+# allow templates to be committed
+!.template.env
+.secrets
+.secrets.*
+.direnv/
+.python-version
+.venv/
+__pycache__/
+*.log
+*.rendered.yaml
+*.generated.yaml
+*.local.yaml
+.sky.yaml
+# allow templates to be committed
+!template.sky.yaml

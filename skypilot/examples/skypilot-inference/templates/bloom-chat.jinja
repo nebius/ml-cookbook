@@ -1,0 +1,16 @@
+{#
+ Minimal chat template for BLOOM-like decoder-only models.
+ Avoids advanced Jinja filters to maximize compatibility.
+#}
+{% for m in messages %}
+{% if m['role'] == 'system' %}
+System: {{ m['content'] }}
+{% elif m['role'] == 'user' %}
+User: {{ m['content'] }}
+{% elif m['role'] == 'assistant' %}
+Assistant: {{ m['content'] }}
+{% else %}
+{{ m['role'] }}: {{ m['content'] }}
+{% endif %}
+{% endfor %}
+Assistant: 

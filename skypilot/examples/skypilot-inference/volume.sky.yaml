@@ -1,0 +1,9 @@
+# volume.yaml
+name: model-weights
+type: k8s-pvc
+infra: k8s
+size: 700Gi
+config:
+  namespace: default
+  storage_class_name: csi-mounted-fs-path-sc
+  access_mode: ReadWriteMany

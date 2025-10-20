@@ -1,0 +1,231 @@
+name: bloom176b-vllm-serve
+
+resources:
+  cloud: kubernetes
+  # Use the latest stable vLLM OpenAI image for more conservative defaults
+  # (reduces risk of unexpected nightly changes triggering cudagraph capture, etc.)
+  image_id: docker:vllm/vllm-openai:v0.11.0
+  accelerators: H200:8
+  cpus: 80
+  memory: 1Ti
+num_nodes: 1
+
+envs:
+  MODEL_ID: bigscience/bloom
+  REDOWNLOAD: "false"
+  HF_HOME: /model-weights/hf_home
+  HUGGINGFACE_HUB_CACHE: /model-weights/hf_home/hub
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+  TMPDIR: /tmp/vllm
+  DEBUG: "1" # set to "1" to enable debug logs
+  # Silence pip root-user warning (containerized install only)
+  PIP_ROOT_USER_ACTION: ignore
+  # Optional NCCL/IB toggles if it is not available in the infrastructure.
+  # NCCL_IB_DISABLE: "1"
+  # NCCL_SOCKET_IFNAME: "eth0"
+  # NCCL_P2P_DISABLE: "1"
+  VLLM_DTYPE: bfloat16
+  # Do NOT use VLLM_PORT for API server port; per vLLM docs it's reserved for internal use.
+  SERVER_PORT: "8000"
+  VLLM_MAX_MODEL_LEN: "8192"
+  VLLM_MAX_NUM_SEQS: "256"
+  # Minimal, 1:1 env -> flag mapping
+  # BLOOM uses ALiBi; avoid FA3. Force a safe backend by default.
+  VLLM_ATTENTION_BACKEND: TORCH_SDPA
+  # Required chat template for /v1/chat/completions
+  VLLM_CHAT_TEMPLATE: templates/bloom-chat.jinja
+  VLLM_CHAT_TEMPLATE_CONTENT_FORMAT: auto
+secrets:
+  HF_TOKEN: ""
+
+workdir: ./templates
+
+volumes:
+  /model-weights: model-weights
+
+config:
+  kubernetes:
+    pod_config:
+      spec:
+        nodeSelector:
+          nvidia.com/gpu.present: "true"
+        containers:
+        - name: skypilot-container
+          imagePullPolicy: IfNotPresent
+
+setup: |
+  set -Eeuo pipefail
+
+  echo "[preflight] (setup) GPU & Python checks" >&2
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    echo "[preflight][fatal] nvidia-smi missing; GPU runtime not available." >&2
+    exit 1
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN=$(command -v python3)
+  else
+    PYTHON_BIN=$(command -v python || true)
+  fi
+  if [ -z "${PYTHON_BIN:-}" ]; then
+    echo "[preflight][fatal] No Python interpreter found." >&2
+    exit 1
+  fi
+  echo "[preflight] (setup) Using PYTHON_BIN=${PYTHON_BIN}" >&2
+
+  if [ "${DEBUG:-0}" = "1" ]; then
+    "$PYTHON_BIN" -V || true
+  fi
+
+  DRIVER_LINE=$(nvidia-smi | grep -m1 'Driver Version') || true
+  DRIVER_VER=$(printf '%s' "$DRIVER_LINE" | sed -n 's/.*Driver Version: \([0-9.]*\).*/\1/p')
+  DRIVER_CUDA=$(printf '%s' "$DRIVER_LINE" | sed -n 's/.*CUDA Version: \([0-9.]*\).*/\1/p')
+  echo "[preflight] (setup) Driver=${DRIVER_VER:-unknown} CUDA=${DRIVER_CUDA:-unknown}" >&2
+
+  # Preinstall NVIDIA ML Python bindings to avoid deprecated pynvml warnings
+  "$PYTHON_BIN" -m pip install -q --no-cache-dir --root-user-action=ignore nvidia-ml-py || true
+
+  # Basic torch import to verify CUDA linkage in the image
+  TORCH_INFO="$($PYTHON_BIN -c $'import sys\ntry:\n import torch\n print("TORCH_IMPORT_OK=1")\n print("TORCH_VERSION="+torch.__version__)\n print("TORCH_BUILD_CUDA="+(torch.version.cuda or "unknown"))\n print("TORCH_CUDA_IS_AVAILABLE="+str(torch.cuda.is_available()))\nexcept Exception as e:\n print("TORCH_IMPORT_OK=0")\n print("TORCH_IMPORT_ERROR="+repr(e))' 2>&1 || true)"
+  echo "$TORCH_INFO" | sed 's/^/[preflight] (setup) /' >&2
+  if [ "$(echo "$TORCH_INFO" | awk -F= '/TORCH_IMPORT_OK=/{print $2}' | tail -1)" != "1" ]; then
+    echo "[preflight][fatal] (setup) torch import failed." >&2
+    exit 1
+  fi
+
+  # Compare driver CUDA vs torch build CUDA and warn on mismatch
+  TORCH_CUDA_VER=$(echo "$TORCH_INFO" | awk -F= '/TORCH_BUILD_CUDA=/{print $2}' | tail -1)
+  if [ -n "${DRIVER_CUDA:-}" ] && [ -n "${TORCH_CUDA_VER:-}" ] && [ "$TORCH_CUDA_VER" != "unknown" ]; then
+    parse_minor() { awk -F. '{printf "%d.%d", $1,$2}' <<<"$1"; }
+    version_ge() { awk -v A="$(parse_minor "$1")" -v B="$(parse_minor "$2")" 'BEGIN{if (A>=B) exit 0; else exit 1}'; }
+    if version_ge "$DRIVER_CUDA" "$TORCH_CUDA_VER"; then
+      echo "[preflight] (setup) Driver CUDA (${DRIVER_CUDA}) >= torch CUDA (${TORCH_CUDA_VER}) : OK" >&2
+    else
+      echo "[warn] (setup) Driver CUDA (${DRIVER_CUDA}) < torch build CUDA (${TORCH_CUDA_VER})." >&2
+      echo "[warn] (setup) Mismatch can cause runtime/NCCL issues. Consider updating the host driver or using an image with a compatible CUDA toolkit. See: https://docs.nvidia.com/deploy/cuda-compatibility/" >&2
+    fi
+  fi
+
+  export HUGGINGFACE_HUB_TOKEN="${HF_TOKEN:-}"
+  [ -n "${TRANSFORMERS_CACHE:-}" ] && unset TRANSFORMERS_CACHE
+
+  mkdir -p "$HF_HOME" "$HUGGINGFACE_HUB_CACHE" "${TMPDIR}"
+  chmod 1777 "${TMPDIR}" || true
+
+  if ! awk '$2=="/model-weights"{found=1} END{exit !found}' /proc/mounts; then
+    echo "Error: /model-weights is not a mounted volume (PVC not bound/attached)." >&2
+    exit 1
+  fi
+
+  # Ensure we have hf_transfer + huggingface_hub CLI for faster downloads
+  "$PYTHON_BIN" -m pip install -q --no-cache-dir --root-user-action=ignore 'huggingface_hub>=0.21' hf_transfer || true
+
+  MODEL_SAFE="${MODEL_ID//\//--}"
+  MODEL_CACHE_DIR="${HUGGINGFACE_HUB_CACHE}/models--${MODEL_SAFE}"
+  MODEL_READY_MARKER="/model-weights/.download_complete_${MODEL_SAFE}"
+
+  if [ "${SKYPILOT_NODE_RANK:-0}" = "0" ]; then
+    if [ "${REDOWNLOAD:-false}" = "true" ]; then
+      echo "REDOWNLOAD=true: clearing cache dir ${MODEL_CACHE_DIR}"
+      rm -rf -- "${MODEL_CACHE_DIR}" || true
+      rm -f "${MODEL_READY_MARKER}" || true
+      mkdir -p "${MODEL_CACHE_DIR}"
+    fi
+
+    if [ -f "${MODEL_READY_MARKER}" ]; then
+      echo "Ready marker exists for ${MODEL_ID}; skipping download."
+    else
+      echo "Downloading (resume-safe) ${MODEL_ID} into ${HUGGINGFACE_HUB_CACHE}"
+      start_ts=$(date +%s)
+      # Use huggingface-cli for a resume-safe snapshot download
+      if ! command -v huggingface-cli >/dev/null 2>&1; then
+        "$PYTHON_BIN" -m pip install -q --no-cache-dir --root-user-action=ignore 'huggingface_hub>=0.21' hf_transfer || true
+      fi
+      hf download --repo-type model "${MODEL_ID}" \
+        --cache-dir "${HUGGINGFACE_HUB_CACHE}" \
+        --local-dir "${MODEL_CACHE_DIR}" || true
+      end_ts=$(date +%s)
+      elapsed=$(( end_ts - start_ts ))
+      printf 'Download complete (elapsed: %02dh %02dm %02ds)\n' "$((elapsed/3600))" "$(((elapsed%3600)/60))" "$((elapsed%60))"
+      size_hr="$(du -sh \"${MODEL_CACHE_DIR}\" | awk '{print $1}')"
+      echo "Model volume size: ${size_hr}"
+      touch "${MODEL_READY_MARKER}"
+    fi
+  else
+    while [ ! -f "${MODEL_READY_MARKER}" ]; do
+      echo "Waiting for model files for ${MODEL_ID} in /model-weights..."
+      sleep 2
+    done
+  fi
+
+run: |
+  set -Eeuo pipefail
+  export PYTHONUNBUFFERED=1
+  export HUGGINGFACE_HUB_TOKEN="${HF_TOKEN:-}"
+  # Suppress noisy FutureWarning about deprecated 'pynvml' import path in torch
+  # Torch imports 'pynvml' for device info; modern package is 'nvidia-ml-py' but
+  # the import name remains 'pynvml', which triggers a FutureWarning on import.
+  export PYTHONWARNINGS="${PYTHONWARNINGS:-ignore:.*pynvml.*:FutureWarning}"
+
+  # vLLM uses one process with tensor parallelism across visible GPUs on a node
+  NUM_SHARDS=${SKYPILOT_NUM_GPUS_PER_NODE:-1}
+  PORT=${SERVER_PORT:-8000}
+  DTYPE=${VLLM_DTYPE:-bfloat16}
+  # Ensure sane defaults for tuning knobs if not provided
+  VLLM_MAX_MODEL_LEN=${VLLM_MAX_MODEL_LEN:-8192}
+  VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-256}
+  # Fixed attention backend for BLOOM (ALiBi-friendly) via env
+
+  if [ "${DEBUG:-0}" = "1" ]; then
+  echo "[debug] vLLM starting with: model=${MODEL_ID} tp=${NUM_SHARDS} dtype=${DTYPE} port=${PORT} attention-backend=${VLLM_ATTENTION_BACKEND:-TRITON_ATTN}" >&2
+    # Increase verbosity in vLLM when DEBUG=1
+    export VLLM_LOGGING_LEVEL=DEBUG
+    vllm --version || true
+    command -v vllm || true
+    python3 -V || true
+    python3 -c 'import torch; print("torch", torch.__version__, torch.version.cuda, torch.cuda.is_available())' || true
+  fi
+
+  # Set chat template path (required for BLOOM chat)
+  CHAT_TEMPLATE_PATH="$HOME/sky_workdir/${VLLM_CHAT_TEMPLATE}"
+
+  # Launch vLLM OpenAI server with 1:1 env->flag mapping
+  if [ ! -f "${CHAT_TEMPLATE_PATH}" ]; then
+    echo "[fatal] Chat template file not found: ${CHAT_TEMPLATE_PATH}" >&2
+    ls -la "$(dirname "${CHAT_TEMPLATE_PATH}")" || true
+    exit 1
+  fi
+
+  vllm serve "${MODEL_ID}" \
+    --tensor-parallel-size "${NUM_SHARDS}" \
+    --dtype "${DTYPE}" \
+    --download-dir "${HUGGINGFACE_HUB_CACHE}" \
+    --trust-remote-code \
+    --host 0.0.0.0 \
+    --port "${PORT}" \
+    --max-model-len "${VLLM_MAX_MODEL_LEN}" \
+    --max-num-seqs "${VLLM_MAX_NUM_SEQS}" \
+    --chat-template "${CHAT_TEMPLATE_PATH}" \
+    --chat-template-content-format "${VLLM_CHAT_TEMPLATE_CONTENT_FORMAT:-auto}" \
+    --no-trust-request-chat-template \
+    -O.attention_backend="${VLLM_ATTENTION_BACKEND}" \
+    --enforce-eager \
+    -O.cudagraph_mode=NONE &
+  SERVER_PID=$!
+
+  HEALTH_URL="http://127.0.0.1:${PORT}/v1/models"
+  until curl -fsS "$HEALTH_URL" >/dev/null 2>&1; do
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+      echo "vLLM server exited unexpectedly; aborting." >&2
+      exit 1
+    fi
+    echo "waiting for vLLM OpenAI server at ${HEALTH_URL}..."
+    sleep 2
+  done
+
+  wait "$SERVER_PID"
+  rc=$?
+  if [ $rc -ne 0 ]; then
+    echo "[error] vLLM server exited with $rc" >&2
+  fi
+  exit $rc
