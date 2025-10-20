@@ -1,19 +1,24 @@
 resources:
-  cloud: nebius
-  region: eu-north1
-  # cloud: kubernetes
+  infra: k8s # or infra: nebius or e.g. infra: nebius/us-central1
   accelerators: H100:8
-  image_id: docker:cr.eu-north1.nebius.cloud/nebius-benchmarks/nccl-tests:2.23.4-ubu22.04-cu12.4
+  image_id: docker:cr.eu-north1.nebius.cloud/nebius-benchmarks/nccl-tests:2.26.5-ubu22.04-cu12.8
 
 num_nodes: 2
 
 setup: |
   sudo apt-get install -y iproute2
 
-run: | 
+run: |
   # port 10022 on Nebius VMs; port 22 on k8s
   export SSH_PORT=$(ss -tlnp | grep sshd | awk '{print $4}' | cut -d':' -f2)
   export NCCL_SOCKET_IFNAME=$(ip -o -4 route show to default | awk '{print $5}')
+
+  # Set UCX_NET_DEVICES based on SSH port (10022 for Nebius, 22 for k8s)
+  if [ "$SSH_PORT" == "10022" ]; then
+    export UCX_NET_DEVICES=network-interfa
+  else
+    export UCX_NET_DEVICES=eth0
+  fi
 
   # Total number of processes, NP should be the total number of GPUs in the cluster
   NP=$(($SKYPILOT_NUM_GPUS_PER_NODE * $SKYPILOT_NUM_NODES))
@@ -33,9 +38,10 @@ run: |
       -N $SKYPILOT_NUM_GPUS_PER_NODE \
       -bind-to none \
       -x LD_LIBRARY_PATH \
+      -x NCCL_DEBUG=INFO \
       -x NCCL_SOCKET_IFNAME \
       -x NCCL_IB_HCA=mlx5 \
-      -x UCX_NET_DEVICES=mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1 \
+      -x UCX_NET_DEVICES \
       -x SHARP_COLL_ENABLE_PCI_RELAXED_ORDERING=1 \
       -x NCCL_COLLNET_ENABLE=0 \
       --mca plm_rsh_args "-p $SSH_PORT" \

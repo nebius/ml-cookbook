@@ -8,8 +8,7 @@
 
 resources:
   accelerators: H100:8
-  region: eu-north1
-  cloud: nebius
+  infra: k8s # or infra: nebius or e.g. infra: nebius/us-central1
   disk_size: 512
   ports: 8000
 

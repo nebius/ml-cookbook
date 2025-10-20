@@ -1,11 +1,5 @@
-# To launch jobs on K8s, use `cloud: kubernetes`
-# To launch jobs on Nebius, use `cloud: nebius` and `region: eu-north1`.
-# In this case, SkyPilot will resources directly on the Nebius Cloud by calling the Nebius API.
-
 resources:
-  # cloud: nebius
-  # region: eu-north1
-  cloud: kubernetes
+  infra: k8s # or infra: nebius or e.g. infra: nebius/us-central1
   accelerators: H100:8
   image_id: docker:nvcr.io/nvidia/pytorch:23.10-py3
   
