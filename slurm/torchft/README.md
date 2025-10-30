@@ -19,22 +19,14 @@ For running this workload, you will need to SSH to the login node of the Soperat
    source .env/bin/activate
    ```
 
-2. **Install dependencies (including `torch` and `torchft`):**
+2. **Install dependencies (including `torch`, `torchft` and `torchtitan`):**
    ```bash
    pip install -r requirements.txt
    ```
-   
-3. **Clone the `torchtitan` repository and check out the correct commit:**
-   ```bash
-   git clone https://github.com/pytorch/torchtitan.git
-   cd torchtitan
-   git checkout d69a737 
-   ```
 
-4. **Download the Llama-3.1 tokenizer:**
+3. **Download the Llama-3.1 tokenizer using the huggingface cli:**
    ```bash
-   python scripts/download_tokenizer.py --repo_id meta-llama/Llama-3.1-8B --hf_token=<your_hf_token>
-   cd ..
+   hf download meta-llama/Llama-3.1-8B --include "tokenizer*" --local-dir ./assets/hf/Llama-3.1-8B --token <your_hf_token>
    ```
    Replace `<your_hf_token>` with your Hugging Face API token from [https://huggingface.co/settings/tokens](https://huggingface.co/settings/tokens). This ensures you have access to the Llama model repository.
 
