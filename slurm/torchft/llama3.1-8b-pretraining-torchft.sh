@@ -23,8 +23,7 @@ export PYTHONFAULTHANDLER=1
 export NCCL_SOCKET_IFNAME="eth0"
 export GLOO_SOCKET_IFNAME="eth0"
 
-export PYTHONPATH="$(pwd)/torchtitan:$PYTHONPATH"
-export CONFIG_FILE="$(pwd)/torchtitan/torchtitan/models/llama3/train_configs/llama3_8b.toml"
+export CONFIG_FILE="$(pwd)/llama3_8b.toml"
 
 export TORCHFT_LIGHTHOUSE="http://login-0:29510"
 
@@ -34,20 +33,17 @@ if [ "$SLURM_ARRAY_TASK_ID" -eq 0 ] && [ -n "${WANDB_API_KEY:-}" ]; then
     METRICS_ARG="--metrics.enable-wandb"
 fi
 
-cd torchtitan
-
 torchrun \
   --nproc_per_node=8 \
   --rdzv_backend=c10d \
   --rdzv_endpoint="localhost:0" \
   --rdzv_id="tt_$SLURM_ARRAY_JOB_ID" \
-  ./torchtitan/train.py \
+  -m torchtitan.train \
   --job.config_file="${CONFIG_FILE}" \
   --fault_tolerance.enable \
   --fault_tolerance.group_size="${GROUP_SIZE}" \
   --fault_tolerance.replica_id="${REPLICA_ID}" \
   --parallelism.data_parallel_shard_degree=8 \
-  --training.dataset="c4_test" \
   --profiling.no-enable-profiling \
   --comm.trace-buf-size 0 \
   --comm.train-timeout-seconds 300 \
