@@ -25,10 +25,15 @@ head_node_ip=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 echo Node IP: $head_node_ip
 export LOGLEVEL=INFO
 
+#export HF_HOME=/mnt/bucket/s3-mp-volume
+export HF_HOME=/mnt/data/
+#export HF_DATASETS_CACHE=/mnt/bucket/s3-mp-volume/fluxds
+export HF_DATASETS_CACHE=/mnt/data/datasets
+
 # optional debug settings and flags (optional)
 export PYTHONFAULTHANDLER=1
-# export NCCL_DEBUG=INFO
-# NCCL_DEBUG_SUBSYS=INIT,GRAPH,ENV
+export NCCL_DEBUG=INFO
+export NCCL_DEBUG_SUBSYS=INIT,GRAPH,ENV
 
 export LD_LIBRARY_PATH=/usr/local/lib/:$LD_LIBRARY_PATH
 export CUDA_LAUNCH_BLOCKING=0

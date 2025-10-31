@@ -1,7 +1,8 @@
 [job]
 dump_folder = "./outputs"
 description = "Flux-schnell model"
-print_args = false
+print_config = false
+custom_config_module = "torchtitan.experiments.flux.job_config"
 
 [profiling]
 enable_profiling = false
@@ -31,14 +32,13 @@ warmup_steps = 3_000  # lr scheduler warm up, normally 20% of the train steps
 decay_ratio = 0.0  # no decay
 
 [training]
-local_batch_size = 128
+dataset_path = "/mnt/data/datasets/pixparse___cc12m-wds"
+local_batch_size = 32
 max_norm = 1.0  # grad norm clipping
 steps = 30_000
-compile = false
 dataset = "cc12m-wds"
-classifer_free_guidance_prob = 0.447
+classifier_free_guidance_prob = 0.447
 img_size = 256
-gradient_accumulation_steps = 2
 
 [encoder]
 t5_encoder = "google/t5-v1_1-xxl"
@@ -46,37 +46,30 @@ clip_encoder = "openai/clip-vit-large-patch14"
 max_t5_encoding_len = 256
 autoencoder_path = "torchtitan/experiments/flux/assets/autoencoder/ae.safetensors"  # Autoencoder to use for image
 
-[eval]
-enable_classifer_free_guidance = true
-classifer_free_guidance_scale = 5.0
+[validation]
+enable = true
+dataset = "coco-validation"
+local_batch_size = 32
+steps = 6
+freq = 1000
+enable_classifier_free_guidance = true
+classifier_free_guidance_scale = 5.0
 denoising_steps = 50
 save_img_folder = "img"
-eval_freq = 1000
+save_img_count = 1
+all_timesteps = false
 
 [parallelism]
 # 2 replicas (data-parallel groups), each using 8 GPUs for FSDP
 data_parallel_replicate_degree = 2
 data_parallel_shard_degree = 8
-fsdp_reshard_after_forward = false
-fsdp_overlap_comm = false
-fsdp_prefetch_params = 2               # pre-gather next layers
-
-[dataloader]                              # new section
-num_workers        = 16
-prefetch_factor    = 4
-persistent_workers = true                 # hides “image skipped” stalls
-
-
-[experimental]
-custom_args_module = "torchtitan.experiments.flux.job_config"
-
 [activation_checkpoint]
 mode = "full"
 
 [checkpoint]
-enable_checkpoint = true
-folder = "checkpoint"
+enable = true
+folder = "/mnt/bucket/s3-mp-volume/checkpoints"
 interval = 1_000
-model_weights_only = false
+last_save_model_only = false
 export_dtype = "float32"
 async_mode = "disabled"  # ["disabled", "async", "async_with_pinned_mem"]
