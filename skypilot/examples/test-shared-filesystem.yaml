@@ -1,20 +1,24 @@
 # This examlple runs a read performance test using fio on the Nebius shared filesystem.
 # Your `~/.sky/config.yaml` must have the following contents:
 # nebius:
-#   eu-north1:
-#     project_id: project-e00...
-#     fabric: fabric-...
-#     filesystems: 
-#       - filesystem_id: computefilesystem-<fs1>
-#         mount_path: /mnt/fs_data
-#         attach_mode: READ_WRITE
-#       - filesystem_id: computefilesystem-<fs2>
-#         mount_path: /mnt/fs_data_2
-#         attach_mode: READ_WRITE
+#     tenant_id: tenant-1234567890
+#     region_configs:
+#         eu-north1:
+#             project_id: project-e00......
+#             fabric: fabric-3
+#         eu-west1:
+#             project_id: project-e01...
+#             fabric: fabric-5
+#             filesystems:
+#               - filesystem_id: computefilesystem-e00aaaaa01bbbbbbbb
+#                 mount_path: /mnt/fsnew
+#                 attach_mode: READ_WRITE
+#               - filesystem_id: computefilesystem-e00ccccc02dddddddd
+#                 mount_path: /mnt/fsnew2
+#                 attach_mode: READ_ONLY
 
 resources:
-  cloud: nebius
-  region: eu-north1
+  infra: k8s # or infra: nebius or e.g. infra: nebius/us-central1
   accelerators: H100:1
   image_id: docker:nvcr.io/nvidia/pytorch:23.10-py3
 
