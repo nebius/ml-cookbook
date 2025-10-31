@@ -9,18 +9,18 @@ set -e  # Exit immediately if a command exits with a non-zero status
 ROOT_DIR=$(pwd)
 
 # 1) Install Python 3.11 + venv support if missing
-if ! command -v python3.11 &> /dev/null; then
-  echo ">>> python3.11 not found – installing via apt..."
+if ! command -v python3.12 &> /dev/null; then
+  echo ">>> python3.12 not found – installing via apt..."
   sudo apt update
-  sudo apt install -y python3.11 python3.11-venv
+  sudo apt install -y python3.12 python3.12-venv
 fi
 
-# 2) Create & activate a 3.11 venv
-python3.11 -m venv .env
+# 2) Create & activate a 3.12 venv
+python3.12 -m venv .env
 source .env/bin/activate
 
 # 3) Clone and cd into the flux experiment, upgrade pip and install requirements
-git clone https://github.com/pytorch/torchtitan
+git clone --branch v0.2.0 --depth 1 https://github.com/pytorch/torchtitan 
 cd torchtitan
 pip install --upgrade pip
 pip install -r requirements.txt
