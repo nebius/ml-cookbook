@@ -1,5 +1,5 @@
 resources:
-  infra: k8s # or infra: nebius or e.g. infra: nebius/us-central1
+  infra: nebius
   accelerators: H100:1
 
 setup: |

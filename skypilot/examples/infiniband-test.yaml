@@ -1,6 +1,7 @@
 resources:
-  infra: k8s # or infra: nebius or e.g. infra: nebius/us-central1
+  infra: nebius
   accelerators: H100:8
+  network_tier: best
   
 num_nodes: 2
 

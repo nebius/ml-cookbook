@@ -1,8 +1,9 @@
 resources:
-  infra: k8s # or infra: nebius or e.g. infra: nebius/us-central1
+  infra: nebius
   accelerators: H100:8
   image_id: docker:nvcr.io/nvidia/pytorch:23.10-py3
-  
+  network_tier: best
+
 num_nodes: 2
 
 setup: |
