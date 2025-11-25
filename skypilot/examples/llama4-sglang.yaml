@@ -8,8 +8,7 @@
 
 resources:
   accelerators: H100:8
-  region: eu-north1
-  cloud: nebius
+  infra: nebius
   disk_size: 512
   ports: 8000
 
@@ -20,13 +19,17 @@ envs:
   HF_TOKEN: 
 
 setup: |
-  uv pip install "sglang[all]>=0.4.5" --find-links https://flashinfer.ai/whl/cu124/torch2.5/flashinfer-python
+  uv venv
+  source .venv/bin/activate
+  uv pip install "sglang>=0.5.5" --find-links https://flashinfer.ai/whl/cu124/torch2.5/flashinfer-python
 
 run: |
+  source .venv/bin/activate
   python -m sglang.launch_server \
   --model-path $MODEL_NAME \
   --tp-size $SKYPILOT_NUM_GPUS_PER_NODE \
-  --context-length 1000000 \
+  --context-length 32768 \
   --host 0.0.0.0 \
   --port 8000 \
-  --trust-remote-code 
+  --trust-remote-code \
+  --attention-backend triton
