@@ -3,9 +3,7 @@
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=0
-#SBATCH --partition=main
 #SBATCH --time=01:00:00
-#SBATCH --account=ckondratenko
 #SBATCH --gpus-per-node=8
 #SBATCH --cpus-per-task=128
 #SBATCH --output=slurm-%j.out
