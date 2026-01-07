@@ -1,5 +1,5 @@
 # Running multi-node experiment with VERL on a Slurm cluster
-This document provides a step-by-step guide to a launching a PPO training job using GSM8K with `deepseek-ai/deepseek-llm-7b-chat` from [VERL examples](https://verl.readthedocs.io/en/latest/examples/gsm8k_example.html#step-4-perform-ppo-training-with-your-model-on-gsm8k-dataset) on Slurm (Soperator) cluster.
+This document provides a step-by-step guide to launching a PPO training job using GSM8K with `deepseek-ai/deepseek-llm-7b-chat` with [verl](https://github.com/volcengine/verl) framework based on a [GSM8K example](https://verl.readthedocs.io/en/latest/examples/gsm8k_example.html#step-4-perform-ppo-training-with-your-model-on-gsm8k-dataset) on Slurm (Soperator) cluster.
 
 ## Prerequisites
 
