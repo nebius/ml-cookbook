@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=verl-ray-on-slurm
+#SBATCH --job-name=verl-ppo-on-slurm
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=0
@@ -167,4 +167,4 @@ PYTHONUNBUFFERED=1 srun --overlap --nodes=1 --ntasks=1 -w "$head_node" \
         trainer.test_freq=10 \
         trainer.total_epochs=15 \
         $METRICS_ARG
-  " 2>&1 | tee verl_demo_slurm.log
+  " 2>&1 | tee verl_ppo_slurm.log

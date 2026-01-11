@@ -1,4 +1,4 @@
-# Running multi-node experiment with VERL on a Slurm cluster
+# Running multi-node experiment PPO with VERL on a Slurm cluster
 This document provides a step-by-step guide to launching a PPO training job using GSM8K with `deepseek-ai/deepseek-llm-7b-chat` with [verl](https://github.com/volcengine/verl) framework based on a [GSM8K example](https://verl.readthedocs.io/en/latest/examples/gsm8k_example.html#step-4-perform-ppo-training-with-your-model-on-gsm8k-dataset) on Slurm (Soperator) cluster.
 
 ## Prerequisites
@@ -8,35 +8,37 @@ Before you start, make sure you have the following:
 
 ## Steps
 
-For running this workload, you will need to SSH to the login node of the Soperator cluster and clone this repository to the shared filesystem (by default, Sopeartor has `/` mounted as a shared filesystem).
+For running this workload, you will need to SSH to the login node of the Soperator cluster and clone this repository to the shared filesystem (by default, Soperator has `/` mounted as a shared filesystem).
 
 ### Setup the environment
 
 - clone VERL repository:
-```
+```bash
 git clone https://github.com/volcengine/verl.git -b v0.7.0
 ```
 
-- download VERL container image:
-```
+- Download VERL container image:
+```bash
 enroot import -o ./verl-vllm012.latest.sqsh docker://verlai/verl:vllm012.latest
 ```
-- create a virtual environment and install dependencies:
-```
+
+- Create a virtual environment and install dependencies:
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r verl/requirements.txt
 ```
 
-- download GSM8K dataset:
-```
+- Download GSM8K dataset:
+```bash
 PYTHONPATH=./verl python3 verl/examples/data_preprocess/gsm8k.py --local_save_dir data/gsm8k
 ```
 
-- [optional] download the model checkpoint:
+- Download the model checkpoint:
 ```
 huggingface-cli download deepseek-ai/deepseek-math-7b-instruct --local-dir models/deepseek-math-7b-instruct --local-dir-use-symlinks False
 ```
+### Verify directory structure
 
 Correctly set up working directory will look like this:
 ```
@@ -45,28 +47,28 @@ Correctly set up working directory will look like this:
 ├── models
 ├── README.md
 ├── verl
-├── verl_gsm8k_example.sh
+├── ppo_multinode.sh
 └── verl-vllm012.latest.sqsh
 ```
 
 ### [Optional] Examine the `sbatch` script
 
-The script `verl_gsm8k_example.sh `contains a number of arguments which configure Slurm job (starting with `#SBATCH`). If you want to change the job parameters (e.g. number of nodes, GPUs, etc.), you can modify the script accordingly.
+The script `ppo_multinode.sh `contains a number of arguments which configure the Slurm job (starting with `#SBATCH`). If you want to change the job parameters (e.g. number of nodes, GPUs, etc.), you can modify the script accordingly.
 
 This script deploys a Ray cluster on Slurm worker nodes (head node and worker nodes). Once the cluster is ready, we submit the job with Ray driver on the head node by attaching to the job (hence `--jobid "$SLURM_JOB_ID"` argument).
 
 ### Submit the job
 
-To submitt the job, simply run:
+To submit the job, simply run:
 ```
-sbatch verl_gsm8k_example.sh
+sbatch ppo_multinode.sh
 ```
 
 You may opt in for W&B to log your job metrics, you will need a valid `WANDB_API_KEY` in your environment to enable it.
 
 ### Monitor the job
 
-You can monitor the job status using `squeue` command. Once the job is running, you can check the output in the log file specified in the script (`*.out` and `*.err`). Ray job will log output in `verl_demo_slurm.log`.
+You can monitor the job status using `squeue` command. Once the job is running, you can check the output in the log file specified in the script (`*.out` and `*.err`). Ray job will log output in `verl_ppo_slurm.log`.
 
 ### Expected output
 
