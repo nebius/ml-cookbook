@@ -34,50 +34,25 @@ pip install -r verl/requirements.txt
 PYTHONPATH=./verl python3 verl/examples/data_preprocess/gsm8k.py --local_save_dir data/gsm8k
 ```
 
-- Download the model checkpoint:
-```bash
-huggingface-cli download deepseek-ai/deepseek-llm-7b-chat --local-dir models/deepseek-llm-7b-chat --local-dir-use-symlinks False
-```
+- Download the model checkpoint and convert to safetensors format:
 
-### Convert model to safetensors format
-
-The Megatron backend requires model weights in safetensors format. If your model only has `.bin` files, convert them:
+The Megatron backend requires model weights in safetensors format. The following command downloads the model and saves it as safetensors:
 
 ```bash
-# Create conversion script
-cat > convert_to_safetensors.py << 'EOF'
-#!/usr/bin/env python3
-import os, json, torch
-from safetensors.torch import save_file
-
-model_path = "models/deepseek-llm-7b-chat"
-with open(os.path.join(model_path, "pytorch_model.bin.index.json"), "r") as f:
-    index = json.load(f)
-
-bin_files = set(index["weight_map"].values())
-new_weight_map = {}
-
-for bin_file in sorted(bin_files):
-    safetensor_file = bin_file.replace(".bin", ".safetensors")
-    print(f"Converting {bin_file} -> {safetensor_file}")
-    weights = torch.load(os.path.join(model_path, bin_file), map_location="cpu", weights_only=True)
-    save_file(weights, os.path.join(model_path, safetensor_file))
-    for key, file in index["weight_map"].items():
-        if file == bin_file:
-            new_weight_map[key] = safetensor_file
-
-new_index = {"metadata": index.get("metadata", {}), "weight_map": new_weight_map}
-with open(os.path.join(model_path, "model.safetensors.index.json"), "w") as f:
-    json.dump(new_index, f, indent=2)
-print("Conversion complete!")
-EOF
-
-# Run conversion in container (needs torch and safetensors)
 srun --nodes=1 --time=00:30:00 --mem=64G \
   --container-image=./verl-vllm012.latest.sqsh \
   --container-mounts=$(pwd):$(pwd) \
   --container-workdir=$(pwd) \
-  python3 convert_to_safetensors.py
+  python3 -c "
+from transformers import AutoModelForCausalLM, AutoTokenizer
+model_id = 'deepseek-ai/deepseek-llm-7b-chat'
+output_path = 'models/deepseek-llm-7b-chat'
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype='auto')
+tokenizer.save_pretrained(output_path)
+model.save_pretrained(output_path, safe_serialization=True)
+print('Download and conversion complete!')
+"
 ```
 
 ### Create logs directory
@@ -96,12 +71,17 @@ Correctly set up working directory will look like this:
 │       ├── train.parquet
 │       └── test.parquet
 ├── models/
-│   └── deepseek-llm-7b-chat/
+│   └── deepseek-llm-7b-chat
+│       ├── chat_template.jinja
 │       ├── config.json
+│       ├── generation_config.json
+│       ├── model-00001-of-00003.safetensors
+│       ├── model-00002-of-00003.safetensors
+│       ├── model-00003-of-00003.safetensors
 │       ├── model.safetensors.index.json
-│       ├── pytorch_model-00001-of-00002.safetensors
-│       ├── pytorch_model-00002-of-00002.safetensors
-│       └── tokenizer.json
+│       ├── special_tokens_map.json
+│       ├── tokenizer.json
+│       └── tokenizer_config.json
 ├── verl/
 ├── grpo_multinode.sh
 └── verl-vllm012.latest.sqsh
@@ -133,10 +113,9 @@ You can monitor the job status using `squeue` command. Once the job is running, 
 The script will run the GRPO training process on 2 nodes with 8 GPUs each (16 GPUs total). The output log at the end should show validation metrics with accuracy scores on GSM8K.
 
 ```bash
-(TaskRunner pid=41271) ("Final validation metrics: {'val-aux/openai/gsm8k/reward/mean@1': "
-(TaskRunner pid=41271)  "0.6876421531463229, 'val-core/openai/gsm8k/acc/mean@1': 0.6876421531463229, "
-(TaskRunner pid=41271)  "'val-aux/num_turns/min': 2, 'val-aux/num_turns/max': 2, "
-(TaskRunner pid=41271)  "'val-aux/num_turns/mean': 2.0}")
-Training Progress: 100%|██████████| 105/105 [2:33:10<00:00, 87.53s/it]
+(TaskRunner pid=2520521) ("Final validation metrics: {'val-aux/openai/gsm8k/reward/mean@1': "
+(TaskRunner pid=2520521)  "0.66868840030326, 'val-core/openai/gsm8k/acc/mean@1': 0.66868840030326, "
+(TaskRunner pid=2520521)  "'val-aux/num_turns/min': 2, 'val-aux/num_turns/max': 2, "
+(TaskRunner pid=2520521)  "'val-aux/num_turns/mean': 2.0}")
+Training Progress: 100%|██████████| 14/14 [20:56<00:00, 89.77s/it]
 ```
-

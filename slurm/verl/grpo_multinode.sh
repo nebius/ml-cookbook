@@ -149,6 +149,6 @@ PYTHONUNBUFFERED=1 srun --overlap --nodes=1 --ntasks=1 -w "$head_node" \
         trainer.nnodes='${SLURM_NNODES}' \
         trainer.save_freq=-1 \
         trainer.test_freq=5 \
-        trainer.total_epochs=15 \
+        trainer.total_epochs=2 \
         $METRICS_ARG
   " 2>&1 | tee verl_grpo_slurm.log
