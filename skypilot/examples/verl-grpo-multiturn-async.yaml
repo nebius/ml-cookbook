@@ -1,0 +1,175 @@
+# VERL GRPO Multi-turn Async Training with SGLang
+#
+# This example runs async multi-turn GRPO (Group Relative Policy Optimization) training
+# using the VERL framework with deepseek-ai/deepseek-llm-7b-chat on GSM8K dataset.
+#
+# To launch this job, run:
+#   sky launch -c verl-grpo examples/verl-grpo-multiturn-async.yaml -y
+#
+# Optionally enable W&B logging:
+#   export WANDB_API_KEY=<your_wandb_api_key>
+#   sky launch -c verl-grpo examples/verl-grpo-multiturn-async.yaml --env WANDB_API_KEY -y
+
+resources:
+  accelerators: H100:8
+  region: eu-north1
+  cloud: nebius
+  disk_size: 512
+  image_id: docker:verlai/verl:sgl056.latest
+
+num_nodes: 2
+
+envs:
+  WANDB_API_KEY:
+  MODEL_NAME: deepseek-ai/deepseek-llm-7b-chat
+  VERL_VERSION: v0.7.0
+
+file_mounts:
+  /workspace:
+    name: verl-workspace
+    mode: MOUNT
+
+setup: |
+  set -eoux pipefail
+
+  cd /workspace
+
+  # Clone VERL repository if not exists
+  if [ ! -d "verl" ]; then
+    git clone https://github.com/volcengine/verl.git -b ${VERL_VERSION}
+  fi
+
+  # Download GSM8K multi-turn dataset if not exists
+  if [ ! -d "data/gsm8k_multiturn" ]; then
+    mkdir -p data
+    PYTHONPATH=./verl python3 verl/examples/data_preprocess/gsm8k_multiturn_w_interaction.py \
+      --local_save_dir data/gsm8k_multiturn
+  fi
+
+  # Download model if not exists
+  if [ ! -d "models/${MODEL_NAME##*/}" ]; then
+    mkdir -p models
+    pip install huggingface_hub
+    huggingface-cli download ${MODEL_NAME} --local-dir models/${MODEL_NAME##*/}
+  fi
+
+  echo "Setup complete!"
+
+run: |
+  set -eoux pipefail
+
+  cd /workspace
+
+  # Configuration paths
+  CONFIG_PATH="/workspace/verl/examples/sglang_multiturn/config"
+  TRAIN_FILES="/workspace/data/gsm8k_multiturn/train.parquet"
+  VAL_FILES="/workspace/data/gsm8k_multiturn/test.parquet"
+  MODEL_PATH="/workspace/models/${MODEL_NAME##*/}"
+
+  # Get node information
+  HEAD_IP=$(echo "$SKYPILOT_NODE_IPS" | head -n1)
+  NUM_NODES=$SKYPILOT_NUM_NODES
+  NODE_RANK=$SKYPILOT_NODE_RANK
+  NUM_GPUS=$SKYPILOT_NUM_GPUS_PER_NODE
+
+  RAY_PORT=6379
+  RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}"
+
+  echo "Node rank: $NODE_RANK / $NUM_NODES"
+  echo "Head IP: $HEAD_IP"
+  echo "Ray address: $RAY_ADDRESS"
+
+  if [ "$NODE_RANK" -eq 0 ]; then
+    # Head node: start Ray head
+    echo "Starting Ray head node..."
+    ray start --head \
+      --node-ip-address="$HEAD_IP" \
+      --port=$RAY_PORT \
+      --num-cpus=$(nproc) \
+      --num-gpus=$NUM_GPUS \
+      --disable-usage-stats
+
+    # Wait for workers to join
+    echo "Waiting for workers to join..."
+    while true; do
+      NUM_READY=$(ray status 2>/dev/null | grep -oP '\d+(?= node)' | head -1 || echo "0")
+      if [ "$NUM_READY" -ge "$NUM_NODES" ]; then
+        echo "All $NUM_NODES nodes ready!"
+        break
+      fi
+      echo "Waiting for nodes... ($NUM_READY/$NUM_NODES ready)"
+      sleep 5
+    done
+
+    ray status
+
+    # Configure W&B logging if API key is set
+    METRICS_ARG="trainer.logger=console"
+    if [ -n "${WANDB_API_KEY:-}" ]; then
+      METRICS_ARG="trainer.logger='[\"console\",\"wandb\"]'"
+    fi
+
+    # Launch VERL training
+    echo "Launching VERL GRPO multi-turn async training..."
+    export RAY_ADDRESS="$RAY_ADDRESS"
+    export CUDA_DEVICE_MAX_CONNECTIONS=1
+
+    python3 -m verl.trainer.main_ppo \
+      --config-path="$CONFIG_PATH" \
+      --config-name='gsm8k_multiturn_grpo' \
+      actor_rollout_ref.model.path="$MODEL_PATH" \
+      algorithm.adv_estimator=grpo \
+      data.train_batch_size=256 \
+      data.max_prompt_length=1024 \
+      data.max_response_length=1024 \
+      data.filter_overlong_prompts=True \
+      data.truncation='error' \
+      data.return_raw_chat=True \
+      actor_rollout_ref.rollout.mode=async \
+      actor_rollout_ref.actor.optim.lr=1e-6 \
+      actor_rollout_ref.model.use_remove_padding=True \
+      actor_rollout_ref.actor.ppo_mini_batch_size=256 \
+      actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=32 \
+      actor_rollout_ref.actor.use_kl_loss=True \
+      actor_rollout_ref.actor.kl_loss_coef=0.001 \
+      actor_rollout_ref.actor.kl_loss_type=low_var_kl \
+      actor_rollout_ref.actor.entropy_coeff=0 \
+      actor_rollout_ref.model.enable_gradient_checkpointing=True \
+      actor_rollout_ref.actor.fsdp_config.param_offload=False \
+      actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+      actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
+      actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
+      actor_rollout_ref.rollout.name=sglang \
+      actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
+      actor_rollout_ref.rollout.n=16 \
+      actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
+      actor_rollout_ref.ref.fsdp_config.param_offload=True \
+      algorithm.use_kl_in_reward=False \
+      trainer.critic_warmup=0 \
+      trainer.project_name='gsm8k_async_rl' \
+      trainer.experiment_name="deepseek-7b-gsm8k-multiturn-skypilot" \
+      trainer.save_freq=-1 \
+      trainer.test_freq=20 \
+      trainer.total_epochs=1 \
+      actor_rollout_ref.actor.ppo_max_token_len_per_gpu=8192 \
+      actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=8192 \
+      actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=8192 \
+      critic.ppo_max_token_len_per_gpu=8192 \
+      critic.forward_max_token_len_per_gpu=8192 \
+      data.train_files="$TRAIN_FILES" \
+      data.val_files="$VAL_FILES" \
+      actor_rollout_ref.rollout.multi_turn.interaction_config_path="$CONFIG_PATH/interaction_config/gsm8k_interaction_config.yaml" \
+      actor_rollout_ref.rollout.multi_turn.max_user_turns=1 \
+      $METRICS_ARG
+
+  else
+    # Worker node: join Ray cluster
+    echo "Starting Ray worker node (rank $NODE_RANK)..."
+    sleep 10  # Give head node time to start
+
+    ray start --address="$RAY_ADDRESS" \
+      --num-cpus=$(nproc) \
+      --num-gpus=$NUM_GPUS \
+      --disable-usage-stats \
+      --block
+  fi
