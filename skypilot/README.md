@@ -248,8 +248,6 @@ This example:
 - Deploys a Ray cluster across nodes with SGLang rollout backend
 - Runs async multi-turn rollouts with interaction feedback
 
-For more details, see the [full documentation](examples/verl-grpo-multiturn-async.md).
-
 ### Managing Clusters
 
 View all your clusters:
