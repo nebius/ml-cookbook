@@ -3,7 +3,7 @@
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=0
-#SBATCH --time=04:00:00
+#SBATCH --time=01:00:00
 #SBATCH --gpus-per-node=8
 #SBATCH --cpus-per-task=128
 #SBATCH --output=logs/slurm-%j.out
@@ -20,11 +20,14 @@ model_path=$SUBMIT_DIR/models/deepseek-llm-7b-chat
 image_path=$SUBMIT_DIR/verl-vllm012.latest.sqsh
 
 # Nodes
-nodes_array=($(scontrol show hostnames "$SLURM_JOB_NODELIST"))
+mapfile -t nodes_array < <(scontrol show hostnames "$SLURM_JOB_NODELIST")
 head_node=${nodes_array[0]}
 
 # Get head node IP
-head_node_ip=$(srun --nodes=1 --ntasks=1 -w "$head_node" hostname --ip-address)
+head_node_ip=$(
+  srun --nodes=1 --ntasks=1 -w "$head_node" \
+    hostname --ip-address
+)
 
 # Handle IPv6 case
 if [[ "$head_node_ip" == *" "* ]]; then
@@ -54,6 +57,7 @@ srun --nodes=1 --ntasks=1 -w "$head_node" \
   --container-image "$image_path" \
   --container-mounts "$verl_workdir_mount,$train_files,$val_files,$model_path,$ray_tmp_mount" \
   --container-workdir /workspace \
+  --container-name=ray-head-$SLURM_JOB_ID \
   --no-container-mount-home \
   bash -lc "
     set -eoux pipefail
@@ -63,10 +67,11 @@ srun --nodes=1 --ntasks=1 -w "$head_node" \
       --num-cpus '${SLURM_CPUS_PER_TASK}' \
       --num-gpus '${SLURM_GPUS_PER_NODE}' \
       --disable-usage-stats \
+      --resources='{\"worker_units\": ${SLURM_GPUS_PER_NODE}, \"slurm_managed_ray_cluster\": 1}' \
       --block
   " &
 
-sleep 10
+sleep 5
 
 # Start workers
 worker_num=$((SLURM_JOB_NUM_NODES - 1))
@@ -85,14 +90,39 @@ for ((i = 1; i <= worker_num; i++)); do
         --num-cpus '${SLURM_CPUS_PER_TASK}' \
         --num-gpus '${SLURM_GPUS_PER_NODE}' \
         --disable-usage-stats \
+        --resources='{\"worker_units\": ${SLURM_GPUS_PER_NODE}, \"slurm_managed_ray_cluster\": 1}' \
         --block
     " &
   sleep 5
 done
-sleep 10
 
-echo "Ray cluster ready!"
+# Wait until all workers are registered in Ray cluster
+extract_worker_units() {
+  status_output=$(srun --overlap --nodes=1 --ntasks=1 -w "$head_node" \
+    --container-name=ray-head-$SLURM_JOB_ID --no-container-mount-home \
+    ray status)
+  if echo "$status_output" | grep -q "worker_units"; then
+    echo "$status_output" | grep "worker_units" | awk -F'[/. ]' '{print $4}'
+  else
+    echo 0
+  fi
+}
+
+NUM_ACTORS=$((SLURM_NNODES * SLURM_GPUS_PER_NODE))
+while true; do
+  worker_units=$(extract_worker_units)
+  echo "[INFO] Number of actors online: $worker_units/$NUM_ACTORS"
+  if [[ "$worker_units" -eq "$NUM_ACTORS" ]]; then
+    break
+  fi
+  sleep 10
+done
+
+echo "All workers connected!"
 echo "Launching training..."
+
+export RAY_ADDRESS="$head_node_ip:6379"
+echo "RAY_ADDRESS=$RAY_ADDRESS"
 
 METRICS_ARG=""
 if [ -n "${WANDB_API_KEY:-}" ]; then
@@ -102,11 +132,12 @@ else
     METRICS_ARG="trainer.logger=console"
 fi
 
+# Attaching to a running container 'ray-head' to submit the job
 PYTHONUNBUFFERED=1 srun --overlap --nodes=1 --ntasks=1 -w "$head_node" \
-  --container-image "$image_path" \
-  --container-mounts "$verl_workdir_mount,$train_files,$val_files,$model_path,$ray_tmp_mount" \
-  --container-workdir /workspace \
+  --container-name=ray-head-$SLURM_JOB_ID \
   --no-container-mount-home \
+  --container-workdir /workspace \
+  --jobid "$SLURM_JOB_ID" \
   bash -lc "
     set -eoux pipefail
     export RAY_ADDRESS='$ip_head'
@@ -151,4 +182,4 @@ PYTHONUNBUFFERED=1 srun --overlap --nodes=1 --ntasks=1 -w "$head_node" \
         trainer.test_freq=5 \
         trainer.total_epochs=2 \
         $METRICS_ARG
-  " 2>&1 | tee verl_grpo_slurm.log
+  " 2>&1 | tee logs/verl_grpo_slurm.log

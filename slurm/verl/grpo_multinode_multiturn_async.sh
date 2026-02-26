@@ -22,11 +22,14 @@ image_path=$SUBMIT_DIR/verl-sgl056.latest.sqsh
 CONFIG_PATH="/workspace/examples/sglang_multiturn/config"
 
 # Nodes
-nodes_array=($(scontrol show hostnames "$SLURM_JOB_NODELIST"))
+mapfile -t nodes_array < <(scontrol show hostnames "$SLURM_JOB_NODELIST")
 head_node=${nodes_array[0]}
 
 # Get head node IP
-head_node_ip=$(srun --nodes=1 --ntasks=1 -w "$head_node" hostname --ip-address)
+head_node_ip=$(
+  srun --nodes=1 --ntasks=1 -w "$head_node" \
+    hostname --ip-address
+)
 
 # Handle IPv6 case
 if [[ "$head_node_ip" == *" "* ]]; then
@@ -56,6 +59,7 @@ srun --nodes=1 --ntasks=1 -w "$head_node" \
   --container-image "$image_path" \
   --container-mounts "$verl_workdir_mount,$train_files,$val_files,$model_path,$ray_tmp_mount" \
   --container-workdir /workspace \
+  --container-name=ray-head-$SLURM_JOB_ID \
   --no-container-mount-home \
   bash -lc "
     set -eoux pipefail
@@ -65,10 +69,11 @@ srun --nodes=1 --ntasks=1 -w "$head_node" \
       --num-cpus '${SLURM_CPUS_PER_TASK}' \
       --num-gpus '${SLURM_GPUS_PER_NODE}' \
       --disable-usage-stats \
+      --resources='{\"worker_units\": ${SLURM_GPUS_PER_NODE}, \"slurm_managed_ray_cluster\": 1}' \
       --block
   " &
 
-sleep 10
+sleep 5
 
 # Start workers
 worker_num=$((SLURM_JOB_NUM_NODES - 1))
@@ -87,14 +92,39 @@ for ((i = 1; i <= worker_num; i++)); do
         --num-cpus '${SLURM_CPUS_PER_TASK}' \
         --num-gpus '${SLURM_GPUS_PER_NODE}' \
         --disable-usage-stats \
+        --resources='{\"worker_units\": ${SLURM_GPUS_PER_NODE}, \"slurm_managed_ray_cluster\": 1}' \
         --block
     " &
   sleep 5
 done
-sleep 10
 
-echo "Ray cluster ready!"
+# Wait until all workers are registered in Ray cluster
+extract_worker_units() {
+  status_output=$(srun --overlap --nodes=1 --ntasks=1 -w "$head_node" \
+    --container-name=ray-head-$SLURM_JOB_ID --no-container-mount-home \
+    ray status)
+  if echo "$status_output" | grep -q "worker_units"; then
+    echo "$status_output" | grep "worker_units" | awk -F'[/. ]' '{print $4}'
+  else
+    echo 0
+  fi
+}
+
+NUM_ACTORS=$((SLURM_NNODES * SLURM_GPUS_PER_NODE))
+while true; do
+  worker_units=$(extract_worker_units)
+  echo "[INFO] Number of actors online: $worker_units/$NUM_ACTORS"
+  if [[ "$worker_units" -eq "$NUM_ACTORS" ]]; then
+    break
+  fi
+  sleep 10
+done
+
+echo "All workers connected!"
 echo "Launching training..."
+
+export RAY_ADDRESS="$head_node_ip:6379"
+echo "RAY_ADDRESS=$RAY_ADDRESS"
 
 METRICS_ARG=""
 if [ -n "${WANDB_API_KEY:-}" ]; then
@@ -104,6 +134,7 @@ else
     METRICS_ARG="trainer.logger=console"
 fi
 
+# Attaching to a running container 'ray-head' to submit the job
 PYTHONUNBUFFERED=1 srun --overlap --nodes=1 --ntasks=1 -w "$head_node" \
   --container-image "$image_path" \
   --container-mounts "$verl_workdir_mount,$train_files,$val_files,$model_path,$ray_tmp_mount" \
@@ -115,7 +146,7 @@ PYTHONUNBUFFERED=1 srun --overlap --nodes=1 --ntasks=1 -w "$head_node" \
     export CUDA_DEVICE_MAX_CONNECTIONS=1
     ray status
     python3 -m verl.trainer.main_ppo \
-        --config-path="$CONFIG_PATH" \
+        --config-path='$CONFIG_PATH' \
         --config-name='gsm8k_multiturn_grpo' \
         actor_rollout_ref.model.path='$model_path' \
         algorithm.adv_estimator=grpo \
@@ -148,6 +179,8 @@ PYTHONUNBUFFERED=1 srun --overlap --nodes=1 --ntasks=1 -w "$head_node" \
         trainer.critic_warmup=0 \
         trainer.project_name='gsm8k_async_rl' \
         trainer.experiment_name='deepseek-7b-gsm8k-multiturn-feedback-${SLURM_JOBID}' \
+        trainer.n_gpus_per_node='${SLURM_GPUS_PER_NODE}' \
+        trainer.nnodes='${SLURM_NNODES}' \
         trainer.save_freq=-1 \
         trainer.test_freq=20 \
         trainer.total_epochs=1 \
@@ -158,7 +191,7 @@ PYTHONUNBUFFERED=1 srun --overlap --nodes=1 --ntasks=1 -w "$head_node" \
         critic.forward_max_token_len_per_gpu=8192 \
         data.train_files='$train_files' \
         data.val_files='$val_files' \
-        actor_rollout_ref.rollout.multi_turn.interaction_config_path="$CONFIG_PATH/interaction_config/gsm8k_interaction_config.yaml" \
+        actor_rollout_ref.rollout.multi_turn.interaction_config_path='$CONFIG_PATH/interaction_config/gsm8k_interaction_config.yaml' \
         actor_rollout_ref.rollout.multi_turn.max_user_turns=1 \
         $METRICS_ARG
-  " 2>&1 | tee verl_grpo_slurm.log
+  " 2>&1 | tee logs/verl_grpo_multiturn_async_slurm.log
