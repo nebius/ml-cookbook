@@ -26,7 +26,7 @@ setup: |
   # Download model
   if [ ! -f "/root/models/${MODEL_NAME##*/}/config.json" ]; then
     mkdir -p /root/models
-    huggingface-cli download ${MODEL_NAME} \
+    hf download ${MODEL_NAME} \
       --local-dir /root/models/${MODEL_NAME##*/}
   fi
 
@@ -51,11 +51,10 @@ run: |
   NODE_RANK=$SKYPILOT_NODE_RANK
   NUM_GPUS=$SKYPILOT_NUM_GPUS_PER_NODE
 
-  # Get accurate CPU count
-  ACTUAL_CPUS=$(python3 -c "print(open('/proc/cpuinfo').read().count('processor\t:'))" 2>/dev/null || nproc)
+  ACTUAL_CPUS=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null || nproc)
 
   # Force Gloo/NCCL to use the real interface
-  NET_IFACE=$(python3 -c "f=open('/proc/net/route');[print(l.split()[0]) or exit() for l in f if l.split()[1]=='00000000']")
+  NET_IFACE=$(awk '$2 == "00000000" {print $1; exit}' /proc/net/route)
   export GLOO_SOCKET_IFNAME=$NET_IFACE
   export NCCL_SOCKET_IFNAME=$NET_IFACE
   export MASTER_ADDR=$HEAD_IP
@@ -77,9 +76,17 @@ run: |
       --num-gpus=$NUM_GPUS \
       --disable-usage-stats
 
+    MAX_WAIT=900
+    WAITED=0
     while [ $(ray status | grep -c "node_") -lt $NUM_NODES ]; do
       echo "Waiting for all nodes to join... ($(ray status | grep -c "node_")/$NUM_NODES)"
       sleep 5
+      WAITED=$((WAITED + 5))
+      if [ "$WAITED" -ge "$MAX_WAIT" ]; then
+        echo "ERROR: Timed out waiting for workers after ${MAX_WAIT}s"
+        ray status
+        exit 1
+      fi
     done
     echo "All $NUM_NODES nodes ready!"
     ray status
