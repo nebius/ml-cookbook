@@ -3,7 +3,7 @@
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=0
-#SBATCH --time=04:00:00
+#SBATCH --time=01:00:00
 #SBATCH --gpus-per-node=8
 #SBATCH --cpus-per-task=128
 #SBATCH --output=logs/slurm-%j.out
@@ -51,13 +51,11 @@ echo "IP Head:   $ip_head"
 
 printenv
 
-ray_tmp_mount=/tmp:/tmp
-
 # Start Ray head
 echo "Starting HEAD at $head_node"
 srun --nodes=1 --ntasks=1 -w "$head_node" \
   --container-image "$image_path" \
-  --container-mounts "$verl_workdir_mount,$train_files,$val_files,$model_path,$ray_tmp_mount" \
+  --container-mounts "$verl_workdir_mount,$train_files,$val_files,$model_path" \
   --container-workdir /workspace \
   --container-name=ray-head-$SLURM_JOB_ID \
   --no-container-mount-home \
@@ -73,8 +71,6 @@ srun --nodes=1 --ntasks=1 -w "$head_node" \
       --block
   " &
 
-sleep 5
-
 # Start workers
 worker_num=$((SLURM_JOB_NUM_NODES - 1))
 for ((i = 1; i <= worker_num; i++)); do
@@ -83,7 +79,7 @@ for ((i = 1; i <= worker_num; i++)); do
 
   srun --nodes=1 --ntasks=1 -w "$node_i" \
     --container-image "$image_path" \
-    --container-mounts "$verl_workdir_mount,$train_files,$val_files,$model_path,$ray_tmp_mount" \
+    --container-mounts "$verl_workdir_mount,$train_files,$val_files,$model_path" \
     --container-workdir /workspace \
     --no-container-mount-home \
     bash -lc "
@@ -95,8 +91,10 @@ for ((i = 1; i <= worker_num; i++)); do
         --resources='{\"worker_units\": ${SLURM_GPUS_PER_NODE}, \"slurm_managed_ray_cluster\": 1}' \
         --block
     " &
-  sleep 5
 done
+
+# Allow time for ray to start up
+sleep 20
 
 # Wait until all workers are registered in Ray cluster
 extract_worker_units() {
@@ -111,11 +109,18 @@ extract_worker_units() {
 }
 
 NUM_ACTORS=$((SLURM_NNODES * SLURM_GPUS_PER_NODE))
+TIMEOUT=300
+START_TIME=$SECONDS
 while true; do
   worker_units=$(extract_worker_units)
-  echo "[INFO] Number of actors online: $worker_units/$NUM_ACTORS"
+  elapsed=$((SECONDS - START_TIME))
+  echo "[INFO] Number of actors online: $worker_units/$NUM_ACTORS (${elapsed}s elapsed)"
   if [[ "$worker_units" -eq "$NUM_ACTORS" ]]; then
     break
+  fi
+  if [[ "$elapsed" -ge "$TIMEOUT" ]]; then
+    echo "[ERROR] Timed out after ${TIMEOUT}s waiting for all actors to come online ($worker_units/$NUM_ACTORS)"
+    exit 1
   fi
   sleep 10
 done
@@ -136,14 +141,12 @@ fi
 
 # Attaching to a running container 'ray-head' to submit the job
 PYTHONUNBUFFERED=1 srun --overlap --nodes=1 --ntasks=1 -w "$head_node" \
-  --container-image "$image_path" \
-  --container-mounts "$verl_workdir_mount,$train_files,$val_files,$model_path,$ray_tmp_mount" \
-  --container-workdir /workspace \
+  --container-name=ray-head-$SLURM_JOB_ID \
   --no-container-mount-home \
+  --container-workdir /workspace \
+  --jobid "$SLURM_JOB_ID" \
   bash -lc "
     set -eoux pipefail
-    export RAY_ADDRESS='$ip_head'
-    export CUDA_DEVICE_MAX_CONNECTIONS=1
     ray status
     python3 -m verl.trainer.main_ppo \
         --config-path='$CONFIG_PATH' \

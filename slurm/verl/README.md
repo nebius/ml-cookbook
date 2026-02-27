@@ -6,13 +6,14 @@
 
 ## Examples
 
-- [PPO Multi-node](ppo_multinode.sh): PPO training with Megatron backend on GSM8K ([see details](#ppo-multi-node))
+- [PPO Multi-node](ppo_multinode.sh): PPO training with FSDP backend on GSM8K ([see details](#ppo-multi-node))
 - [GRPO Multi-node](grpo_multinode.sh): GRPO training with Megatron backend on GSM8K ([see details](#grpo-multi-node))
-- [GRPO Multi-turn Async Multi-node](grpo_multinode_multiturn_async.sh): Async multi-turn GRPO training with SGLang backend on GSM8K ([see details](#grpo-multi-turn-async))
+- [GRPO Multi-turn Async Multi-node](grpo_multinode_multiturn_async.sh): Async multi-turn GRPO training with SGLang using FSDP on GSM8K ([see details](#grpo-multi-turn-async))
 
 ## Prerequisites
 
 Before you start, make sure you have:
+
 - Access to a [Soperator cluster](https://nebius.com/services/soperator)
 - SSH access to the login node
 
@@ -26,25 +27,17 @@ All examples share the same initial steps. SSH to the login node and run the fol
 git clone https://github.com/volcengine/verl.git -b v0.7.0
 ```
 
-### Create a virtual environment
+### Create the logs and models directories
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r verl/requirements.txt
-```
-
-### Create logs directory
-
-```bash
-mkdir -p logs
+mkdir -p logs models
 ```
 
 ---
 
-## PPO Multi-node
+## PPO Multi-node (FSDP)
 
-PPO (Proximal Policy Optimization) training using `deepseek-ai/deepseek-math-7b-instruct` on GSM8K.
+PPO (Proximal Policy Optimization) training using `deepseek-ai/deepseek-math-7b-instruct` on GSM8K with FSDP backend.
 
 ### Setup
 
@@ -57,36 +50,53 @@ enroot import -o ./verl-vllm012.latest.sqsh docker://verlai/verl:vllm012.latest
 Download the GSM8K dataset:
 
 ```bash
-PYTHONPATH=./verl python3 verl/examples/data_preprocess/gsm8k.py --local_save_dir data/gsm8k
+srun --nodes=1 --ntasks=1 \
+  --container-image=./verl-vllm012.latest.sqsh \
+  --container-mounts=$(pwd):$(pwd) \
+  --container-workdir=$(pwd) \
+  bash -c "PYTHONPATH=$(pwd)/verl python3 verl/examples/data_preprocess/gsm8k.py --local_save_dir data/gsm8k"
 ```
 
 Download the model checkpoint:
 
 ```bash
-hf download deepseek-ai/deepseek-math-7b-instruct \
-    --local-dir models/deepseek-math-7b-instruct \
-    --local-dir-use-symlinks False
+srun --nodes=1 --ntasks=1 \
+  --container-image=./verl-vllm012.latest.sqsh \
+  --container-mounts=$(pwd):$(pwd) \
+  --container-workdir=$(pwd) \
+  hf download deepseek-ai/deepseek-math-7b-instruct \
+    --local-dir models/deepseek-math-7b-instruct
 ```
 
 ### Verify directory structure
 
 ```
 .
-├── data/
-│   └── gsm8k/
-│       ├── train.parquet
-│       └── test.parquet
-├── models/
-│   └── deepseek-math-7b-instruct/
-├── verl/
-├── ppo_multinode.sh
+├── data
+│   └── gsm8k
+│       ├── test.parquet
+│       └── train.parquet
+├── logs
+├── ml-cookbook
+├── models
+│   └── deepseek-math-7b-instruct
+│       ├── LICENSE
+│       ├── README.md
+│       ├── config.json
+│       ├── generation_config.json
+│       ├── pytorch_model-00001-of-00002.bin
+│       ├── pytorch_model-00002-of-00002.bin
+│       ├── pytorch_model.bin.index.json
+│       ├── tokenizer.json
+│       └── tokenizer_config.json
+├── verl
 └── verl-vllm012.latest.sqsh
 ```
 
 ### Submit the job
 
 ```bash
-sbatch ppo_multinode.sh
+sbatch ml-cookbook/slurm/verl/ppo_multinode.sh
 ```
 
 Optionally enable W&B logging by exporting `WANDB_API_KEY` before submitting.
@@ -97,20 +107,20 @@ Check job status with `squeue`. Logs are written to `logs/slurm-<jobid>.out` / `
 
 ### Expected output
 
-The script runs PPO training on 2 nodes with 8 GPUs each (16 GPUs total). On H200 GPUs this takes about 35 minutes. The output log should show validation metrics:
+The script runs PPO training on 2 nodes with 8 GPUs each (16 GPUs total). On H100 GPUs the training portion takes about 5 minutes. The output log should show validation metrics:
 
 ```
-(TaskRunner pid=902322) ("Final validation metrics: {'val-aux/openai/gsm8k/reward/mean@1': "
-(TaskRunner pid=902322)  "0.8362395754359363, 'val-core/openai/gsm8k/acc/mean@1': 0.8362395754359363, "
-(TaskRunner pid=902322)  "'val-aux/num_turns/min': 2, 'val-aux/num_turns/max': 2, "
-(TaskRunner pid=902322)  "'val-aux/num_turns/mean': 2.0}")
+(TaskRunner pid=358695) ("Final validation metrics: {'val-aux/openai/gsm8k/reward/mean@1': "
+(TaskRunner pid=358695)  "0.8036391205458681, 'val-core/openai/gsm8k/acc/mean@1': 0.8036391205458681, "
+(TaskRunner pid=358695)  "'val-aux/num_turns/min': 2, 'val-aux/num_turns/max': 2, "
+(TaskRunner pid=358695)  "'val-aux/num_turns/mean': 2.0}")
 ```
 
 ---
 
-## GRPO Multi-node
+## GRPO Multi-node (Megatron)
 
-GRPO (Group Relative Policy Optimization) training using `deepseek-ai/deepseek-llm-7b-chat` on GSM8K with the Megatron backend.
+GRPO (Group Relative Policy Optimization) training using `deepseek-ai/deepseek-llm-7b-chat` on GSM8K with Megatron backend.
 
 ### Setup
 
@@ -123,7 +133,11 @@ enroot import -o ./verl-vllm012.latest.sqsh docker://verlai/verl:vllm012.latest
 Download the GSM8K dataset:
 
 ```bash
-PYTHONPATH=./verl python3 verl/examples/data_preprocess/gsm8k.py --local_save_dir data/gsm8k
+srun --nodes=1 --ntasks=1 \
+  --container-image=./verl-vllm012.latest.sqsh \
+  --container-mounts=$(pwd):$(pwd) \
+  --container-workdir=$(pwd) \
+  bash -c "PYTHONPATH=$(pwd)/verl python3 verl/examples/data_preprocess/gsm8k.py --local_save_dir data/gsm8k"
 ```
 
 Download the model checkpoint and convert to safetensors format (required by the Megatron backend):
@@ -149,12 +163,14 @@ print('Download and conversion complete!')
 
 ```
 .
-├── data/
-│   └── gsm8k/
-│       ├── train.parquet
-│       └── test.parquet
-├── models/
-│   └── deepseek-llm-7b-chat/
+├── data
+│   └── gsm8k
+│       ├── test.parquet
+│       └── train.parquet
+├── logs
+├── ml-cookbook
+├── models
+│   └── deepseek-llm-7b-chat
 │       ├── chat_template.jinja
 │       ├── config.json
 │       ├── generation_config.json
@@ -165,15 +181,14 @@ print('Download and conversion complete!')
 │       ├── special_tokens_map.json
 │       ├── tokenizer.json
 │       └── tokenizer_config.json
-├── verl/
-├── grpo_multinode.sh
+├── verl
 └── verl-vllm012.latest.sqsh
 ```
 
 ### Submit the job
 
 ```bash
-sbatch grpo_multinode.sh
+sbatch ml-cookbook/slurm/verl/grpo_multinode.sh
 ```
 
 Optionally enable W&B logging by exporting `WANDB_API_KEY` before submitting.
@@ -184,21 +199,20 @@ Check job status with `squeue`. Logs are written to `logs/slurm-<jobid>.out` / `
 
 ### Expected output
 
-The script runs GRPO training on 2 nodes with 8 GPUs each (16 GPUs total). The output log should show validation metrics with accuracy scores on GSM8K:
+The script runs GRPO training on 2 nodes with 8 GPUs each (16 GPUs total). On H100 GPUs the training portion takes about 20 minutes. The output log should show validation metrics:
 
 ```
-(TaskRunner pid=2520521) ("Final validation metrics: {'val-aux/openai/gsm8k/reward/mean@1': "
-(TaskRunner pid=2520521)  "0.66868840030326, 'val-core/openai/gsm8k/acc/mean@1': 0.66868840030326, "
-(TaskRunner pid=2520521)  "'val-aux/num_turns/min': 2, 'val-aux/num_turns/max': 2, "
-(TaskRunner pid=2520521)  "'val-aux/num_turns/mean': 2.0}")
-Training Progress: 100%|██████████| 14/14 [20:56<00:00, 89.77s/it]
+(TaskRunner pid=395646) ("Final validation metrics: {'val-aux/openai/gsm8k/reward/mean@1': "
+(TaskRunner pid=395646)  "0.6755117513267627, 'val-core/openai/gsm8k/acc/mean@1': 0.6755117513267627, "
+(TaskRunner pid=395646)  "'val-aux/num_turns/min': 2, 'val-aux/num_turns/max': 2, "
+(TaskRunner pid=395646)  "'val-aux/num_turns/mean': 2.0}")
 ```
 
 ---
 
-## GRPO Multi-turn Async
+## GRPO Multi-turn Async (FSDP)
 
-Async multi-turn GRPO training using `deepseek-ai/deepseek-llm-7b-chat` on GSM8K with the SGLang backend. The `GsmInteraction` class provides feedback after each model turn, enabling multi-turn rollouts with interaction feedback.
+Async multi-turn GRPO training using `deepseek-ai/deepseek-llm-7b-chat` on GSM8K with SGLang. The `GsmInteraction` class provides feedback after each model turn, enabling multi-turn rollouts with interaction feedback.
 
 ### Setup
 
@@ -211,14 +225,22 @@ enroot import -o ./verl-sgl056.latest.sqsh docker://verlai/verl:sgl056.latest
 Download the GSM8K multiturn dataset with interaction feedback:
 
 ```bash
-PYTHONPATH=./verl python3 verl/examples/data_preprocess/gsm8k_multiturn_w_interaction.py \
-    --local_save_dir data/gsm8k_multiturn
+srun --nodes=1 --ntasks=1 \
+  --container-image=./verl-sgl056.latest.sqsh \
+  --container-mounts=$(pwd):$(pwd) \
+  --container-workdir=$(pwd) \
+  bash -c "PYTHONPATH=$(pwd)/verl python3 verl/examples/data_preprocess/gsm8k_multiturn_w_interaction.py \
+    --local_save_dir data/gsm8k_multiturn"
 ```
 
 Download the model checkpoint:
 
 ```bash
-hf download deepseek-ai/deepseek-llm-7b-chat \
+srun --nodes=1 --ntasks=1 \
+  --container-image=./verl-sgl056.latest.sqsh \
+  --container-mounts=$(pwd):$(pwd) \
+  --container-workdir=$(pwd) \
+  hf download deepseek-ai/deepseek-llm-7b-chat \
     --local-dir models/deepseek-llm-7b-chat
 ```
 
@@ -226,12 +248,13 @@ hf download deepseek-ai/deepseek-llm-7b-chat \
 
 ```
 .
-├── data/
-│   └── gsm8k_multiturn/
-│       ├── train.parquet
-│       └── test.parquet
-├── models/
-│   └── deepseek-llm-7b-chat/
+├── data
+│   └── gsm8k_multiturn
+│       ├── test.parquet
+│       └── train.parquet
+├── ml-cookbook
+├── models
+│   └── deepseek-llm-7b-chat
 │       ├── README.md
 │       ├── config.json
 │       ├── generation_config.json
@@ -240,16 +263,14 @@ hf download deepseek-ai/deepseek-llm-7b-chat \
 │       ├── pytorch_model.bin.index.json
 │       ├── tokenizer.json
 │       └── tokenizer_config.json
-├── verl/
-├── grpo_multinode_multiturn_async.sh
+├── verl
 ├── verl-sgl056.latest.sqsh
-└── .venv/
 ```
 
 ### Submit the job
 
 ```bash
-sbatch grpo_multinode_multiturn_async.sh
+sbatch ml-cookbook/slurm/verl/grpo_multinode_multiturn_async.sh
 ```
 
 Optionally enable W&B logging by exporting `WANDB_API_KEY` before submitting.
@@ -260,12 +281,11 @@ Check job status with `squeue`. Logs are written to `logs/slurm-<jobid>.out` / `
 
 ### Expected output
 
-The script runs async multi-turn GRPO training on 2 nodes with 8 GPUs each (16 GPUs total). The output log should show validation metrics with accuracy scores on GSM8K:
+The script runs GRPO multi-turn async training on 2 nodes with 8 GPUs each (16 GPUs total). On H100 GPUs the training portion takes about 20 minutes. The output log should show validation metrics:
 
 ```
-(TaskRunner pid=3033680) ("Final validation metrics: {'val-aux/openai/gsm8k/reward/mean@1': "
-(TaskRunner pid=3033680)  "0.6618650492797574, 'val-core/openai/gsm8k/acc/mean@1': 0.6618650492797574, "
-(TaskRunner pid=3033680)  "'val-aux/num_turns/min': 2, 'val-aux/num_turns/max': 2, "
-(TaskRunner pid=3033680)  "'val-aux/num_turns/mean': 2.0}")
-Training Progress: 100%|██████████| 29/29 [29:31<00:00, 61.09s/it]
+(TaskRunner pid=458106) ("Final validation metrics: {'val-aux/openai/gsm8k/reward/mean@1': "
+(TaskRunner pid=458106)  "0.6679302501895376, 'val-core/openai/gsm8k/acc/mean@1': 0.6679302501895376, "
+(TaskRunner pid=458106)  "'val-aux/num_turns/min': 2, 'val-aux/num_turns/max': 2, "
+(TaskRunner pid=458106)  "'val-aux/num_turns/mean': 2.0}")
 ```

@@ -41,7 +41,6 @@ if [[ "$head_node_ip" == *" "* ]]; then
 fi
 
 port=6379
-ray_client_port=10001
 ip_head="${head_node_ip}:${port}"
 
 echo "Head node: $head_node"
@@ -63,15 +62,12 @@ srun --nodes=1 --ntasks=1 -w "$head_node" \
     ray start --head \
       --node-ip-address='$head_node_ip' \
       --port=$port \
-      --ray-client-server-port=$ray_client_port \
       --num-cpus '${SLURM_CPUS_PER_TASK}' \
       --num-gpus '${SLURM_GPUS_PER_NODE}' \
       --disable-usage-stats \
       --resources='{\"worker_units\": ${SLURM_GPUS_PER_NODE}, \"slurm_managed_ray_cluster\": 1}' \
       --block
   " &
-
-sleep 5
 
 # Start workers
 worker_num=$((SLURM_JOB_NUM_NODES - 1))
@@ -93,8 +89,10 @@ for ((i = 1; i <= worker_num; i++)); do
         --resources='{\"worker_units\": ${SLURM_GPUS_PER_NODE}, \"slurm_managed_ray_cluster\": 1}' \
         --block
     " &
-  sleep 5
 done
+
+# Allow time for ray to start up
+sleep 20
 
 # Wait until all workers are registered in Ray cluster 
 extract_worker_units() {
@@ -109,11 +107,18 @@ extract_worker_units() {
 }
 
 NUM_ACTORS=$((SLURM_NNODES * SLURM_GPUS_PER_NODE))
+TIMEOUT=300
+START_TIME=$SECONDS
 while true; do
   worker_units=$(extract_worker_units)
-  echo "[INFO] Number of actors online: $worker_units/$NUM_ACTORS"
+  elapsed=$((SECONDS - START_TIME))
+  echo "[INFO] Number of actors online: $worker_units/$NUM_ACTORS (${elapsed}s elapsed)"
   if [[ "$worker_units" -eq "$NUM_ACTORS" ]]; then
     break
+  fi
+  if [[ "$elapsed" -ge "$TIMEOUT" ]]; then
+    echo "[ERROR] Timed out after ${TIMEOUT}s waiting for all actors to come online ($worker_units/$NUM_ACTORS)"
+    exit 1
   fi
   sleep 10
 done
@@ -176,6 +181,6 @@ PYTHONUNBUFFERED=1 srun --overlap --nodes=1 --ntasks=1 -w "$head_node" \
         trainer.nnodes='${SLURM_NNODES}' \
         trainer.save_freq=-1 \
         trainer.test_freq=10 \
-        trainer.total_epochs=15 \
+        trainer.total_epochs=2 \
         $METRICS_ARG
   " 2>&1 | tee logs/verl_ppo_slurm.log
