@@ -13,6 +13,7 @@ SkyPilot is an open-source framework for running AI and batch workloads. Nebius 
 - [Distributed Training](examples/distributed-training-container.yaml): Multi-node distributed training using PyTorch's DDP. ([see details here](#distributed-training))
 - [Infiniband Test](examples/infiniband-test.yaml): Verify high-speed Infiniband connectivity between nodes. ([see details here](#infiniband-test))
 - [Llama 4 Inference with SGLang](examples/llama4-sglang.yaml): Run Llama 4 inference server using SGLang. ([see details here](#llama-4-inference-with-sglang))
+- [VERL GRPO Multi-turn Async Training](examples/verl-grpo-multiturn-async.yaml): Run async multi-turn GRPO training with VERL framework. ([see details here](#verl-grpo-multi-turn-async-training))
 
 ## Prerequisites
 
@@ -229,6 +230,25 @@ print(response.choices[0].message.content)
 ```
 
 The server supports various parameters like temperature, top_p, max_tokens, etc., for controlling the generation.
+
+### VERL GRPO Multi-turn Async Training
+
+Run async multi-turn GRPO (Group Relative Policy Optimization) training using the [VERL](https://github.com/volcengine/verl) framework:
+
+```bash
+# Launch the training job
+sky launch -c verl-grpo examples/verl-grpo-multiturn-async.yaml -y
+
+# Optionally with W&B logging
+export WANDB_API_KEY=<your_wandb_api_key>
+sky launch -c verl-grpo examples/verl-grpo-multiturn-async.yaml --env WANDB_API_KEY -y
+```
+
+This example:
+- Trains `deepseek-ai/deepseek-llm-7b-chat` on GSM8K multi-turn dataset
+- Uses 2 nodes with 8xH100 GPUs each (16 GPUs total)
+- Deploys a Ray cluster across nodes with SGLang rollout backend
+- Runs async multi-turn rollouts with interaction feedback
 
 ### Managing Clusters
 
