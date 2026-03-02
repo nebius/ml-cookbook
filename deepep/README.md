@@ -61,12 +61,19 @@ pip install nvidia-nvshmem-cu13
 ## Install DeepEP
 
 ```bash
-git clone https://github.com/deepseek-ai/DeepEP.git
-cd DeepEP
+# Build dependencies
+sudo apt install -y python3-dev   # Python.h headers for C extension compilation
+pip install ninja
 
-NVSHMEM_DIR='<path to nvshmem install>' \
-TORCH_CUDA_ARCH_LIST="10.0" \  # Use 9.0 for Hopper (H100/H200)
-python setup.py build && python setup.py install
+# NVSHMEM setup
+export NVSHMEM_DIR=$(python3 -c "import nvidia.nvshmem; print(nvidia.nvshmem.__path__[0])")
+export TORCH_CUDA_ARCH_LIST="10.0"  # Use 9.0 for Hopper (H100/H200)
+ln -sf libnvshmem_host.so.3 "$NVSHMEM_DIR/lib/libnvshmem_host.so"  # Symlink
+
+# Build and install
+git clone https://github.com/deepseek-ai/DeepEP.git
+cd DeepEP && git checkout 29d31c0
+python3 setup.py build && python3 setup.py install
 ```
 
 After installation, run the tests to verify everything is working:

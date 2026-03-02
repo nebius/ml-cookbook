@@ -20,7 +20,12 @@ Each recipe includes:
 
 Here’s a sneak peek of the recipes available in this cookbook:
 
-### 1. **Training a Deep Learning Model on Kubernetes**
+### 1. **DeepSeek-V3 Pre-training with MXFP8 + DeepEP** ([pytorch-dsv3-mxfp8](pytorch-dsv3-mxfp8/))
+   - TorchTitan recipes for DeepSeek-V3 671B and 16B MoE on 256 NVIDIA B200 GPUs.   
+   - Combines MXFP8 via TorchAO with DeepEP expert-parallel communication for **+41% throughput** over BF16.
+   - Reproducible Slurm scripts for tested configurations.
+
+### 2. **Training a Deep Learning Model on Kubernetes**
    - Deploy a distributed training job using Kubernetes.
    - Leverage NVIDIA GPUs for accelerated training.
    - Monitor and scale your training workload.
