@@ -1,0 +1,258 @@
+# azureblob_to_s3_migration.yaml
+# Multi-node Azure Blob -> Nebius S3 with rclone
+# - Balanced sharding across nodes
+# - Shards + markers + reports stored in S3 (_rclone_reports kept)
+# - SHARDS_READY barrier after shard validation (by line count match)
+# - Per-node failed/missing reports; head aggregates summary
+# - Timeouts configurable via env
+# - Manual cleanup only (no auto purge)
+
+resources:
+  cloud: nebius
+  region: eu-north1
+  cpus: 16
+
+num_nodes: 2   # 1 head + workers
+
+workdir: .
+
+envs:
+  # ---- Azure source ----
+  AZURE_ACCOUNT: <azure_blob_storage_account_name>
+  AZURE_CONTAINER: <azure_blob_container_name>
+  AZURE_STORAGE_KEY: <azure_storage_key>
+
+  # ---- Nebius S3 target ----
+  AWS_ACCESS_KEY_ID: <nebius_s3_access_key>
+  AWS_SECRET_ACCESS_KEY: <nebius_s3_secret_key>
+  TARGET_ENDPOINT_URL: https://storage.eu-north1.nebius.cloud:443
+  TARGET_BUCKET: <s3_destination_bucket_name>
+  TARGET_BUCKET_REGION: eu-north1
+
+  # ---- rclone tuning ----
+  RCLONE_TRANSFERS: 32
+  RCLONE_CHECKERS: 16
+  RCLONE_BUFFER_SIZE: 16M
+  RCLONE_LOW_LEVEL_RETRIES: 10
+  RCLONE_RETRIES: 3
+  RCLONE_RETRY_BACKOFF: 2s
+
+  # ---- timeout tuning (seconds) ----
+  TIMEOUT_SHARD_WAIT: "1800"     # 30 min
+  TIMEOUT_SHARD_FETCH: "150"     # 2.5 min
+  TIMEOUT_START_BARRIER: "1800"  # 30 min
+  TIMEOUT_DONE_BARRIER: "216000" # 60 h
+
+  # Optional per-node retry pass
+  RETRY_ONCE: "false"
+
+  # Make SkyPilot’s SSH-wait more patient
+  SKYPILOT_UPTIME_SSH_RETRY_SECONDS: "900"
+
+setup: |
+  set -Eeuo pipefail
+  echo 'Installing rclone...'
+  curl -fsSL https://rclone.org/install.sh | sudo bash
+
+  echo 'Writing rclone config...'
+  mkdir -p ~/.config/rclone
+  cat > ~/.config/rclone/rclone.conf <<EOF
+  [azure-source]
+  type = azureblob
+  account = ${AZURE_ACCOUNT}
+  key = ${AZURE_STORAGE_KEY}
+
+  [nebius-target]
+  type = s3
+  provider = AWS
+  env_auth = true
+  region = ${TARGET_BUCKET_REGION}
+  endpoint = ${TARGET_ENDPOINT_URL}
+  EOF
+
+run: |
+  set -Eeuo pipefail
+
+  # ---------- Cluster meta ----------
+  NODE_RANK="${SKYPILOT_NODE_RANK:-0}"
+  NUM_NODES="${SKYPILOT_NUM_NODES:-1}"
+  TASK_ID="${SKYPILOT_TASK_ID:-0}"
+
+  SRC="azure-source:${AZURE_CONTAINER}"
+  DST="nebius-target:${TARGET_BUCKET}"
+
+  TS_LOCAL="$(date -u +%Y-%m-%d-%H-%M-%S-%N)"
+  RUN_ID="sky-${TS_LOCAL}_${TASK_ID}_${NODE_RANK}"
+  WORKDIR="/tmp/azure_to_s3_${RUN_ID}"
+  mkdir -p "${WORKDIR}/check" "${WORKDIR}/shards" "${WORKDIR}/logs"
+  LOG="${WORKDIR}/rclone_node_${NODE_RANK}.log"
+  FAILED_LOCAL="${WORKDIR}/failed_node_${NODE_RANK}.txt"
+  MISSING_LOCAL="${WORKDIR}/missing_node_${NODE_RANK}.txt"
+
+  REPORTS_PREFIX="_rclone_reports/task-${TASK_ID}"
+  MARKERS="${DST}/${REPORTS_PREFIX}/markers"
+  SHARDS="${DST}/${REPORTS_PREFIX}/shards"
+  FAILS="${DST}/${REPORTS_PREFIX}/fails"
+  MISSINGS="${DST}/${REPORTS_PREFIX}/missings"
+
+  echo "=== Azure->S3 (multi-node; v21 shard-linecount validation) ==="
+  echo "Nodes: ${NUM_NODES} | This node: ${NODE_RANK}"
+
+  # ---------- HEAD: build master list & balanced shards ----------
+  if [[ "${NODE_RANK}" == "0" ]]; then
+    echo "[Head] Listing Azure objects..."
+    MASTER="${WORKDIR}/master_keys.txt"
+    rclone lsf --files-only -R --format "p" "${SRC}" > "${MASTER}"
+    TOTAL=$(wc -l < "${MASTER}")
+    echo "[Head] Total keys: ${TOTAL}"
+
+    echo "[Head] Balanced sharding across ${NUM_NODES} nodes..."
+    for i in $(seq 0 $((NUM_NODES-1))); do
+      : > "${WORKDIR}/shards/node_${i}.txt"
+    done
+
+    i=0
+    while IFS= read -r line; do
+      echo "$line" >> "${WORKDIR}/shards/node_$((i % NUM_NODES)).txt"
+      i=$((i+1))
+    done < "${MASTER}"
+
+    echo "[Head] Uploading shards + master to S3..."
+    rclone copyto "${MASTER}" "${SHARDS}/master_keys.txt"
+    for i in $(seq 0 $((NUM_NODES-1))); do
+      rclone copyto "${WORKDIR}/shards/node_${i}.txt" "${SHARDS}/node_${i}.txt"
+    done
+
+    echo "[Head] Validating shards in S3 (by line count)..."
+    VALIDATION_OK="true"
+    for i in $(seq 0 $((NUM_NODES-1))); do
+      LOCAL_LINES=$(wc -l < "${WORKDIR}/shards/node_${i}.txt" || echo 0)
+      REMOTE_LINES=$(rclone cat "${SHARDS}/node_${i}.txt" | wc -l || echo 0)
+      if [[ "${LOCAL_LINES}" -ne "${REMOTE_LINES}" || "${REMOTE_LINES}" -eq 0 ]]; then
+        echo "[Head] ERROR: Shard node_${i}.txt mismatch (local=${LOCAL_LINES}, remote=${REMOTE_LINES})"
+        VALIDATION_OK="false"
+      fi
+    done
+
+    if [[ "${VALIDATION_OK}" == "true" ]]; then
+      echo "[Head] All shards validated OK. Publishing SHARDS_READY."
+      rclone rcat "${MARKERS}/SHARDS_READY" <<< "ready"
+    else
+      echo "[Head] Shard validation failed. Aborting."
+      exit 1
+    fi
+  fi
+
+  # ---------- ALL NODES: wait for shards ----------
+  MY_SHARD_REMOTE="${SHARDS}/node_${NODE_RANK}.txt"
+  MY_SHARD_LOCAL="${WORKDIR}/shard_${NODE_RANK}.txt"
+
+  echo "[Node ${NODE_RANK}] Waiting for shard + SHARDS_READY marker..."
+  for _ in $(seq 1 "${TIMEOUT_SHARD_WAIT}"); do
+    if rclone ls "${MY_SHARD_REMOTE}" >/dev/null 2>&1 \
+       && rclone ls "${MARKERS}/SHARDS_READY" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 2
+  done
+
+  echo "[Node ${NODE_RANK}] Downloading shard..."
+  GOT_LOCAL="false"
+  for _ in $(seq 1 "${TIMEOUT_SHARD_FETCH}"); do
+    rclone copyto "${MY_SHARD_REMOTE}" "${MY_SHARD_LOCAL}" >/dev/null 2>&1 || true
+    if [[ -s "${MY_SHARD_LOCAL}" ]]; then
+      GOT_LOCAL="true"
+      break
+    fi
+    sleep 2
+  done
+  if [[ "${GOT_LOCAL}" != "true" ]]; then
+    echo "[Node ${NODE_RANK}] ERROR: Failed to fetch shard file."
+    KEYS=0
+  else
+    KEYS=$(wc -l < "${MY_SHARD_LOCAL}" || echo 0)
+  fi
+  echo "[Node ${NODE_RANK}] Keys: ${KEYS}"
+
+  # ---------- Start barrier ----------
+  rclone rcat "${MARKERS}/node_${NODE_RANK}_ready" <<< "ready"
+  if [[ "${NODE_RANK}" == "0" ]]; then
+    for _ in $(seq 1 "${TIMEOUT_START_BARRIER}"); do
+      COUNT=$(rclone lsf "${MARKERS}" | grep -c "_ready" || true)
+      [[ "${COUNT}" == "${NUM_NODES}" ]] && break
+      sleep 2
+    done
+    rclone rcat "${MARKERS}/START" <<< "start"
+  fi
+  for _ in $(seq 1 "${TIMEOUT_START_BARRIER}"); do
+    if rclone ls "${MARKERS}/START" >/dev/null 2>&1; then break; fi
+    sleep 2
+  done
+
+  # ---------- Copy ----------
+  if [[ "${KEYS}" -gt 0 ]]; then
+    rclone copy "${SRC}" "${DST}" \
+      --files-from-raw "${MY_SHARD_LOCAL}" \
+      --transfers "${RCLONE_TRANSFERS}" \
+      --checkers "${RCLONE_CHECKERS}" \
+      --buffer-size "${RCLONE_BUFFER_SIZE}" \
+      --low-level-retries "${RCLONE_LOW_LEVEL_RETRIES}" \
+      --retries "${RCLONE_RETRIES}" \
+      --retries-sleep "${RCLONE_RETRY_BACKOFF}" \
+      --log-file "${LOG}" \
+      --log-level INFO \
+      --progress \
+      --stats 30s || true
+  fi
+
+  # ---------- Per-node failed list ----------
+  if [[ -s "${LOG}" ]]; then
+    grep -E 'ERROR[[:space:]]+:' "${LOG}" \
+      | sed -E 's/^.*ERROR[[:space:]]+:[[:space:]]+([^:]+):.*$/\1/' \
+      | sed 's|^[./]*||' | sort -u > "${FAILED_LOCAL}" || true
+  fi
+  [[ -s "${FAILED_LOCAL}" ]] && rclone copyto "${FAILED_LOCAL}" "${FAILS}/failed_node_${NODE_RANK}.txt"
+
+  # ---------- Per-node missing list ----------
+  if [[ "${KEYS}" -gt 0 ]]; then
+    rclone check "${SRC}" "${DST}" \
+      --files-from-raw "${MY_SHARD_LOCAL}" \
+      --one-way \
+      --missing-on-dst "${MISSING_LOCAL}" \
+      --differ /dev/null \
+      --error /dev/null \
+      --log-level NOTICE || true
+  fi
+  [[ -s "${MISSING_LOCAL}" ]] && rclone copyto "${MISSING_LOCAL}" "${MISSINGS}/missing_node_${NODE_RANK}.txt"
+
+  # Done marker
+  rclone rcat "${MARKERS}/node_${NODE_RANK}_done" <<< "done"
+
+  # ---------- HEAD: aggregate & console summary ----------
+  if [[ "${NODE_RANK}" == "0" ]]; then
+    echo "[Head] Waiting for all nodes to finish..."
+    for _ in $(seq 1 "${TIMEOUT_DONE_BARRIER}"); do
+      COUNT=$(rclone lsf "${MARKERS}" | grep -c "_done" || true)
+      [[ "${COUNT}" == "${NUM_NODES}" ]] && break
+      sleep 5
+    done
+
+    echo "[Head] Aggregating per-node reports..."
+    CONSOL_FAIL="${WORKDIR}/failed_all_nodes.txt"
+    CONSOL_MISS="${WORKDIR}/missing_all_nodes.txt"
+    : > "${CONSOL_FAIL}"
+    : > "${CONSOL_MISS}"
+
+    rclone copy "${FAILS}" "${WORKDIR}/fails_local" --include "failed_node_*.txt" || true
+    cat "${WORKDIR}/fails_local"/*.txt 2>/dev/null | sort -u >> "${CONSOL_FAIL}" || true
+
+    rclone copy "${MISSINGS}" "${WORKDIR}/missings_local" --include "missing_node_*.txt" || true
+    cat "${WORKDIR}/missings_local"/*.txt 2>/dev/null | sort -u >> "${CONSOL_MISS}" || true
+
+    echo "=== FINAL SUMMARY ==="
+    echo "--- Failed files ---"
+    [[ -s "${CONSOL_FAIL}" ]] && cat "${CONSOL_FAIL}" || echo "(none)"
+    echo "--- Missing files ---"
+    [[ -s "${CONSOL_MISS}" ]] && cat "${CONSOL_MISS}" || echo "(none)"
+    echo "===================="
+  fi

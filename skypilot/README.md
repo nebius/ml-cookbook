@@ -10,7 +10,7 @@ SkyPilot is an open-source framework for running AI and batch workloads. Nebius 
 - [Mount Cloud Buckets](examples/test-cloud-bucket.yaml): Mount Nebius Object Storage to the filesystem. ([see details here](#mount-cloud-buckets))
 - [S3 Migration](examples/s3_migration.yaml): Migrate data from AWS S3 to Nebius Object Storage. ([see details here](#s3-migration))
 - [AI Training](examples/ai-training.yaml): Train a GPT-like model using PyTorch. ([see details here](#ai-training))
-- [Distributed Training](examples/distributed-training.yaml): Multi-node distributed training using PyTorch's DDP. ([see details here](#distributed-training))
+- [Distributed Training](examples/distributed-training-container.yaml): Multi-node distributed training using PyTorch's DDP. ([see details here](#distributed-training))
 - [Infiniband Test](examples/infiniband-test.yaml): Verify high-speed Infiniband connectivity between nodes. ([see details here](#infiniband-test))
 - [Llama 4 Inference with SGLang](examples/llama4-sglang.yaml): Run Llama 4 inference server using SGLang. ([see details here](#llama-4-inference-with-sglang))
 
@@ -145,7 +145,7 @@ This example trains a GPT-like model (based on minGPT) on a single node with 8 H
 Run a multi-node distributed training job:
 
 ```bash
-sky launch -c dist-training examples/distributed-training.yaml
+sky launch -c dist-training examples/distributed-training-container.yaml
 ```
 
 This example distributes the same minGPT training across 2 nodes, each with 8 H100 GPUs, using PyTorch's Distributed Data Parallel (DDP).
@@ -163,6 +163,8 @@ This example launches 2 nodes and tests the Infiniband bandwidth between them us
 ### Llama 4 Inference with SGLang
 
 Run [Llama 4](https://ai.meta.com/blog/llama-4-multimodal-intelligence/) inference server using [SGLang](https://docs.sglang.ai/index.html):
+
+Note: You may need to request access to the `meta-llama/Llama-4-Scout-17B-16E-Instruct` model on HuggingFace.
 
 ```bash
 # Set your HuggingFace token

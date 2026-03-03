@@ -45,7 +45,7 @@ spec:
                   --batch_size_training=4 \
                   --num_workers_dataloader=2 \
                   --dist_checkpoint_root_folder=/workspace/persistent-storage/ \
-                  --dataset=samsum_dataset \
+                  --dataset=llamaguard_toxicchat_dataset \
                   --num_epochs 100
               resources:
                 requests:

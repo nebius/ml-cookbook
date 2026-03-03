@@ -1,0 +1,59 @@
+############################################
+# Distributed Training Configuration (Pytorch DDP based)
+############################################
+
+# Per-device batch size
+batch_size: 16
+
+# Initial learning rate (AdamW)
+learning_rate: 2e-5
+
+# Total training epochs
+num_epochs: 3
+
+# Number of warmup steps for scheduler (linear warmup then decay)
+num_warmup_steps: 0
+
+# Number of target labels (e.g., classification head output size)
+num_labels: 2
+
+# Gradient accumulation steps (effective batch = batch_size * grad_accum_steps * world_size)
+grad_accum_steps: 1
+
+# Enable Automatic Mixed Precision (set false to debug numeric issues)
+use_amp: true
+
+# Allow training to proceed with no validation split detected
+allow_no_validation: false
+
+# Number of DataLoader worker processes per rank
+num_workers: 2
+
+# Pin host memory to speed up host->GPU transfer (CUDA only benefit)
+pin_memory: true
+
+# Timeout (seconds) for DDP process group init / collectives
+ddp_timeout_seconds: 600
+
+# Save final fine-tuned model & tokenizer at end of training
+save_final_model: true
+
+# Keep last intermediate checkpoint (false deletes it after success)
+keep_last_checkpoint: false
+
+# Enable TensorBoard logging (events in run directory)
+tensorboard_logging: true
+
+# Only rank 0 emits Hugging Face warnings (head init etc.) when true
+suppress_hf_warnings: true
+
+# Base seed (each rank uses seed + global_rank)
+seed: 42
+
+# Force deterministic cudnn kernels (slower; reproducibility focus)
+deterministic: false
+
+# Optional explicit run name (otherwise auto-generated at the run time)
+# run_name: distilbert-test-run
+# Optional Explicit validation split name override
+# validation_split: validation

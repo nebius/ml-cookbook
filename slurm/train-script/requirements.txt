@@ -1,0 +1,25 @@
+############################################################
+# Locked dependency versions for deterministic builds.
+# These are the newest mutually compatible versions.
+# The extra index below points to official PyTorch wheels including CUDA 12.8 builds.
+############################################################
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+# Core deep learning stack
+torch==2.4.0            # Will pull CUDA 12.8 build via extra index
+torchvision==0.19.0     # Synchronized with torch 2.4.0
+torchaudio==2.4.0       # Synchronized with torch 2.4.0
+
+# Hugging Face ecosystem
+transformers==4.42.3    # Pairs well with torch 2.4.x and datasets 2.20.x
+datasets==2.20.0        # Stable; later minors add features you can evaluate separately
+huggingface_hub==0.24.6  # Compatible upper range for transformers 4.42.x
+safetensors==0.4.3       # Explicit pin for model weight loading speed
+
+# Utilities
+pyyaml==6.0.2
+tqdm==4.66.4            # Recent stable; avoids speculative 4.67.1
+protobuf==4.25.3        # 4.25.x widely supported
+tensorboard==2.17.0     # Within stable range; upgrade only if you need newer TF features
+pyarrow==15.0.2         # Explicit pin for datasets 2.20.0 compatibility and reproducibility

@@ -1,7 +1,5 @@
 resources:
-  # cloud: nebius
-  # region: eu-north1
-  cloud: kubernetes
+  infra: nebius
   accelerators: H100:1
 
 file_mounts:

@@ -1,8 +1,7 @@
 resources:
-  # cloud: nebius
-  # region: eu-north1
-  cloud: kubernetes
+  infra: nebius
   accelerators: H100:8
+  network_tier: best
   
 num_nodes: 2
 

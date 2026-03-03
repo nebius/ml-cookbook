@@ -1,0 +1,661 @@
+# Enhanced S3 Migration with Advanced ETA Calculation
+# https://nebius.com/blog/posts/bulk-object-storage-s3-data-migration-with-skypilot
+resources:
+  cloud: nebius
+  region: <region>
+  cpus: 8
+
+num_nodes: 2
+workdir: .
+file_mounts:
+  # Mount AWS credentials to a non-conflicting path
+  /tmp/aws_credentials: ~/.aws
+envs:
+  # Required variables - must be set before launching
+  SOURCE_AWS_PROFILE: <source-region>
+  SOURCE_ENDPOINT_URL: https://storage.<source-region>.nebius.cloud:443
+  SOURCE_BUCKET: <source-bucket-name>
+  TARGET_AWS_PROFILE: <target-region>
+  TARGET_ENDPOINT_URL: https://storage.<target-region>.nebius.cloud:443
+  TARGET_BUCKET: <target-bucket-name>
+  NUM_CONCURRENT: 4
+  DEBUG: "false"  # Set to "true" for detailed debug output (must be string, not boolean)
+  
+setup: |
+  echo 'Installing required tools...'
+  
+  # Install s5cmd
+  wget https://github.com/peak/s5cmd/releases/download/v2.3.0/s5cmd_2.3.0_Linux-64bit.tar.gz
+  tar -xvf s5cmd_2.3.0_Linux-64bit.tar.gz
+  sudo mv s5cmd /usr/local/bin/
+  rm s5cmd_2.3.0_Linux-64bit.tar.gz
+  
+  # Install other utilities
+  sudo apt-get update
+  sudo apt-get install -y jq bc htop iotop
+  
+  # Ensure AWS credentials are properly accessible
+  echo "Setting up AWS credentials..."
+  mkdir -p ~/.aws
+  if [ -d /tmp/aws_credentials ]; then
+    cp -r /tmp/aws_credentials/* ~/.aws/ 2>/dev/null || echo "No files to copy from /tmp/aws_credentials/"
+  fi
+  echo "AWS credentials setup complete"
+  
+  # Create RAM disk mount point
+  sudo mkdir -p /mnt/ramdisk
+  # Mount 16GB RAM disk (adjust according to your VM size)
+  sudo mount -t tmpfs -o size=16g tmpfs /mnt/ramdisk
+  # Set permissions for the RAM disk
+  sudo chmod 777 /mnt/ramdisk
+  # Create temp directory on RAM disk
+  mkdir -p /mnt/ramdisk/s3migration/temp
+  
+run: |
+  # Configuration and environment setup
+  export TASK_ID=${SKYPILOT_TASK_ID}
+  export NODE_RANK=${SKYPILOT_NODE_RANK}
+  export NUM_NODES=${SKYPILOT_NUM_NODES}
+  export TEMP_DIR=/mnt/ramdisk/s3migration/temp
+  export TEMP_S3_PREFIX="_skypilot_temp/${TASK_ID}"
+  export DEBUG=${DEBUG:-false}  # Default to false, can be set to true for debug output
+  mkdir -p $TEMP_DIR
+  
+  # Record start time
+  START_TIME=$(date +%s)
+  
+  # Debug function to conditionally print debug messages
+  debug_print() {
+    if [ "$(echo "$DEBUG" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
+      echo "$1"
+    fi
+  }
+  
+  # Function to check disk space and RAM usage
+  check_resources() {
+    local ram_usage=$(df -h /mnt/ramdisk | tail -1 | awk '{print $5}' | sed 's/%//')
+    local ram_available=$(df -h /mnt/ramdisk | tail -1 | awk '{print $4}')
+    local disk_usage=$(df -h / | tail -1 | awk '{print $5}' | sed 's/%//')
+    local disk_available=$(df -h / | tail -1 | awk '{print $4}')
+    
+    debug_print "💾 Resource Usage:"
+    debug_print "   RAM disk: ${ram_usage}% used (${ram_available} available)"
+    debug_print "   Root disk: ${disk_usage}% used (${disk_available} available)"
+    
+    # Always show resource usage when DEBUG is true
+    if [ "$(echo "$DEBUG" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
+      echo "🔧 DEBUG: RAM disk ${ram_usage}% used, Root disk ${disk_usage}% used"
+    fi
+    
+    # Warn if resources are getting low
+    if [ "$ram_usage" -gt 90 ]; then
+      echo "⚠️ WARNING: RAM disk is ${ram_usage}% full!"
+    fi
+    if [ "$disk_usage" -gt 90 ]; then
+      echo "⚠️ WARNING: Root disk is ${disk_usage}% full!"
+    fi
+  }
+  
+  # Function to clean up RAM disk when space is low
+  cleanup_ramdisk() {
+    local ram_usage=$(df -h /mnt/ramdisk | tail -1 | awk '{print $5}' | sed 's/%//')
+    
+    if [ "$ram_usage" -gt 95 ]; then
+      echo "🧹 Cleaning up RAM disk (${ram_usage}% full)..."
+      
+      # Find and remove old temporary files (more aggressive cleanup)
+      local files_to_remove=$(find $TEMP_DIR -name "*.zip" -type f -printf "%T@ %p\n" | sort -n | head -10 | awk '{print $2}')
+      
+      if [ -n "$files_to_remove" ]; then
+        debug_print "   Removing old files:"
+        for file in $files_to_remove; do
+          if [ -f "$file" ]; then
+            debug_print "     Removing: $file"
+            rm -f "$file"
+          fi
+        done
+        
+        # Check space after cleanup
+        local new_ram_usage=$(df -h /mnt/ramdisk | tail -1 | awk '{print $5}' | sed 's/%//')
+        echo "✅ Cleanup complete. RAM disk now ${new_ram_usage}% full"
+      else
+        echo "⚠️ No old files found to clean up"
+      fi
+    fi
+    
+    # Emergency cleanup if still over 98%
+    if [ "$ram_usage" -gt 98 ]; then
+      echo "🚨 EMERGENCY: RAM disk ${ram_usage}% full - aggressive cleanup..."
+      find $TEMP_DIR -name "*.zip" -type f -delete
+      local emergency_ram_usage=$(df -h /mnt/ramdisk | tail -1 | awk '{print $5}' | sed 's/%//')
+      echo "🚨 Emergency cleanup complete. RAM disk now ${emergency_ram_usage}% full"
+    fi
+  }
+  
+  echo "🚀 Starting Enhanced S3 Migration with ETA Tracking"
+  echo "Task ID: ${TASK_ID}"
+  echo "Node: ${NODE_RANK}/${NUM_NODES}"
+  echo "Started at: $(date)"
+  echo "RAM disk: ${TEMP_DIR}"
+  debug_print "Debug mode: ${DEBUG}"
+  
+  # Verify that target bucket is accessible
+  echo "🔍 Verifying target bucket access..."
+  debug_print "Checking AWS credentials directory..."
+  debug_print "$(ls -la /tmp/aws_credentials/ 2>/dev/null || echo "AWS credentials directory not found at /tmp/aws_credentials/")"
+  debug_print "Checking for AWS credentials in current directory..."
+  debug_print "$(ls -la ~/.aws/ 2>/dev/null || echo "AWS credentials directory not found at ~/.aws/")"
+  
+  # Test s5cmd with verbose output
+  debug_print "Testing s5cmd access to target bucket..."
+  if ! s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL ls s3://$TARGET_BUCKET/; then
+    echo "❌ Error: Cannot access target bucket. Check credentials and permissions."
+    echo "Debug info:"
+    echo "  TARGET_AWS_PROFILE: $TARGET_AWS_PROFILE"
+    echo "  TARGET_ENDPOINT_URL: $TARGET_ENDPOINT_URL"
+    echo "  TARGET_BUCKET: $TARGET_BUCKET"
+    exit 1
+  fi
+  echo "✅ Target bucket accessible"
+  
+  # Head node lists all objects and distributes work
+  if [ "${NODE_RANK}" = "0" ]; then
+    echo "📋 Head node: Analyzing source bucket..."
+    
+    # List all objects with progress indicator
+    echo "   Listing objects in source bucket..."
+    s5cmd --profile $SOURCE_AWS_PROFILE --endpoint-url $SOURCE_ENDPOINT_URL ls s3://$SOURCE_BUCKET/* > $TEMP_DIR/all_objects.txt
+    
+    # Debug: show what we got
+    debug_print "   Raw object listing (first 5 lines):"
+    debug_print "$(head -5 $TEMP_DIR/all_objects.txt)"
+    
+    # Filter out directories and empty lines
+    grep -v " DIR " $TEMP_DIR/all_objects.txt | grep -v "^$" > $TEMP_DIR/filtered_objects.txt
+    
+    # Debug: show filtered results
+    debug_print "   Filtered objects (first 5 lines):"
+    debug_print "$(head -5 $TEMP_DIR/filtered_objects.txt)"
+    debug_print "   Total filtered objects: $(wc -l < $TEMP_DIR/filtered_objects.txt)"
+    
+    # Calculate detailed statistics
+    TOTAL_OBJECTS=$(wc -l < $TEMP_DIR/filtered_objects.txt)
+    TOTAL_SIZE_BYTES=$(awk '{sum += $3} END {print sum+0}' $TEMP_DIR/filtered_objects.txt)
+    TOTAL_SIZE_GB=$(echo "scale=2; $TOTAL_SIZE_BYTES / 1024 / 1024 / 1024" | bc 2>/dev/null || echo "0")
+    TOTAL_SIZE_TB=$(echo "scale=2; $TOTAL_SIZE_BYTES / 1024 / 1024 / 1024 / 1024" | bc 2>/dev/null || echo "0")
+    
+    # Calculate size distribution
+    SMALL_FILES=$(awk '$3 < 1024*1024 {count++} END {print count+0}' $TEMP_DIR/filtered_objects.txt)
+    MEDIUM_FILES=$(awk '$3 >= 1024*1024 && $3 < 100*1024*1024 {count++} END {print count+0}' $TEMP_DIR/filtered_objects.txt)
+    LARGE_FILES=$(awk '$3 >= 100*1024*1024 {count++} END {print count+0}' $TEMP_DIR/filtered_objects.txt)
+    
+    echo "📊 Source Bucket Analysis:"
+    echo "   Total objects: $TOTAL_OBJECTS"
+    echo "   Total size: $TOTAL_SIZE_GB GB ($TOTAL_SIZE_TB TB)"
+    echo "   Small files (<1MB): $SMALL_FILES"
+    echo "   Medium files (1MB-100MB): $MEDIUM_FILES"
+    echo "   Large files (>100MB): $LARGE_FILES"
+    
+    # Distribute objects evenly among nodes
+    echo "🔄 Distributing objects among $NUM_NODES nodes..."
+    
+    # Split files by node using modulo on line number
+    for i in $(seq 0 $((NUM_NODES-1))); do
+      awk -v node=$i -v nodes=$NUM_NODES 'NR % nodes == node' $TEMP_DIR/filtered_objects.txt > $TEMP_DIR/node_${i}_objects.txt
+      
+      # Calculate node statistics
+      NODE_OBJECTS=$(wc -l < $TEMP_DIR/node_${i}_objects.txt)
+      NODE_SIZE_BYTES=$(awk '{sum += $3} END {print sum+0}' $TEMP_DIR/node_${i}_objects.txt)
+      NODE_SIZE_GB=$(echo "scale=2; $NODE_SIZE_BYTES / 1024 / 1024 / 1024" | bc 2>/dev/null || echo "0")
+      
+      echo "   Node $i: $NODE_OBJECTS objects, $NODE_SIZE_GB GB"
+      
+      # Upload the file list to S3 for each node to access
+      s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL \
+        cp $TEMP_DIR/node_${i}_objects.txt s3://$TARGET_BUCKET/${TEMP_S3_PREFIX}/node_${i}_objects.txt &>/dev/null
+    done
+    
+    echo "✅ Object lists uploaded to S3"
+    
+    # Create cluster-wide progress tracking file
+    echo "0" > $TEMP_DIR/cluster_progress_objects.txt
+    echo "0" > $TEMP_DIR/cluster_progress_bytes.txt
+    echo "$TOTAL_OBJECTS" > $TEMP_DIR/cluster_total_objects.txt
+    echo "$TOTAL_SIZE_BYTES" > $TEMP_DIR/cluster_total_bytes.txt
+    echo "$START_TIME" > $TEMP_DIR/cluster_start_time.txt
+    
+    # Upload cluster tracking files
+    s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL \
+      cp $TEMP_DIR/cluster_progress_objects.txt s3://$TARGET_BUCKET/${TEMP_S3_PREFIX}/cluster_progress_objects.txt &>/dev/null
+    s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL \
+      cp $TEMP_DIR/cluster_progress_bytes.txt s3://$TARGET_BUCKET/${TEMP_S3_PREFIX}/cluster_progress_bytes.txt &>/dev/null
+    s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL \
+      cp $TEMP_DIR/cluster_total_objects.txt s3://$TARGET_BUCKET/${TEMP_S3_PREFIX}/cluster_total_objects.txt &>/dev/null
+    s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL \
+      cp $TEMP_DIR/cluster_total_bytes.txt s3://$TARGET_BUCKET/${TEMP_S3_PREFIX}/cluster_total_bytes.txt &>/dev/null
+    s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL \
+      cp $TEMP_DIR/cluster_start_time.txt s3://$TARGET_BUCKET/${TEMP_S3_PREFIX}/cluster_start_time.txt &>/dev/null
+  fi
+  
+  # Wait for head node to finish distribution
+  sleep 3
+  
+  # Each node downloads its assigned object list
+  echo "📥 Node ${NODE_RANK}: Downloading assigned object list"
+  
+  # Try multiple times with exponential backoff
+  retry_count=0
+  max_retries=5
+  success=false
+  
+  while [ $retry_count -lt $max_retries ] && [ "$success" = false ]; do
+    if s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL \
+      cp s3://$TARGET_BUCKET/${TEMP_S3_PREFIX}/node_${NODE_RANK}_objects.txt $TEMP_DIR/my_objects.txt &>/dev/null; then
+      success=true
+      echo "✅ Successfully downloaded object list"
+    else
+      retry_count=$((retry_count+1))
+      sleep_time=$((2 ** retry_count))
+      echo "⚠️ Attempt $retry_count failed. Waiting $sleep_time seconds before retry..."
+      sleep $sleep_time
+    fi
+  done
+  
+  if [ "$success" = false ]; then
+    echo "❌ Error: Failed to download object list after $max_retries attempts."
+    exit 1
+  fi
+  
+  # Count objects assigned to this node
+  MY_OBJECTS=$(wc -l < $TEMP_DIR/my_objects.txt)
+  if [ $MY_OBJECTS -eq 0 ]; then
+    echo "ℹ️ No objects assigned to node ${NODE_RANK}. Exiting."
+    
+    # Upload completion marker
+    echo "Node ${NODE_RANK} completed with no objects at $(date)" > $TEMP_DIR/node_${NODE_RANK}_done
+    s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL \
+      cp $TEMP_DIR/node_${NODE_RANK}_done s3://$TARGET_BUCKET/${TEMP_S3_PREFIX}/node_${NODE_RANK}_done &>/dev/null
+    
+    exit 0
+  fi
+  
+  # Calculate total size for this node
+  NODE_TOTAL_SIZE_BYTES=$(awk '{sum += $3} END {print sum+0}' $TEMP_DIR/my_objects.txt)
+  NODE_TOTAL_SIZE_GB=$(echo "scale=2; $NODE_TOTAL_SIZE_BYTES / 1024 / 1024 / 1024" | bc 2>/dev/null || echo "0")
+  echo "📋 Node ${NODE_RANK}: $MY_OBJECTS objects, $NODE_TOTAL_SIZE_GB GB"
+  
+  # Initialize progress tracking variables
+  PROCESSED_OBJECTS=0
+  PROCESSED_SIZE_BYTES=0
+  NODE_START_TIME=$(date +%s)
+  LAST_PROGRESS_UPDATE=$(date +%s)
+  PROGRESS_UPDATE_INTERVAL=15  # Update progress every 15 seconds
+  LAST_CLUSTER_UPDATE=$(date +%s)
+  CLUSTER_UPDATE_INTERVAL=60   # Update cluster progress every 60 seconds
+  
+  # Function to calculate and display detailed ETA
+  calculate_eta() {
+    local current_time=$(date +%s)
+    local elapsed_time=$((current_time - NODE_START_TIME))
+    
+    if [ $PROCESSED_OBJECTS -gt 0 ] && [ $elapsed_time -gt 0 ]; then
+      # Calculate average speed (bytes per second)
+      local avg_speed_bps=$((PROCESSED_SIZE_BYTES / elapsed_time))
+      local avg_speed_mbps=$(echo "scale=2; $avg_speed_bps / 1024 / 1024" | bc 2>/dev/null || echo "0")
+      
+      # Calculate remaining objects and size
+      local remaining_objects=$((MY_OBJECTS - PROCESSED_OBJECTS))
+      local remaining_size_bytes=$((NODE_TOTAL_SIZE_BYTES - PROCESSED_SIZE_BYTES))
+      local remaining_size_gb=$(echo "scale=2; $remaining_size_bytes / 1024 / 1024 / 1024" | bc 2>/dev/null || echo "0")
+      
+      # Calculate ETA based on speed
+      local eta_seconds=0
+      if [ $avg_speed_bps -gt 0 ]; then
+        eta_seconds=$((remaining_size_bytes / avg_speed_bps))
+      fi
+      
+      # Convert ETA to human readable format
+      local eta_hours=$((eta_seconds / 3600))
+      local eta_minutes=$(((eta_seconds % 3600) / 60))
+      local eta_secs=$((eta_seconds % 60))
+      
+      # Calculate progress percentage
+      local progress_percent=$(echo "scale=1; $PROCESSED_OBJECTS * 100 / $MY_OBJECTS" | bc 2>/dev/null || echo "0")
+      local size_progress_percent=$(echo "scale=1; $PROCESSED_SIZE_BYTES * 100 / $NODE_TOTAL_SIZE_BYTES" | bc 2>/dev/null || echo "0")
+      
+      # Calculate completion time
+      local completion_time=$((current_time + eta_seconds))
+      local completion_date=$(date -d @$completion_time '+%Y-%m-%d %H:%M:%S')
+      
+      echo "📊 Node ${NODE_RANK} Progress Report:"
+      echo "   Objects: $PROCESSED_OBJECTS/$MY_OBJECTS ($progress_percent%)"
+      echo "   Size: $remaining_size_gb GB remaining ($size_progress_percent% complete)"
+      echo "   Speed: ${avg_speed_mbps} MBps"
+      echo "   ETA: ${eta_hours}h ${eta_minutes}m ${eta_secs}s"
+      echo "   Completion: $completion_date"
+      echo "   Elapsed: $((elapsed_time / 3600))h $(((elapsed_time % 3600) / 60))m $((elapsed_time % 60))s"
+      echo "---"
+    fi
+  }
+  
+  # Function to update cluster-wide progress
+  update_cluster_progress() {
+    local current_time=$(date +%s)
+    if [ $((current_time - LAST_CLUSTER_UPDATE)) -ge $CLUSTER_UPDATE_INTERVAL ]; then
+      # Read cluster totals
+      s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL \
+        cp s3://$TARGET_BUCKET/${TEMP_S3_PREFIX}/cluster_total_objects.txt $TEMP_DIR/cluster_total_objects.txt &>/dev/null
+      s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL \
+        cp s3://$TARGET_BUCKET/${TEMP_S3_PREFIX}/cluster_start_time.txt $TEMP_DIR/cluster_start_time.txt &>/dev/null
+      
+      CLUSTER_TOTAL_OBJECTS=$(cat $TEMP_DIR/cluster_total_objects.txt)
+      CLUSTER_START_TIME=$(cat $TEMP_DIR/cluster_start_time.txt)
+      
+      # Sum up progress from all nodes
+      CLUSTER_PROGRESS_OBJECTS=0
+      for node in $(seq 0 $((NUM_NODES-1))); do
+        if s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL \
+          cp s3://$TARGET_BUCKET/${TEMP_S3_PREFIX}/node_${node}_progress.txt $TEMP_DIR/node_${node}_progress.txt &>/dev/null; then
+          NODE_PROGRESS=$(cat $TEMP_DIR/node_${node}_progress.txt 2>/dev/null || echo "0")
+          CLUSTER_PROGRESS_OBJECTS=$((CLUSTER_PROGRESS_OBJECTS + NODE_PROGRESS))
+        fi
+      done
+      
+      # Calculate cluster-wide ETA
+      local cluster_elapsed=$((current_time - CLUSTER_START_TIME))
+      local cluster_avg_speed_objects=0
+      if [ $cluster_elapsed -gt 0 ]; then
+        cluster_avg_speed_objects=$(echo "scale=2; $CLUSTER_PROGRESS_OBJECTS / $cluster_elapsed" | bc 2>/dev/null || echo "0")
+      fi
+      
+      local cluster_remaining_objects=$((CLUSTER_TOTAL_OBJECTS - CLUSTER_PROGRESS_OBJECTS))
+      local cluster_eta_seconds=0
+      if [ $(echo "$cluster_avg_speed_objects > 0" | bc 2>/dev/null || echo "0") -eq 1 ]; then
+        cluster_eta_seconds=$(echo "scale=0; $cluster_remaining_objects / $cluster_avg_speed_objects" | bc 2>/dev/null || echo "0")
+      fi
+      
+      local cluster_eta_hours=$((cluster_eta_seconds / 3600))
+      local cluster_eta_minutes=$(((cluster_eta_seconds % 3600) / 60))
+      
+      # Calculate completion time
+      local cluster_completion_time=$((current_time + cluster_eta_seconds))
+      local cluster_completion_date=$(date -d @$cluster_completion_time '+%Y-%m-%d %H:%M:%S')
+      
+      echo "🌐 Cluster Progress: $CLUSTER_PROGRESS_OBJECTS/$CLUSTER_TOTAL_OBJECTS objects"
+      echo "   Cluster ETA: ${cluster_eta_hours}h ${cluster_eta_minutes}m"
+      echo "   Completion: $cluster_completion_date"
+      echo "   Elapsed: $((cluster_elapsed / 3600))h $(((cluster_elapsed % 3600) / 60))m $((cluster_elapsed % 60))s"
+      echo "---"
+      
+      LAST_CLUSTER_UPDATE=$current_time
+    fi
+  }
+  
+  # Function to update progress
+  update_progress() {
+    local object_size=$1
+    PROCESSED_OBJECTS=$((PROCESSED_OBJECTS + 1))
+    PROCESSED_SIZE_BYTES=$((PROCESSED_SIZE_BYTES + object_size))
+    
+    # Update progress display periodically
+    local current_time=$(date +%s)
+    if [ $((current_time - LAST_PROGRESS_UPDATE)) -ge $PROGRESS_UPDATE_INTERVAL ]; then
+      # Check resources periodically
+      check_resources
+      
+      # Upload this node's progress to S3
+      echo $PROCESSED_OBJECTS > $TEMP_DIR/node_${NODE_RANK}_progress.txt
+      s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL \
+        cp $TEMP_DIR/node_${NODE_RANK}_progress.txt s3://$TARGET_BUCKET/${TEMP_S3_PREFIX}/node_${NODE_RANK}_progress.txt &>/dev/null
+      
+      calculate_eta
+      update_cluster_progress
+      LAST_PROGRESS_UPDATE=$current_time
+    fi
+  }
+  
+  # Create a function to process a single object with detailed logging
+  process_object() {
+    local line="$1"
+    local size=$(echo $line | awk '{print $3}')
+    local object_path=$(echo $line | awk '{print $NF}')
+    local object_key=${object_path#$SOURCE_BUCKET/}
+    local relative_path=${object_key}
+    local local_file_path="${TEMP_DIR}/${relative_path}"
+    
+    # Debug: show what we're processing
+    debug_print "🔍 Processing: ${object_key} (${size} bytes)"
+    debug_print "   Source: s3://${SOURCE_BUCKET}/${object_key}"
+    debug_print "   Target: s3://${TARGET_BUCKET}/${object_key}"
+    debug_print "   Local: ${local_file_path}"
+    
+    # Always show a debug indicator for each object
+    if [ "$(echo "$DEBUG" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
+      echo "🔧 DEBUG: Processing ${object_key} (${size} bytes)"
+    fi
+    
+    # Create directory structure if needed
+    mkdir -p "$(dirname "$local_file_path")"
+    
+    local transfer_start=$(date +%s)
+    
+    # Check resources and cleanup if needed before download
+    check_resources
+    cleanup_ramdisk
+    
+    # Test if object exists in source before downloading
+    debug_print "   Checking if object exists in source..."
+    if ! s5cmd --profile $SOURCE_AWS_PROFILE --endpoint-url $SOURCE_ENDPOINT_URL \
+         ls "s3://${SOURCE_BUCKET}/${object_key}" &>/dev/null; then
+      echo "❌ Object not found in source: s3://${SOURCE_BUCKET}/${object_key}"
+      debug_print "   Debug: Check if object was deleted or moved"
+      return 1
+    fi
+    debug_print "   ✅ Object exists in source"
+    
+    # Download the object with progress tracking
+    debug_print "   Downloading object..."
+    debug_print "   Command: s5cmd --profile $SOURCE_AWS_PROFILE --endpoint-url $SOURCE_ENDPOINT_URL cp --concurrency $NUM_CONCURRENT s3://${SOURCE_BUCKET}/${object_key} ${local_file_path}"
+    
+    # Capture s5cmd output for debugging
+    local download_output=$(s5cmd --profile $SOURCE_AWS_PROFILE --endpoint-url $SOURCE_ENDPOINT_URL \
+         cp --concurrency $NUM_CONCURRENT "s3://${SOURCE_BUCKET}/${object_key}" "${local_file_path}" 2>&1)
+    local download_exit_code=$?
+    
+    if [ $download_exit_code -eq 0 ]; then
+      
+      local download_time=$(($(date +%s) - transfer_start))
+      local download_speed=$(echo "scale=2; $size / $download_time / 1024 / 1024" | bc 2>/dev/null || echo "0")
+      debug_print "   ✅ Download completed in ${download_time}s (${download_speed}MB/s)"
+      
+      # Verify downloaded file exists and has correct size
+      if [ ! -f "${local_file_path}" ]; then
+        echo "❌ Downloaded file not found: ${local_file_path}"
+        return 1
+      fi
+      
+      local actual_size=$(stat -c%s "${local_file_path}" 2>/dev/null || echo "0")
+      if [ "$actual_size" != "$size" ]; then
+        echo "❌ Size mismatch: expected ${size}, got ${actual_size} bytes"
+        return 1
+      fi
+      debug_print "   ✅ File verified: ${actual_size} bytes"
+      
+      # Upload the object to the target
+      local upload_start=$(date +%s)
+      debug_print "   Uploading object..."
+      debug_print "   Command: s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL cp --concurrency $NUM_CONCURRENT ${local_file_path} s3://${TARGET_BUCKET}/${object_key}"
+      
+      # Capture s5cmd output for debugging
+      local upload_output=$(s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL \
+           cp --concurrency $NUM_CONCURRENT "${local_file_path}" "s3://${TARGET_BUCKET}/${object_key}" 2>&1)
+      local upload_exit_code=$?
+      
+      if [ $upload_exit_code -eq 0 ]; then
+        
+        local upload_time=$(($(date +%s) - upload_start))
+        local upload_speed=$(echo "scale=2; $size / $upload_time / 1024 / 1024" | bc 2>/dev/null || echo "0")
+        local total_time=$((download_time + upload_time))
+        local avg_speed=$(echo "scale=2; $size / $total_time / 1024 / 1024" | bc 2>/dev/null || echo "0")
+        
+        debug_print "   ✅ Upload completed in ${upload_time}s (${upload_speed}MB/s)"
+        echo "✅ ${object_key} (${size} bytes) - D:${download_speed}MB/s U:${upload_speed}MB/s Avg:${avg_speed}MB/s"
+        return 0
+      else
+        echo "❌ Upload failed: ${object_key}"
+        debug_print "   Debug: Check target bucket permissions and connectivity"
+        debug_print "   Upload exit code: $upload_exit_code"
+        debug_print "   Upload output: $upload_output"
+        debug_print "   Local file path: ${local_file_path}"
+        debug_print "   File exists: $([ -f "${local_file_path}" ] && echo "Yes" || echo "No")"
+        if [ -f "${local_file_path}" ]; then
+          debug_print "   File size: $(stat -c%s "${local_file_path}" 2>/dev/null || echo "Unknown") bytes"
+        fi
+        debug_print "   Available RAM disk space: $(df -h /mnt/ramdisk | tail -1 | awk '{print $4}')"
+        debug_print "   Available root disk space: $(df -h / | tail -1 | awk '{print $4}')"
+        return 1
+      fi
+    else
+      echo "❌ Download failed: ${object_key}"
+      debug_print "   Debug: Check source bucket permissions, object existence, and connectivity"
+      debug_print "   Download exit code: $download_exit_code"
+      debug_print "   Download output: $download_output"
+      debug_print "   Local file path: ${local_file_path}"
+      debug_print "   File exists: $([ -f "${local_file_path}" ] && echo "Yes" || echo "No")"
+      if [ -f "${local_file_path}" ]; then
+        debug_print "   File size: $(stat -c%s "${local_file_path}" 2>/dev/null || echo "Unknown") bytes"
+      fi
+      debug_print "   Available RAM disk space: $(df -h /mnt/ramdisk | tail -1 | awk '{print $4}')"
+      debug_print "   Available root disk space: $(df -h / | tail -1 | awk '{print $4}')"
+      return 1
+    fi
+    
+    # Remove the temporary file
+    rm -f "${local_file_path}"
+    return 0
+  }
+  
+  # Process objects sequentially with progress tracking
+  echo "🚀 Node ${NODE_RANK}: Starting processing objects..."
+  while IFS= read -r line; do
+    if [ -n "$line" ]; then
+      process_object "$line"
+      # Update progress directly after each successful migration
+      if [ $? -eq 0 ]; then
+        size=$(echo $line | awk '{print $3}')
+        update_progress $size
+      fi
+    fi
+  done < $TEMP_DIR/my_objects.txt
+  
+  # Final progress update
+  calculate_eta
+  
+  # Signal completion by uploading a marker to S3
+  echo "Node ${NODE_RANK} completed all objects at $(date)" > $TEMP_DIR/node_${NODE_RANK}_done
+  s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL \
+    cp $TEMP_DIR/node_${NODE_RANK}_done s3://$TARGET_BUCKET/${TEMP_S3_PREFIX}/node_${NODE_RANK}_done &>/dev/null
+  
+  echo "🎉 Node ${NODE_RANK}: Migration completed!"
+  
+  # Head node verifies all nodes have completed
+  if [ "${NODE_RANK}" = "0" ]; then
+    echo "🔍 Head node: Waiting for all worker nodes to complete"
+    
+    # Wait for all workers to complete
+    for worker in $(seq 1 $((NUM_NODES-1))); do
+      echo "⏳ Waiting for worker $worker to complete..."
+      
+      while true; do
+        if s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL \
+          ls s3://$TARGET_BUCKET/${TEMP_S3_PREFIX}/node_${worker}_done &>/dev/null &>/dev/null; then
+          echo "✅ Worker $worker has completed"
+          break
+        fi
+        sleep 2
+      done
+    done
+    
+    echo "🔍 All workers have completed. Verifying object counts..."
+    
+    # Count objects in source and target buckets
+    s5cmd --profile $SOURCE_AWS_PROFILE --endpoint-url $SOURCE_ENDPOINT_URL ls s3://$SOURCE_BUCKET/* > $TEMP_DIR/final_source_objects.txt &>/dev/null
+    s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL ls s3://$TARGET_BUCKET/* > $TEMP_DIR/final_target_objects.txt &>/dev/null
+    
+    # Filter out directory entries and temp files
+    grep -v " DIR " $TEMP_DIR/final_source_objects.txt > $TEMP_DIR/final_source_files.txt
+    grep -v " DIR " $TEMP_DIR/final_target_objects.txt | grep -v "_skypilot_temp" > $TEMP_DIR/final_target_files.txt
+    
+    # Extract just the object keys for comparison
+    cat $TEMP_DIR/final_source_files.txt | awk '{print $NF}' | sort > $TEMP_DIR/source_keys.txt
+    cat $TEMP_DIR/final_target_files.txt | awk '{print $NF}' | sort > $TEMP_DIR/target_keys.txt
+    
+    # Compare counts
+    SOURCE_COUNT=$(wc -l < $TEMP_DIR/final_source_files.txt)
+    TARGET_COUNT=$(wc -l < $TEMP_DIR/final_target_files.txt)
+    
+    # Calculate and print migration duration
+    END_TIME=$(date +%s)
+    DURATION=$((END_TIME - START_TIME))
+    HOURS=$((DURATION / 3600))
+    MINUTES=$(( (DURATION % 3600) / 60 ))
+    SECONDS=$((DURATION % 60))
+    
+    # Calculate average speed
+    TOTAL_SIZE_GB=$(echo "scale=2; $TOTAL_SIZE_BYTES / 1024 / 1024 / 1024" | bc 2>/dev/null || echo "0")
+    AVG_SPEED_GBPS=$(echo "scale=2; $TOTAL_SIZE_GB / $DURATION * 3600" | bc 2>/dev/null || echo "0")
+    
+    echo "======================================================"
+    echo "📊 Final Migration Statistics:"
+    echo "======================================================"
+    echo "⏱️  Total migration time: ${HOURS}h ${MINUTES}m ${SECONDS}s"
+    echo "📦 Source bucket: $SOURCE_COUNT objects"
+    echo "📦 Target bucket: $TARGET_COUNT objects"
+    echo "💾 Total data transferred: $TOTAL_SIZE_GB GB"
+    echo "🚀 Average speed: $AVG_SPEED_GBPS GB/h"
+    echo "======================================================"
+    
+    if [ $SOURCE_COUNT -eq $TARGET_COUNT ]; then
+      echo "✅ Migration completed successfully! Object counts match."
+      
+      # Even if counts match, check for differences in file lists
+      if diff $TEMP_DIR/source_keys.txt $TEMP_DIR/target_keys.txt > $TEMP_DIR/diff_output.txt; then
+        echo "✅ All objects match between source and target buckets."
+      else
+        echo "⚠️ Warning: Although counts match, some objects differ between buckets."
+        echo "Objects in source but not in target (first 10):"
+        grep "^<" $TEMP_DIR/diff_output.txt | head -10
+        echo "Objects in target but not in source (first 10):"
+        grep "^>" $TEMP_DIR/diff_output.txt | head -10
+      fi
+    else
+      echo "⚠️ Migration completed with warnings. Object counts don't match."
+      echo "Source: $SOURCE_COUNT, Target: $TARGET_COUNT"
+      
+      # Show detailed differences
+      echo "Analyzing differences between source and target buckets..."
+      
+      # Find files in source but not in target
+      comm -23 $TEMP_DIR/source_keys.txt $TEMP_DIR/target_keys.txt > $TEMP_DIR/missing_in_target.txt
+      MISSING_TARGET=$(wc -l < $TEMP_DIR/missing_in_target.txt)
+
+      echo "$MISSING_TARGET files exist in source but not in target"
+      
+      if [ $MISSING_TARGET -gt 0 ]; then
+        echo "Sample of missing files in target (first 10):"
+        head -10 $TEMP_DIR/missing_in_target.txt
+      fi
+      
+    fi
+    
+    # Clean up temporary files in S3
+    echo "🧹 Cleaning up temporary files..."
+    s5cmd --profile $TARGET_AWS_PROFILE --endpoint-url $TARGET_ENDPOINT_URL \
+      rm s3://$TARGET_BUCKET/${TEMP_S3_PREFIX}/* &>/dev/null
+      
+    # Clean up RAM disk temp files to free memory
+    echo "🧹 Cleaning up RAM disk files..."
+    rm -rf $TEMP_DIR/*
+    
+    echo "🎉 Migration process completed!"
+  fi 
