@@ -21,8 +21,8 @@ spec:
       template:
         spec: &task-spec
           containers:
-            - image: registry.gitlab.com/jadnov/nebius/mnode-25.06:latest
-              imagePullPolicy: Always
+            - image: registry.gitlab.com/jadnov/nebius/mnode-26.01:latest
+              imagePullPolicy: IfNotPresent
               name: llama-cookbook-finetuning
               command: 
                - /bin/bash
@@ -61,11 +61,8 @@ spec:
                   value: "eth0"
                 - name: CUDA_LAUNCH_BLOCKING
                   value: "0"
-                - name: WANDB_API_KEY
-                  valueFrom:
-                    secretKeyRef:
-                      name: finetuning-job-secret
-                      key: WANDB_API_KEY
+                - name: PYTORCH_CUDA_ALLOC_CONF
+                  value: "expandable_segments:True"
                 - name: HF_TOKEN
                   valueFrom:
                     secretKeyRef:
@@ -80,8 +77,6 @@ spec:
                   name: dshm
                 - mountPath: /dev/infiniband
                   name: ib
-                - mountPath: /workspace/persistent-storage
-                  name: persistent-storage
           restartPolicy: OnFailure
           volumes:
             - name: dshm
@@ -90,9 +85,6 @@ spec:
             - name: ib
               hostPath:
                 path: /dev/infiniband
-            - name: persistent-storage
-              persistentVolumeClaim:
-                claimName: external-storage-persistent-volumeclaim
     - replicas: 1
       name: worker
       template:

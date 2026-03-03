@@ -21,7 +21,7 @@ spec:
       template:
         spec: &task-spec
           containers:
-            - image: registry.gitlab.com/jadnov/nebius/mnode-25.06:latest
+            - image: registry.gitlab.com/jadnov/nebius/mnode-26.01:latest
               imagePullPolicy: IfNotPresent
               name: llama-cookbook-finetuning
               command: 
