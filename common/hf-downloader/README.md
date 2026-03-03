@@ -37,13 +37,13 @@ The PV corresponding to shared FS is mounted at `/persistent-storage`.
 Let's download base model weights (Note that the model requires permission to download from Hugging Face) and dataset:
 ```bash
 # Llama model from Meta requires authentication to download
-huggingface-cli login
+huggingface-cli login --token "$HF_TOKEN"
 mkdir -p /persistent-storage/models/hf-meta-llama3-8B
 mkdir -p /persistent-storage/models/hf-meta-llama3-70B
 mkdir -p /persistent-storage/dataset/samsum
 huggingface-cli download meta-llama/Llama-3.1-8B --local-dir /persistent-storage/models/hf-meta-llama3-8B --exclude="original/*"
 huggingface-cli download meta-llama/Llama-3.1-70B --local-dir /persistent-storage/models/hf-meta-llama3-70B --exclude="original/*"
-huggingface-cli repo clone datasets/knkarthick/samsum /persistent-storage/dataset/samsum
+huggingface-cli repo clone datasets/lmsys/toxic-chat /persistent-storage/dataset/llamaguard_toxicchat_dataset
 ```
 
 ### Clean up

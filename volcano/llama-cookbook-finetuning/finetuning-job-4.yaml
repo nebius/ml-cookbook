@@ -3,7 +3,7 @@ kind: Job
 metadata:
   name: pytorch-job
 spec:
-  minAvailable: 3
+  minAvailable: 4
   schedulerName: volcano
   queue: test-queue
   plugins:
@@ -21,14 +21,15 @@ spec:
       template:
         spec: &task-spec
           containers:
-            - image: registry.gitlab.com/jadnov/nebius/mnode-26.01:latest
+            - image: cr.eu-north1.nebius.cloud/e00y2yvzbf98cbxzb2/ml-volcano-py.26.01:latest
               imagePullPolicy: IfNotPresent
               name: llama-cookbook-finetuning
               command: 
                - /bin/bash
                - -c
                - |
-                pip install "numpy==1.26.4" && \
+                set -euo pipefail
+                pip install "numpy==1.26.4"
                 torchrun \
                   --nnodes=4 \
                   --nproc_per_node=8 \

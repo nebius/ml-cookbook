@@ -80,7 +80,7 @@ Please see the corresponding [documentation from Meta](https://github.com/meta-l
 
 ### Submit the job
 
-By default, the image used for this job is `registry.gitlab.com/jadnov/nebius/mnode-25.06`. The build instructions for this image are provided [here](../../workload-samples/llama-cookbook/).
+By default, the image used for this job is `cr.eu-north1.nebius.cloud/e00y2yvzbf98cbxzb2/ml-volcano-py.26.01:latest`. The build instructions for this image are provided [here](../../workload-samples/llama-cookbook/).
 
 Before submitting the job, create a `secret` with your HF and W&B:
 ```bash
