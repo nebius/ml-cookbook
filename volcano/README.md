@@ -40,7 +40,8 @@ helm install volcano volcano-sh/volcano -n volcano-system --create-namespace
 
 ## Example wokloads:
 
-**NOTE**: to run example workloads, first create a `Queue` (including 2 nodes with 8 GPUs each) by running `kubectl apply -f queue.yaml`.
+**NOTE**: to run example workloads, first create a `Queue` (including 2 nodes with 8 GPUs each) by running `kubectl apply -f queue2.yaml`.
+Use queue4.yaml as example of queue for 4 nodes, and apply changes for more nodes if needed.
 - [NCCL tests in pure PyTorch](./nccl-test-pytorch/)
 - [LLM finetuning with *llama-cookbook*](./llama-cookbook-finetuning/)
 

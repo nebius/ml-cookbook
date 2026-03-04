@@ -4,14 +4,14 @@ This document provides a step-by-step guide to a full parameter finetuning of Ll
 
 Before you start, make sure you have the following:
 - A Kubernetes cluster with GPU operator, network operator and Volcano installed.
-- Created resource [`Queue` named `test-queue` in Volcano](../queue.yaml).
+- Created resource [`Queue` named `test-queue` in Volcano](../queue2.yaml). @ examples provided for 2 and 4 nodes, you may increase amount of nodes accordingly.
 - Prepared the [image for running this workload](../../workload-samples/llama-cookbook/Dockerfile).
-- Access to the Llama 3.1 8B model weights.
+- Access to the Llama 3.1 8B/70B model weights.
 
 ## Steps
 
 ### Examine the job manifest
-Let's take a look at the job manifest file `finetuning-job.yaml`:
+Let's take a look at the job manifest file `finetuning-job-2.yaml` for 2 nodes and `finetuning-job-4.yaml` for 4 nodes:
 
 #### PyTorch plugin
 One of the very useful features of Volcano is it's plugins ecosystem. In this example, we use the `pytorch` plugin to simplify the configuration of a PyTorch job.
@@ -37,6 +37,7 @@ command:
     - /bin/bash
     - -c
     - |
+    pip install "numpy==1.26.4" && \ # temp fix for numpy 2 not supported by pytorch yet
     torchrun \
         --nnodes=<number_of_nodes>  \
         --nproc_per_node=<number_of_gpus_per_node>  \
@@ -79,7 +80,7 @@ Please see the corresponding [documentation from Meta](https://github.com/meta-l
 
 ### Submit the job
 
-By default, the image used for this job is `ghcr.io/nebius/ml-cookbook/pytorch-llama-cookbook:24.07-0.0.5`. The build instructions for this image are provided [here](../../workload-samples/llama-cookbook/).
+By default, the image used for this job is `cr.eu-north1.nebius.cloud/e00y2yvzbf98cbxzb2/ml-volcano-py.26.01:latest`. The build instructions for this image are provided [here](../../workload-samples/llama-cookbook/).
 
 Before submitting the job, create a `secret` with your HF and W&B:
 ```bash
