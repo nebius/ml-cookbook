@@ -1,0 +1,31 @@
+# Crawl a site on Nebius with:
+# sky launch -c tavily-crawl skypilot/examples/tavily-crawl-site.yaml --env TAVILY_API_KEY -y
+
+resources:
+  infra: nebius
+  cpus: 4
+  disk_size: 50
+
+workdir: .
+
+envs:
+  TAVILY_API_KEY:
+  TARGET_URL: https://docs.nebius.com
+  CRAWL_INSTRUCTIONS: Find the most useful pages for ML platform onboarding and training workflows
+
+setup: |
+  set -euo pipefail
+  cd agents/tavily
+  python3 -m venv .venv
+  source .venv/bin/activate
+  pip install -r requirements.txt
+
+run: |
+  set -euo pipefail
+  cd agents/tavily
+  source .venv/bin/activate
+  python crawl/crawl_site.py \
+    --url "$TARGET_URL" \
+    --instructions "$CRAWL_INSTRUCTIONS" \
+    --output outputs/crawl/corpus.json
+  cat outputs/crawl/corpus.json

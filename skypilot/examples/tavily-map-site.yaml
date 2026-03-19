@@ -1,0 +1,31 @@
+# Map a documentation site on Nebius with:
+# sky launch -c tavily-map skypilot/examples/tavily-map-site.yaml --env TAVILY_API_KEY -y
+
+resources:
+  infra: nebius
+  cpus: 4
+  disk_size: 30
+
+workdir: .
+
+envs:
+  TAVILY_API_KEY:
+  TARGET_URL: https://docs.nebius.com
+  MAP_INSTRUCTIONS: Find pages relevant to GPU clusters, object storage, and managed Kubernetes
+
+setup: |
+  set -euo pipefail
+  cd agents/tavily
+  python3 -m venv .venv
+  source .venv/bin/activate
+  pip install -r requirements.txt
+
+run: |
+  set -euo pipefail
+  cd agents/tavily
+  source .venv/bin/activate
+  python map/map_site.py \
+    --url "$TARGET_URL" \
+    --instructions "$MAP_INSTRUCTIONS" \
+    --output outputs/map/site_map.json
+  cat outputs/map/site_map.json
