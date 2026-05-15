@@ -1,0 +1,26 @@
+# Launch a minimal Tavily search API on Nebius with:
+# sky launch -c tavily-search skypilot/examples/tavily-search-api.yaml --env TAVILY_API_KEY -y
+
+resources:
+  infra: nebius
+  cpus: 4
+  disk_size: 50
+  ports: 8000
+
+workdir: .
+
+envs:
+  TAVILY_API_KEY:
+
+setup: |
+  set -euo pipefail
+  cd agents/tavily
+  python3 -m venv .venv
+  source .venv/bin/activate
+  pip install -r requirements.txt
+
+run: |
+  set -euo pipefail
+  cd agents/tavily/search
+  source ../.venv/bin/activate
+  uvicorn app:app --host 0.0.0.0 --port 8000

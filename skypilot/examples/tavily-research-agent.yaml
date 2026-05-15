@@ -1,0 +1,31 @@
+# Generate a cited research report on Nebius with:
+# sky launch -c tavily-research skypilot/examples/tavily-research-agent.yaml --env TAVILY_API_KEY -y
+
+resources:
+  infra: nebius
+  cpus: 4
+  disk_size: 50
+
+workdir: .
+
+envs:
+  TAVILY_API_KEY:
+  RESEARCH_INPUT: Compare managed Kubernetes, Slurm, and SkyPilot for machine learning platform teams on Nebius
+  RESEARCH_MODEL: mini
+
+setup: |
+  set -euo pipefail
+  cd agents/tavily
+  python3 -m venv .venv
+  source .venv/bin/activate
+  pip install -r requirements.txt
+
+run: |
+  set -euo pipefail
+  cd agents/tavily
+  source .venv/bin/activate
+  python research/research_report.py \
+    --input "$RESEARCH_INPUT" \
+    --model "$RESEARCH_MODEL" \
+    --output-dir outputs/research
+  cat outputs/research/report.md
