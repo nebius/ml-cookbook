@@ -2,7 +2,7 @@
 
 This repository contains the Slurm job scripts and reproducibility instructions for pre-training DeepSeek-V3 (16B and 671B) on a Soperator 256-GPU B200 cluster with TorchTitan.
 
-The recipes include MXFP8 mixed-precision training via TorchAO and DeepEP-accelerated expert communication, which together deliver up to 41% faster training throughput (tokens/sec) over BF16 without degrading convergence. For the full results and technical deep-dive, see the accompanying PyTorch blog post **[[Link Coming Soon]()]**.
+The recipes include MXFP8 mixed-precision training via TorchAO and DeepEP-accelerated expert communication, which together deliver up to 41% faster training throughput (tokens/sec) over BF16 without degrading convergence. For the full results and technical deep-dive, see the accompanying PyTorch blog post **[Enabling Up to 41% Faster Pre-training: MXFP8 and DeepEP for DeepSeek-V3 on B200 with TorchTitan](https://pytorch.org/blog/enabling-up-to-41-faster-pre-training-mxfp8-and-deepep-for-deepseek-v3-on-b200-with-torchtitan/)**.
 
 ## Prerequisites
 
