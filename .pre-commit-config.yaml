@@ -1,0 +1,65 @@
+# Pre-commit hooks for the ML Cookbook — the local mirror of CI.
+#
+# Quick start:
+#   pip install pre-commit
+#   pre-commit install          # run automatically on every `git commit`
+#   pre-commit autoupdate       # refresh the rev: pins below to latest releases
+#   pre-commit run --all-files  # run every hook over the whole repo
+#
+# The rev: values below are reasonable starting points; run `pre-commit
+# autoupdate` once after copying this file to lock them to current versions.
+
+
+repos:
+  # --- General hygiene ----------------------------------------------------- #
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-added-large-files
+      - id: mixed-line-ending
+
+  # --- Python + Jupyter: lint and format ----------------------------------- #
+  # Ruff handles .py and .ipynb natively, so no nbQA is needed for these.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.16
+    hooks:
+      - id: ruff-check
+        args: [--fix]            # auto-fix locally; CI runs without --fix
+        types_or: [python, pyi, jupyter]
+      - id: ruff-format
+        types_or: [python, pyi, jupyter]
+
+  # --- Python security analysis (.py) -------------------------------------- #
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.9.4
+    hooks:
+      - id: bandit
+        args: ["-c", "pyproject.toml", "--severity-level", "medium"]
+        additional_dependencies: ["bandit[toml]"]
+
+  # --- Notebook security: run real Bandit on .ipynb via nbQA --------------- #
+  # Ruff's `S` rules already cover most of this; keep this hook if you want
+  # Bandit's full check set on notebooks, or delete it to rely on Ruff alone.
+  - repo: https://github.com/nbQA-dev/nbQA
+    rev: 1.9.1
+    hooks:
+      - id: nbqa
+        name: nbqa-bandit
+        alias: nbqa-bandit
+        entry: nbqa bandit
+        args: ["-c", "pyproject.toml", "--severity-level", "medium"]
+        additional_dependencies: ["bandit[toml]"]
+        types: [jupyter]
+
+  # --- Shell scripts ------------------------------------------------------- #
+  # Pure-Python wheel — no Docker required locally. Reads .shellcheckrc.
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        args: ["-x", "--severity=warning"]
