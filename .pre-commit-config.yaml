@@ -18,6 +18,7 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+        args: [--allow-multiple-documents]   # k8s manifests bundle PV+PVC, etc.
       - id: check-merge-conflict
       - id: check-case-conflict
       - id: check-added-large-files
