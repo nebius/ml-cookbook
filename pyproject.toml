@@ -11,7 +11,7 @@
 # security linting here too.
 # --------------------------------------------------------------------------- #
 [tool.ruff]
-target-version = "py312"
+target-version = "py313"
 line-length = 100
 # Directories Ruff should never touch (add vendored/generated code here).
 extend-exclude = ["third_party", "vendor", "*.egg-info"]

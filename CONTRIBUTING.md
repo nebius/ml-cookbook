@@ -6,7 +6,7 @@ You can — and should — run them locally before pushing.
 
 ## One-time setup
 
-Requires Python 3.12+.
+Requires Python 3.13+.
 
 ```bash
 pip install pre-commit
