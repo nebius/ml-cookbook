@@ -1,0 +1,34 @@
+# Dependabot version updates.
+# Docs: https://docs.github.com/code-security/dependabot/dependabot-version-updates
+#
+# This keeps the CI's GitHub Actions and the repo's Python dev tooling current.
+# NOTE: Dependabot security *alerts* and automatic security-update PRs are turned
+# on separately under Settings -> Code security (or at the org level) — not in
+# this file. This file controls version updates and how their PRs are grouped.
+version: 2
+updates:
+  # --- GitHub Actions used by the workflows (actions/checkout, setup-python) -- #
+  - package-ecosystem: github-actions
+    directory: "/"            # the github-actions ecosystem scans .github/workflows/
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:         # bundle all action bumps into a single PR
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+    labels: ["dependencies"]
+    open-pull-requests-limit: 5
+
+  # --- Python dev tooling pinned in requirements-dev.txt (ruff, bandit, nbqa) - #
+  - package-ecosystem: pip
+    directory: "/"            # root requirements-dev.txt / pyproject.toml
+    schedule:
+      interval: weekly
+    groups:
+      dev-tools:
+        patterns: ["*"]
+    commit-message:
+      prefix: deps
+    labels: ["dependencies"]
+    open-pull-requests-limit: 5
