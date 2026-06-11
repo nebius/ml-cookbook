@@ -19,7 +19,7 @@ concurrency:
 jobs:
   ruff:
     name: Python & notebooks · Ruff (lint + format)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -36,7 +36,7 @@ jobs:
 
   bandit:
     name: Python & notebooks · Bandit (security)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -59,7 +59,7 @@ jobs:
 
   shellcheck:
     name: Shell · ShellCheck
-    runs-on: ubuntu-latest   # shellcheck is pre-installed on GitHub runners
+    runs-on: ubuntu-24.04   # shellcheck is pre-installed on GitHub runners
     steps:
       - uses: actions/checkout@v6
       - name: ShellCheck
