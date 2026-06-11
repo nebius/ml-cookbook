@@ -100,7 +100,7 @@ Each recipe includes:
 Here’s a sneak peek of the recipes available in this cookbook:
 
 ### 1. **DeepSeek-V3 Pre-training with MXFP8 + DeepEP** ([pytorch-dsv3-mxfp8](pytorch-dsv3-mxfp8/))
-   - TorchTitan recipes for DeepSeek-V3 671B and 16B MoE on 256 NVIDIA B200 GPUs.   
+   - TorchTitan recipes for DeepSeek-V3 671B and 16B MoE on 256 NVIDIA B200 GPUs.
    - Combines MXFP8 via TorchAO with DeepEP expert-parallel communication for **+41% throughput** over BF16.
    - Reproducible Slurm scripts for tested configurations.
 
@@ -150,7 +150,7 @@ Copyright 2025 Nebius B.V.
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
    You may obtain a copy of the License at
-   http://www.apache.org/licenses/LICENSE-2.0  
+   http://www.apache.org/licenses/LICENSE-2.0
    Unless required by applicable law or agreed to in writing, software
    distributed under the License is distributed on an "AS IS" BASIS,
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.

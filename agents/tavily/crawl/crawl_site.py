@@ -11,7 +11,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Crawl a site with Tavily Crawl.")
     parser.add_argument("--url", required=True, help="Root URL to crawl")
     parser.add_argument("--output", default="outputs/crawl/corpus.json", help="Output JSON path")
-    parser.add_argument("--instructions", default="Find the most useful pages for an engineering onboarding corpus.")
+    parser.add_argument(
+        "--instructions", default="Find the most useful pages for an engineering onboarding corpus."
+    )
     parser.add_argument("--limit", type=int, default=25)
     parser.add_argument("--max-depth", type=int, default=2)
     parser.add_argument("--max-breadth", type=int, default=20)

@@ -1,3 +1,4 @@
+#!/bin/bash
 #SBATCH --job-name=tavily_extract
 #SBATCH --output=outputs/tavily-extract-%j.out
 #SBATCH --error=outputs/tavily-extract-%j.err
@@ -6,11 +7,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --time=00:15:00
 
-#!/bin/bash
 set -euo pipefail
-
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 
 if [ -z "${TAVILY_API_KEY:-}" ]; then
   echo "TAVILY_API_KEY must be set before submitting the job."

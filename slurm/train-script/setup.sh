@@ -81,4 +81,4 @@ done
 
 echo -e "${GREEN}Setup complete.${NC}"
 echo "To download/refresh model + dataset run:"
-echo "  source $VENV_DIR/project.env && ./download_data_model.sh" 
+echo "  source $VENV_DIR/project.env && ./download_data_model.sh"

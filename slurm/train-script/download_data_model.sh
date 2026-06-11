@@ -40,6 +40,6 @@ python download_data_model.py \
   --shared_folder "$SHARED_DIR" \
   --model_dir "$MODEL_DIR" \
   --data_dir "$DATA_DIR" \
-  ${DL_ARGS[@]:-}
+  "${DL_ARGS[@]}"
 
 echo "[INFO] Download (model=$MODEL_NAME dataset=$DATASET_NAME) complete." >&2

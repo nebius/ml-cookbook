@@ -20,7 +20,8 @@ cd "$SCRIPT_DIR/torchtitan"
 
 # Environment settings
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | sort -r | head -n 1)
-export MASTER_ADDR=$(getent ahostsv4 "$MASTER_ADDR" | head -n 1 | cut -d " " -f 1)
+MASTER_ADDR=$(getent ahostsv4 "$MASTER_ADDR" | head -n 1 | cut -d " " -f 1)
+export MASTER_ADDR
 echo "MASTER_ADDR: $MASTER_ADDR"
 
 export UCX_NET_DEVICES=ens7

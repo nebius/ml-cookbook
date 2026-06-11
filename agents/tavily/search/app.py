@@ -9,13 +9,14 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from common import require_env, tavily_post
 
-
 app = FastAPI(title="Tavily Search API", version="0.1.0")
 
 
 class SearchRequest(BaseModel):
     query: str = Field(..., description="Search query")
-    topic: str = Field(default="general", description="Search topic such as general, news, or finance")
+    topic: str = Field(
+        default="general", description="Search topic such as general, news, or finance"
+    )
     max_results: int = Field(default=5, ge=1, le=20)
     include_answer: str | bool = Field(default="advanced")
     include_raw_content: str | bool = Field(default=False)
@@ -60,4 +61,4 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.environ.get("PORT", "8000"))
-    uvicorn.run("app:app", host="0.0.0.0", port=port)
+    uvicorn.run("app:app", host="0.0.0.0", port=port)  # noqa: S104  # nosec B104

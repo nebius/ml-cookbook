@@ -10,7 +10,7 @@ spec:
     pytorch: [
       "--master=master",
       "--worker=worker",
-      "--port=29500", 
+      "--port=29500",
     ]
   tasks:
     - replicas: 1
@@ -24,7 +24,7 @@ spec:
             - image: cr.eu-north1.nebius.cloud/e00y2yvzbf98cbxzb2/ml-volcano-py.26.01:latest
               imagePullPolicy: IfNotPresent
               name: llama-cookbook-finetuning
-              command: 
+              command:
                - /bin/bash
                - -c
                - |

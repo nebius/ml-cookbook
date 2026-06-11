@@ -14,7 +14,7 @@ setup: |
     # Install dependencies
     pip install uv
     uv pip install -r requirements.txt "numpy" "torch" --system
-    
+
 run: |
     cd examples/mingpt
     export LOGLEVEL=INFO
@@ -28,4 +28,4 @@ run: |
     --master_addr=$MASTER_ADDR \
     --master_port=8008 \
     --node_rank=${SKYPILOT_NODE_RANK} \
-    main.py 
+    main.py

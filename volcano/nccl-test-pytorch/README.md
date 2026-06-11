@@ -23,7 +23,7 @@ Examine `nccl-test-pytorch.yaml` and modify the following parameters as needed:
 
 Optionally, you may configure NCCL environment variables for a more verbose output:
 ```yaml
-env:  
+env:
   - name: NCCL_DEBUG
     value: INFO
 ```
@@ -40,7 +40,7 @@ kubectl apply -f nccl-test-pytorch.yaml
 You can monitor the job logs with the following command:
 
 ```bash
-kubectl logs -f nccl-test-pytorch-master-0 
+kubectl logs -f nccl-test-pytorch-master-0
 ```
 
 ### Clean up

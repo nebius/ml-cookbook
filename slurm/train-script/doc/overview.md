@@ -36,4 +36,3 @@ ml-cookbook/
 - **requirements.txt**: Python package requirements.
 - **train.slurm**: Example Slurm job submission script.
 - **doc/**: Documentation folder.
-

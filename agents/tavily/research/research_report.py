@@ -10,7 +10,9 @@ from common import poll_research, tavily_post, write_json, write_text
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate a research report with Tavily Research.")
     parser.add_argument("--input", required=True, help="Research prompt or question")
-    parser.add_argument("--output-dir", default="outputs/research", help="Directory for report artifacts")
+    parser.add_argument(
+        "--output-dir", default="outputs/research", help="Directory for report artifacts"
+    )
     parser.add_argument("--model", default="mini", choices=["mini", "pro", "auto"])
     parser.add_argument("--poll-interval", type=int, default=5)
     parser.add_argument("--timeout-seconds", type=int, default=900)

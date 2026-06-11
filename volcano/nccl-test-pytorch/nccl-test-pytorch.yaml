@@ -10,7 +10,7 @@ spec:
     pytorch: [
       "--master=master",
       "--worker=worker",
-      "--port=29500", 
+      "--port=29500",
     ]
   tasks:
     - replicas: 1
@@ -24,7 +24,7 @@ spec:
             - image: nvcr.io/nvidia/pytorch:24.07-py3
               imagePullPolicy: Always
               name: nccl-test-pytorch
-              command: 
+              command:
                - /bin/bash
                - -c
                - |

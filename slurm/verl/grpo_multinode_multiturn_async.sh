@@ -11,7 +11,8 @@
 
 set -eou pipefail
 
-export SUBMIT_DIR=$(pwd)
+SUBMIT_DIR=$(pwd)
+export SUBMIT_DIR
 
 verl_workdir_mount=$SUBMIT_DIR/verl:/workspace
 train_files=$SUBMIT_DIR/data/gsm8k_multiturn/train.parquet

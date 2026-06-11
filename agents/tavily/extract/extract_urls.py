@@ -9,7 +9,9 @@ from common import tavily_post, write_json
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extract content from URLs with Tavily Extract.")
-    parser.add_argument("--urls-file", required=True, help="Path to a newline-delimited list of URLs")
+    parser.add_argument(
+        "--urls-file", required=True, help="Path to a newline-delimited list of URLs"
+    )
     parser.add_argument("--output", default="outputs/extract/results.json", help="Output JSON path")
     parser.add_argument("--query", default=None, help="Optional reranking intent")
     parser.add_argument("--extract-depth", default="advanced", choices=["basic", "advanced"])
@@ -20,7 +22,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    urls = [line.strip() for line in Path(args.urls_file).read_text(encoding="utf-8").splitlines() if line.strip()]
+    urls = [
+        line.strip()
+        for line in Path(args.urls_file).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
     payload = {
         "urls": urls,
         "extract_depth": args.extract_depth,

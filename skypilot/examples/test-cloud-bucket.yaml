@@ -4,7 +4,7 @@ resources:
 
 file_mounts:
    /my_data:
-    # mounting nebius buckets requires 
+    # mounting nebius buckets requires
     # 1. a `nebius` profile in `~/.aws/config` e.g.
     # [profile nebius]
     # region = eu-north1

@@ -20,7 +20,8 @@ export NCCL_IB_TIMEOUT=20
 # export NCCL_DEBUG=INFO
 
 # cache dataset and model
-export HF_HOME="$(pwd)/hf_cache"
+HF_HOME="$(pwd)/hf_cache"
+export HF_HOME
 # keep dataset cache in memory to avoid
 # potential race condition on a shared FS
 export HF_DATASETS_IN_MEMORY_MAX_SIZE=$((64*1024*1024*1024)) # 64GB

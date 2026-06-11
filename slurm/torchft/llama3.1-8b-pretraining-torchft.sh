@@ -23,7 +23,8 @@ export PYTHONFAULTHANDLER=1
 export NCCL_SOCKET_IFNAME="eth0"
 export GLOO_SOCKET_IFNAME="eth0"
 
-export CONFIG_FILE="$(pwd)/llama3_8b.toml"
+CONFIG_FILE="$(pwd)/llama3_8b.toml"
+export CONFIG_FILE
 
 export TORCHFT_LIGHTHOUSE="http://login-0:29510"
 

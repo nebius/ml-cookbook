@@ -11,7 +11,7 @@ if [ ! -d "torchtitan" ]; then
     git clone https://github.com/pytorch/torchtitan.git
 fi
 cd torchtitan && git checkout 1a36996b8dffb464340c280d3f0a8139ca4c36b6  # Nightly accessed 2026-02-03
-pip install -e .                
+pip install -e .
 
 # Download tokenizers
 python3 -c "
