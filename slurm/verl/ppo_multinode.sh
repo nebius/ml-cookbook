@@ -11,7 +11,8 @@
 
 set -eou pipefail
 
-export SUBMIT_DIR=$(pwd)
+SUBMIT_DIR=$(pwd)
+export SUBMIT_DIR
 
 verl_workdir_mount=$SUBMIT_DIR/verl:/workspace
 train_files=$SUBMIT_DIR/data/gsm8k/train.parquet
@@ -94,7 +95,7 @@ done
 # Allow time for ray to start up
 sleep 20
 
-# Wait until all workers are registered in Ray cluster 
+# Wait until all workers are registered in Ray cluster
 extract_worker_units() {
   status_output=$(srun --overlap --nodes=1 --ntasks=1 -w "$head_node" \
     --container-name=ray-head-$SLURM_JOB_ID --no-container-mount-home \

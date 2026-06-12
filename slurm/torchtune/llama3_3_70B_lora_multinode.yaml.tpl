@@ -111,4 +111,4 @@ profiler:
   wait_steps: 5
   warmup_steps: 3
   active_steps: 2
-  num_cycles: 1 
+  num_cycles: 1

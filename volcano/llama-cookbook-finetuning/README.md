@@ -24,7 +24,7 @@ plugins:
     pytorch: [
         "--master=master",
         "--worker=worker",
-        "--port=29500", 
+        "--port=29500",
     ]
 ```
 #### Defining the tasks
@@ -33,7 +33,7 @@ Please note that you need to define your distributed PyTorch job as 2 tasks: `ma
 
 The `pytorch` plugin will automatically set the `MASTER_ADDR`, `MASTER_PORT` and `RANK` environment variables for you, but it is still user's responsibility to provide the `torchrun` command to the training container:
 ```yaml
-command: 
+command:
     - /bin/bash
     - -c
     - |

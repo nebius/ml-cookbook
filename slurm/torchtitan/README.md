@@ -13,7 +13,7 @@ For running this workload, you will need to SSH to the login node of the Soperat
 
 `setup.sh` will create a Python virtual environment, install the necessary dependencies, and grab necessary files. The dependencies will be installed into a Pyhon `venv` on a shared filesystem, makng it accessible for every worker node.
 
-**HF_TOKEN required** The setup script expects your Hugging Face access token to be available in the `HF_TOKEN` environment variable. 
+**HF_TOKEN required** The setup script expects your Hugging Face access token to be available in the `HF_TOKEN` environment variable.
 ```
 export HF_TOKEN=<your-hf-access-token>
 bash setup.sh

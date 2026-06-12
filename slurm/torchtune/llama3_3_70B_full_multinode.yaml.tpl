@@ -9,7 +9,7 @@
 #
 # This config is only tested on 2 nodes w/ 8 H100 machines.
 
-root_dir: __ROOT_DIR__  # Path automatically injected by SLURM script 
+root_dir: __ROOT_DIR__  # Path automatically injected by SLURM script
 output_dir: ${root_dir}/output
 
 # Tokenizer
@@ -115,4 +115,4 @@ profiler:
   wait_steps: 5
   warmup_steps: 3
   active_steps: 30
-  num_cycles: 1 
+  num_cycles: 1

@@ -32,7 +32,7 @@ We use the following arguments:
 
 To submit the MPI job, naviage to the `mpi` directory, make script executable with `chmod +x nccl-tests.sh` and launch it. You can override some options:
 ```
-$ ./nccl-tests.sh -h                                                                
+$ ./nccl-tests.sh -h
 Usage: nccl-tests.sh [options]
 
 Options:
@@ -80,16 +80,16 @@ Warning: Permanently added 'demo-nccl-test-16-h200-worker-1.demo-nccl-test-16-h2
 #  Rank 14 Group  0 Pid     27 on demo-nccl-test-16-h200-worker-1 device  6 [0xb3] NVIDIA H200
 #  Rank 15 Group  0 Pid     29 on demo-nccl-test-16-h200-worker-1 device  7 [0xb7] NVIDIA H200
 #
-#                                                              out-of-place                       in-place          
+#                                                              out-of-place                       in-place
 #       size         count      type   redop    root     time   algbw   busbw #wrong     time   algbw   busbw #wrong
-#        (B)    (elements)                               (us)  (GB/s)  (GB/s)            (us)  (GB/s)  (GB/s)       
+#        (B)    (elements)                               (us)  (GB/s)  (GB/s)            (us)  (GB/s)  (GB/s)
   1073741824     268435456     float     sum      -1   4508.0  238.19  446.60      0   4489.7  239.16  448.42      0
   2147483648     536870912     float     sum      -1   8680.6  247.39  463.85      0   8688.9  247.15  463.41      0
   4294967296    1073741824     float     sum      -1    17054  251.85  472.21      0    17105  251.09  470.79      0
   8589934592    2147483648     float     sum      -1    34104  251.87  472.26      0    33842  253.83  475.93      0
  17179869184    4294967296     float     sum      -1    67369  255.01  478.15      0    67212  255.61  479.26      0
 # Out of bounds values : 0 OK
-# Avg bus bandwidth    : 467.089 
+# Avg bus bandwidth    : 467.089
 #
 ```
 

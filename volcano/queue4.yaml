@@ -8,4 +8,4 @@ spec:
   capability:
     cpu: 512
     memory: 6400Gi
-    nvidia.com/gpu: 32 
+    nvidia.com/gpu: 32

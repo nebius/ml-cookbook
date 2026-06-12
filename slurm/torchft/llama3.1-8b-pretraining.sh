@@ -10,7 +10,8 @@
 
 source .env/bin/activate  # Edit this path to your venv path
 
-export HEAD_NODE_IP=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
+HEAD_NODE_IP=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
+export HEAD_NODE_IP
 echo Node IP: $HEAD_NODE_IP
 
 export LOGLEVEL=INFO
@@ -31,7 +32,8 @@ export NCCL_SOCKET_IFNAME="eth0"
 export GLOO_SOCKET_IFNAME="eth0"
 
 # export PYTHONPATH="$(pwd)/torchtitan:$PYTHONPATH"
-export CONFIG_FILE="$(pwd)/llama3_8b.toml"
+CONFIG_FILE="$(pwd)/llama3_8b.toml"
+export CONFIG_FILE
 
 METRICS_ARG=""
 if [ -n "${WANDB_API_KEY:-}" ]; then

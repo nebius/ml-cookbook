@@ -1,5 +1,5 @@
 # Running fault-tolerant training with `torchft`
-This document provides a step-by-step guide to launching a fault tolerant training job for the Llama-3.1-8B model leveraging [`torchft`](https://github.com/pytorch/torchft) integration with the [`torchtitan`](https://github.com/pytorch/torchtitan) framework on Slurm (Soperator) cluster. 
+This document provides a step-by-step guide to launching a fault tolerant training job for the Llama-3.1-8B model leveraging [`torchft`](https://github.com/pytorch/torchft) integration with the [`torchtitan`](https://github.com/pytorch/torchtitan) framework on Slurm (Soperator) cluster.
 
 ## Prerequisites
 
@@ -52,7 +52,7 @@ We are going to reuse the same training config as for the classic distributed tr
 
 #### Start the `Lighthouse` service
 
-Before launching `torchft` training, you need to start the `Lighthouse` service (in this example we are using the login node. If you want to use a worker node or an external server, alter the `TORCHFT_LIGHTHOUSE` env variable accordingly):  
+Before launching `torchft` training, you need to start the `Lighthouse` service (in this example we are using the login node. If you want to use a worker node or an external server, alter the `TORCHFT_LIGHTHOUSE` env variable accordingly):
 *Note: the default `TORCHFT_LIGHTHOUSE` node is `login-0`, if you are on a different node please adjust accordingly*
 
 ```
@@ -96,7 +96,7 @@ $ squeue
               53_0      main tft_repl ckondrat  R       2:46      1 worker-1
 ```
 
-The job `53_1` is now in the pending state due to the "failure" of `worker-0`. The remaining replica `53_0` continues to run. 
+The job `53_1` is now in the pending state due to the "failure" of `worker-0`. The remaining replica `53_0` continues to run.
 
 Logs from `53_0` show that an error occured on step 21:
 ```
@@ -121,7 +121,7 @@ $ squeue
              JOBID PARTITION     NAME     USER ST       TIME  NODES NODELIST(REASON)
               53_1      main tft_repl ckondrat  R       1:02      1 worker-0
               53_0      main tft_repl ckondrat  R       5:59      1 worker-1
-$ tail ./outputs/torchft/tft-53/tft-53_1.out 
+$ tail ./outputs/torchft/tft-53/tft-53_1.out
 [2025-07-16 13:51:42]  launching replica 1 (attempt 1) on worker-0
 ```
 
@@ -139,6 +139,6 @@ If we look into the logs of the job `53_0` which was running all this time, we c
 [titan] 2025-07-16 13:52:26,769 - torchft.manager - INFO - [torchtitan_ft_0:6cc4c926-56d9-4bb9-96f6-544803cae49c/1 - step 142] peers need recovery from us [1]
 ```
 
-After this recovery, the training proceeds as usual with both replicas participating. 
+After this recovery, the training proceeds as usual with both replicas participating.
 
 *Note: this job will run for 1000 steps which may take >20 minutes on 2 nodes of H100 GPUs. Use `scancel` to abort the job if needed.*

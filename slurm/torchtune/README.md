@@ -14,7 +14,7 @@ For running this workload, you will need to SSH to the login node of the Soperat
 
 `setup.sh` will create a Python virtual environment, install the necessary dependencies, and grab necessary dataset. For Tensorboard to work correctly you will need Python ≤ 3.12
 
-**HF_TOKEN required** The setup script expects your Hugging Face access token to be available in the `HF_TOKEN` environment variable. 
+**HF_TOKEN required** The setup script expects your Hugging Face access token to be available in the `HF_TOKEN` environment variable.
 ```
 export HF_TOKEN=<your-hf-access-token>
 bash setup.sh
@@ -32,7 +32,7 @@ One notable point is that here we use a Python virtual environment with all the 
 As for the configs in the `llama3_3_70B_full_multinode.yaml` or `llama3_3_70B_lora_multinode.yaml` file, these will modify main training parameters. Some noteworthy options:
 - `root_dir`: **Important** Update with where your ml-cookbook/slurm-recipes root dir is
 - `batch_size`: Keep low with memory profiling on, batch size of 16 gives high throughput on 2x8h100s
-- `epochs`: Set to one, feel free to increase 
+- `epochs`: Set to one, feel free to increase
 - `tensor_parallel_dim`: Increase / decrease amount of model parallelism, good to keep equivalent to the number of gpus per node (8) or 0 for only data parallelism
 - `profiler: True`: Set to True for detailed tracking of memory at runtime for debugging, reduce batch size if turning this on, stack trace will be saved to ./profiling_outputs
 
@@ -59,7 +59,7 @@ dataset:
 
 To submit the job, simply run:
 ```
-sbatch full_finetune_multinode.slurm  # For full parameter 
+sbatch full_finetune_multinode.slurm  # For full parameter
 sbatch lora_finetune_multinode.slurm  # For LORA adapters
 ```
 
@@ -73,15 +73,15 @@ The script will run the training process on 2 nodes with 8 GPUs each (16 GPUs to
 ```
   0%|          | 1/1367 [04:24<100:30:01, 264.86s/it]
 1|1|Loss: 1.849762201309204:   0%|          | 1/1367 [04:24<100:30:01, 264.86s/it]
-1|1|Loss: 1.849762201309204:   0%|          | 2/1367 [05:03<49:53:19, 131.58s/it] 
+1|1|Loss: 1.849762201309204:   0%|          | 2/1367 [05:03<49:53:19, 131.58s/it]
 1|2|Loss: 1.2548030614852905:   0%|          | 2/1367 [05:03<49:53:19, 131.58s/it]
-1|2|Loss: 1.2548030614852905:   0%|          | 3/1367 [05:04<27:20:19, 72.15s/it] 
+1|2|Loss: 1.2548030614852905:   0%|          | 3/1367 [05:04<27:20:19, 72.15s/it]
 ```
 
 ### 🧠 Monitoring & Debugging Training (TensorBoard + Nebius Console)
 
 #### 🔧 Monitor GPU Metrics (Nebius Console)
-You can monitor some of the GPU metrics by logging into the clicking the following in Nebius console: 
+You can monitor some of the GPU metrics by logging into the clicking the following in Nebius console:
 Compute -> GPU Clusters -> Locate your GPU cluster and select it -> Virtual Machines -> Select desired node -> Monitoring -> GPU metrics. Here there are useful metrics such as:
 - `Memory Utilization` - 60%-90%
 - `Power usage for the device` - Aim for 700W

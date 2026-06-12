@@ -25,7 +25,7 @@ Before getting started, ensure you have:
   - Download and run the setup script:
     ```bash
     wget https://raw.githubusercontent.com/nebius/nebius-solution-library/refs/heads/main/skypilot/nebius-setup.sh
-    chmod +x nebius-setup.sh 
+    chmod +x nebius-setup.sh
     ./nebius-setup.sh
     ```
     - You'll be prompted to select a Nebius tenant and project ID
@@ -51,7 +51,7 @@ Run a simple job to verify GPU access:
 $ sky launch -c basic-test examples/basic-job.yaml
 ...
 (task, pid=3791) Do we have GPUs?
-(task, pid=3791) Mon Mar 24 11:57:22 2025       
+(task, pid=3791) Mon Mar 24 11:57:22 2025
 (task, pid=3791) +-----------------------------------------------------------------------------------------+
 (task, pid=3791) | NVIDIA-SMI 550.127.08             Driver Version: 550.127.08     CUDA Version: 12.4     |
 (task, pid=3791) |-----------------------------------------+------------------------+----------------------+
@@ -63,7 +63,7 @@ $ sky launch -c basic-test examples/basic-job.yaml
 (task, pid=3791) | N/A   28C    P0             68W /  700W |       1MiB /  81559MiB |      0%      Default |
 (task, pid=3791) |                                         |                        |             Disabled |
 (task, pid=3791) +-----------------------------------------+------------------------+----------------------+
-(task, pid=3791)                                                                                          
+(task, pid=3791)
 (task, pid=3791) +-----------------------------------------------------------------------------------------+
 (task, pid=3791) | Processes:                                                                              |
 (task, pid=3791) |  GPU   GI   CI        PID   Type   Process name                              GPU Memory |
@@ -129,7 +129,7 @@ This example launches a distributed data migration task across multiple nodes:
 - SkyPilot for provisioning multiple nodes
 - `s5cmd` parallel downloading
 - Performs post-transfer verification
-- Supports different AWS profiles for source and target buckets (by mounting `~/.aws` directory from the local machine) 
+- Supports different AWS profiles for source and target buckets (by mounting `~/.aws` directory from the local machine)
 
 ### AI Training
 
@@ -205,7 +205,7 @@ curl http://$ENDPOINT/v1/chat/completions \
       "index": 0,
       "message": {
         "role": "assistant",
-        "content": "Nebius AI! After conducting research, here's what I found:\n\n**Overview**\nNebius AI is a relatively new player in the artificial intelligence (AI) 
+        "content": "Nebius AI! After conducting research, here's what I found:\n\n**Overview**\nNebius AI is a relatively new player in the artificial intelligence (AI)
         ...
 ```
 
@@ -225,7 +225,7 @@ response = client.chat.completions.create(
 )
 
 print(response.choices[0].message.content)
-> Nebius AI! After conducting research, I found that Nebius AI is a relatively new player in the artificial intelligence (AI) landscape. 
+> Nebius AI! After conducting research, I found that Nebius AI is a relatively new player in the artificial intelligence (AI) landscape.
 ...
 ```
 
@@ -276,6 +276,6 @@ If you switch between Service Accounts using the `nebius-setup.sh`, you might se
 
 That could be because the [SkyPilot API server](https://docs.skypilot.co/en/latest/reference/async.html#skypilot-api-server) has cached old credentials.
 
-You can fix this by running `sky api stop; sky api start` and then retrying. 
+You can fix this by running `sky api stop; sky api start` and then retrying.
 
 For other useful tips go to: https://docs.skypilot.co/en/latest/reference/faq.html

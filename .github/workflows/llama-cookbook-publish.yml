@@ -1,7 +1,7 @@
 name: llama-cookbook build and push
 
 on:
-  workflow_dispatch: 
+  workflow_dispatch:
   push:
     paths:
       - '.github/workflows/llama-cookbook-publish.yml'

@@ -1,6 +1,6 @@
 # Running distributed workloads with Volcano installed on Nebius Managed k8s cluster
 
-This section contains example workloads using Volcano scheduler on a Nebius Managed Kubernetes cluster. 
+This section contains example workloads using Volcano scheduler on a Nebius Managed Kubernetes cluster.
 
 ## About Volcano:
 
@@ -18,7 +18,7 @@ Volcano introduces some new **CRD**s to make it possible:
 
     - Priority and Preemption allow to set the priority for job execution and evict low priority jobs.
 
-    - Resource-aware scheduling allows to manage GPU allocation, use NUMA-aware scheduling as well as Network Topology aware scheduling. 
+    - Resource-aware scheduling allows to manage GPU allocation, use NUMA-aware scheduling as well as Network Topology aware scheduling.
 
     [More about Jobs in Volcano](https://volcano.sh/en/docs/vcjob/).
 
@@ -26,7 +26,7 @@ Volcano introduces some new **CRD**s to make it possible:
 
 ## Prerequisites:
 
-Provision a managed k8s cluster from **k8s-training** solution with at least 2 GPU nodes and IB from [Nebius Solutions Library](https://github.com/nebius/nebius-solution-library/tree/main/k8s-training) and connect to it [following documentation](https://docs.nebius.com/kubernetes/quickstart#connect). 
+Provision a managed k8s cluster from **k8s-training** solution with at least 2 GPU nodes and IB from [Nebius Solutions Library](https://github.com/nebius/nebius-solution-library/tree/main/k8s-training) and connect to it [following documentation](https://docs.nebius.com/kubernetes/quickstart#connect).
 
 ## Installing Volcano:
 

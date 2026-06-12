@@ -19,7 +19,7 @@ python -m torchtitan.experiments.flux.scripts.download_autoencoder \
     --ae_path ae.safetensors \
     --hf_token $HF_TOKEN \
     --local_dir ./assets/
- 
+
 cd $ROOT_DIR
 mkdir -p outputs slurm_out
 echo "Setup complete"

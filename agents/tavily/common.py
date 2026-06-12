@@ -6,7 +6,6 @@ from typing import Any
 
 import requests
 
-
 BASE_URL = os.environ.get("TAVILY_BASE_URL", "https://api.tavily.com")
 
 
@@ -62,7 +61,9 @@ def write_text(path: str, content: str) -> None:
     output_path.write_text(content, encoding="utf-8")
 
 
-def poll_research(request_id: str, poll_interval: int = 5, timeout_seconds: int = 900) -> dict[str, Any]:
+def poll_research(
+    request_id: str, poll_interval: int = 5, timeout_seconds: int = 900
+) -> dict[str, Any]:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         response = tavily_get(f"research/{request_id}")

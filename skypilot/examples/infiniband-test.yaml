@@ -2,7 +2,7 @@ resources:
   infra: nebius
   accelerators: H100:8
   network_tier: best
-  
+
 num_nodes: 2
 
 setup: |
@@ -16,4 +16,4 @@ run: |
       echo "MASTER_ADDR: $MASTER_ADDR"
       sleep 2 # wait for the master to start
       ib_send_bw $MASTER_ADDR --report_gbits -n 1000 -F
-  fi 
+  fi
