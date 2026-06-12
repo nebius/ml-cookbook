@@ -1,0 +1,45 @@
+# Tooling configuration for the ML Cookbook.
+#
+# This file only carries tool config (no build/packaging metadata is required
+# for that). If the repo already has a pyproject.toml, just merge the
+# [tool.ruff*] and [tool.bandit] tables below into it.
+
+# --------------------------------------------------------------------------- #
+# Ruff: linter + formatter for Python AND Jupyter notebooks.
+# Ruff lints and formats .py and .ipynb natively (v0.6+), so the same config
+# covers both. Its `S` rules are a reimplementation of Bandit, so notebooks get
+# security linting here too.
+# --------------------------------------------------------------------------- #
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+# Directories Ruff should never touch (add vendored/generated code here).
+extend-exclude = ["third_party", "vendor", "*.egg-info"]
+
+[tool.ruff.lint]
+# A solid, not-overwhelming default. Add/remove rule groups as the repo matures.
+#   E/W  pycodestyle      F   pyflakes        I   isort (import order)
+#   UP   pyupgrade        B   bugbear         C4  comprehensions
+#   SIM  simplify         S   flake8-bandit (security)
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "S"]
+ignore = [
+  "E501",  # line length is enforced by the formatter, not the linter
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Notebooks are exploratory: imports mid-file, bare expressions to display a
+# value, demo creds, etc. are normal and shouldn't fail CI.
+"*.ipynb" = ["E402", "B018", "F401", "F811", "S101", "S105", "S106"]
+# `assert` is fine in tests.
+"**/tests/**" = ["S101"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# --------------------------------------------------------------------------- #
+# Bandit: deeper security scanning of .py files (and .ipynb via nbQA in CI).
+# --------------------------------------------------------------------------- #
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "venv", "build", "dist", "node_modules", ".git"]
+# B101 = assert_used. Common and intended in ML code; drop from skips to enforce.
+skips = ["B101"]

@@ -1,0 +1,17 @@
+# ShellCheck configuration — https://github.com/koalaman/shellcheck/wiki
+# Picked up automatically when ShellCheck runs from the repo root.
+
+# Treat scripts without a shebang as bash.
+shell=bash
+
+# Follow `source` / `.`-included files when ShellCheck can resolve them.
+external-sources=true
+
+# Many recipes are cluster/training scripts that read variables exported by
+# Slurm, the surrounding environment, or sourced setup files that ShellCheck
+# cannot see. These two checks fire constantly on that pattern, so they are
+# disabled repo-wide. Remove them — or override per script with
+# `# shellcheck enable=...` — if you want stricter analysis.
+#   SC1091  Not following: <file> was not specified as input
+#   SC2154  <var> is referenced but not assigned
+disable=SC1091,SC2154
