@@ -22,7 +22,7 @@ updates:
 
   # --- Python dev tooling pinned in requirements-dev.txt (ruff, bandit, nbqa) - #
   - package-ecosystem: pip
-    directory: "/"            # root requirements-dev.txt / pyproject.toml
+    directory: "/ci-requirements" # root requirements-dev.txt / pyproject.toml
     schedule:
       interval: weekly
     groups:
