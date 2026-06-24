@@ -21,7 +21,7 @@ jobs:
     name: Python & notebooks · Ruff (lint + format)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13.13"
@@ -38,7 +38,7 @@ jobs:
     name: Python & notebooks · Bandit (security)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13.13"
@@ -61,7 +61,7 @@ jobs:
     name: Shell · ShellCheck
     runs-on: ubuntu-24.04   # shellcheck is pre-installed on GitHub runners
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: ShellCheck
         run: |
           files="$(git ls-files '*.sh' '*.bash')"
