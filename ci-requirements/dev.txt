@@ -1,5 +1,5 @@
 # Dev tools installed by .github/workflows/code-quality.yml.
 # Keep these in sync with the rev: pins in .pre-commit-config.yaml.
-ruff==0.15.19
+ruff==0.15.20
 bandit[toml]==1.9.4
 nbqa==1.9.1
