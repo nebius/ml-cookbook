@@ -24,6 +24,101 @@ PyTorch Distributed Checkpoint (DCP) pattern: asynchronous sharded uploads, an
 atomic commit marker, retention, consistent failure handling across ranks, and
 signal-safe shutdown.
 
+## Interruptions, signals, and checkpoint recovery
+
+A signal is a short operating-system notification sent to a running process. It
+does not contain checkpoint data, and receiving one does not by itself mean that
+Slurm will restart the job. Signals only give the trainer a chance to react
+before its processes disappear.
+
+The signals relevant to this recipe are:
+
+- `SIGUSR1`: an application-defined warning. This recipe asks Slurm to send it
+  before the job time limit and interprets it as "finish the current safe step,
+  commit a checkpoint, and exit."
+- `SIGTERM`: a request to terminate cleanly. Slurm uses it when a job reaches
+  its time limit or is cancelled. The trainer handles it like `SIGUSR1`, but
+  there may be much less time available.
+- `SIGCONT`: a wake-up signal that Slurm sends before some warnings and
+  termination sequences. The trainer does not need a handler for it.
+- `SIGKILL`: an immediate, uncatchable stop. No handler, cleanup callback, or
+  final checkpoint can run after it.
+
+There are therefore two recovery paths:
+
+```text
+planned stop: SIGUSR1/SIGTERM -> safe step boundary -> final commit -> exit
+hard stop:    node loss/SIGKILL -> previous marker stays valid -> restart -> resume
+```
+
+### What can happen on Nebius Soperator
+
+| Event | What the training ranks can rely on | Recommended checkpoint behavior | Restart behavior |
+| --- | --- | --- | --- |
+| Job approaches its Slurm time limit | Because the job requests `--signal=USR1@120`, Slurm signals all job steps approximately 120 seconds before the limit. Slurm may send the warning up to 60 seconds earlier than requested. At the limit, remaining tasks receive `SIGCONT` and `SIGTERM`, followed later by `SIGKILL` if they do not exit. | Treat `SIGUSR1` or `SIGTERM` as a request to stop collectively at the next safe step, drain any upload, and commit the current step. Measure your worst-case step and save time before choosing the warning window. | A time limit is not automatically requeued by `--requeue` alone; site policy may differ. Resubmit with the same prefix if needed. |
+| A preemptible Nebius worker VM is stopped | Nebius Compute gives the VM a 60-second termination notice, but that is a VM-level lifecycle event, not a guaranteed Slurm signal to every training rank. In Soperator, assume no usable in-band warning unless your platform team has explicitly validated propagation to the ranks. | Depend on periodic committed checkpoints, not a final signal-triggered save. A partial upload cannot replace `latest`. | `--requeue` makes the job eligible to return to the queue when Slurm records the node failure. The job can resume only after the platform has restored enough worker capacity. |
+| Hardware, network, Kubernetes-node, or VM failure | Usually no warning. One rank may disappear while the others report NCCL/Gloo errors or stall until Slurm detects the failed node. | Use the same hard-stop path as preemption: retain the previous marker and resume from it. | Requeue depends on how Slurm classifies the failure and on site policy. Node repair or replacement remains a platform responsibility. |
+| [`scancel <job-id>`](https://slurm.schedmd.com/scancel.html) | Slurm sends `SIGCONT` and `SIGTERM`, waits the site `KillWait`, then sends `SIGKILL` if tasks remain. | The trainer attempts a final checkpoint, but cancellation is not a generous warning mechanism. For a deliberate graceful stop, prefer `scancel --signal=USR1 <job-id>` and wait for the committed-checkpoint log line. | `scancel` does not requeue the job. Resubmit with the old explicit prefix to continue. |
+| [`scontrol requeue <job-id>`](https://slurm.schedmd.com/scontrol.html#OPT_requeue) | Slurm ends the current allocation and returns the same job ID to the queue. Do not assume the termination window is long enough for a new checkpoint. | The final signal save is useful when it completes, but correctness still comes from the latest checkpoint committed before requeue. | Yes. The default prefix contains the unchanged job ID, so the restarted job resumes automatically. |
+
+[Nebius documents](https://docs.nebius.com/compute/virtual-machines/preemptible)
+a 60-second `SIGTERM` before a preemptible VM is stopped, and then a forced stop
+if it does not exit. That notice protects VM shutdown; it must not be confused
+with Slurm's delivery of a signal to every `srun` task. For distributed
+training, the safe assumption is that preemption and node loss are hard stops.
+
+Slurm's [`--signal=USR1@120`](https://slurm.schedmd.com/sbatch.html#OPT_signal)
+is different: it is an explicit scheduler warning requested by this job. The
+directive intentionally has no `B:` prefix, because `B:` would signal only the
+batch shell; without it, Slurm signals the job steps that contain the training
+ranks. Slurm documents its full
+[job-termination sequence](https://slurm.schedmd.com/job_launch.html#job_termination)
+separately.
+
+### How the trainer handles a catchable signal
+
+The signal handler only sets a flag. It does not call PyTorch, Object Storage,
+or a distributed collective while the signal is executing asynchronously.
+Then, at each training-step boundary:
+
+1. all ranks combine their stop flags on a dedicated control process group
+2. all ranks leave the training loop together
+3. any in-flight asynchronous checkpoint is allowed to finish
+4. if that checkpoint does not already cover the current step, all ranks write
+   one synchronous final checkpoint
+5. rank zero advances `latest` only after the checkpoint is complete
+
+This collective decision is essential. If only the rank that received the
+signal exits, its peers can deadlock in the next training or checkpoint
+collective.
+
+### What to do after an interruption
+
+First inspect the end of the job log. If it contains both
+`stop signal observed at a safe step boundary` and `checkpoint committed`, the
+graceful path completed. If those lines are absent, assume a hard stop and use
+the previous committed marker.
+
+Check Slurm's view of the event and restart count:
+
+```bash
+sacct -j <job-id> -X \
+  --format=JobID,State,ExitCode,Restarts,Elapsed,NodeList
+```
+
+- If the same job returns to `PENDING` or `RUNNING`, `--requeue` is handling the
+  restart and the default prefix will resume automatically.
+- If the job is terminal, such as `CANCELLED` or `TIMEOUT`, submit a new job with
+  the prior prefix:
+
+  ```bash
+  TRAIN_ARGS="--prefix checkpointing-demo-<old-job-id>" sbatch checkpoint_train.sh
+  ```
+
+The practical rule is simple: use periodic checkpoints for failures that give
+no warning, and use signals only to reduce lost work when Slurm offers a planned
+shutdown window.
+
 ## Prerequisites
 
 Before you start, make sure you have:
@@ -258,24 +353,6 @@ TRAIN_ARGS="--prefix checkpointing-demo-123" sbatch checkpoint_train.sh
 
 DCP can reshard a checkpoint when the new job uses a different rank count.
 The model and optimizer definitions must remain checkpoint-compatible.
-
-### Interruption behavior
-
-The signal handler records intent only. At each safe step boundary, ranks
-collectively decide whether to stop, drain any in-flight upload, and commit the
-current step. Performing checkpoint work directly inside a signal handler or
-letting one rank leave independently can deadlock distributed training.
-
-| Event | Rank behavior | Automatic resume |
-| --- | --- | --- |
-| Node loss or preemption | No usable warning should be assumed | Slurm can requeue the job; node recovery remains an operator responsibility |
-| Time limit | `SIGUSR1` warning, followed by `SIGTERM` at the limit | Depends on site policy |
-| `scancel <job-id>` | `SIGTERM`, then eventual `SIGKILL` | No |
-| `scancel --signal=USR1 <job-id>` | Graceful checkpoint and exit | No; resubmit with the same prefix |
-| `scontrol requeue <job-id>` | Terminates the allocation and returns the same job ID to the queue | Yes |
-
-The `--signal` directive intentionally has no `B:` prefix. That prefix would
-signal only the batch shell instead of the training ranks.
 
 ## Apply the protocol to another workload
 
