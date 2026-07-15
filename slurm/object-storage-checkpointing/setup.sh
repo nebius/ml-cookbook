@@ -7,6 +7,8 @@ CHECKPOINTING_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${CHECKPOINTING_DIR}/.env"
 ENV_FILE='/etc/nebius-checkpoints.env'
 BIN_DIR="${CHECKPOINTING_DIR}/bin"
+SETUP_LOCK="${CHECKPOINTING_DIR}/.setup.lock"
+PIP_VERSION='26.1.2'
 
 require_command() {
   if ! command -v "$1" >/dev/null; then
@@ -19,8 +21,18 @@ require_command python3 "Install Python 3 with the venv module on the login node
 require_command curl "Install curl on the login node."
 require_command tar "Install tar on the login node."
 require_command sha256sum "Install GNU coreutils on the login node."
+require_command flock "Install util-linux on the login node."
 if ! python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
   echo "ERROR: Python 3.10 or newer is required on the login node." >&2
+  exit 1
+fi
+
+# The environment and helper binary live on the shared jail. Refuse concurrent
+# setup runs rather than letting two pip/tar processes corrupt the same paths.
+exec 9>"${SETUP_LOCK}"
+if ! flock -n 9; then
+  echo "ERROR: another checkpointing setup is already running in ${CHECKPOINTING_DIR}." >&2
+  echo "Wait for it to finish, then run setup.sh again." >&2
   exit 1
 fi
 
@@ -44,7 +56,7 @@ if [ ! -d "${VENV_DIR}" ]; then
 fi
 
 echo "Installing pinned dependencies (torch download is large, be patient)..."
-"${VENV_DIR}/bin/pip" install --quiet --upgrade pip
+"${VENV_DIR}/bin/pip" install --quiet --upgrade "pip==${PIP_VERSION}"
 "${VENV_DIR}/bin/pip" install --quiet --requirement "${CHECKPOINTING_DIR}/requirements.txt"
 
 S5CMD="${BIN_DIR}/s5cmd"
@@ -76,6 +88,7 @@ if [ ! -x "${S5CMD}" ]; then
   archive="$(mktemp)"
   trap 'rm -f "${archive:-}"' EXIT
   curl --fail --silent --show-error --location --retry 3 \
+    --connect-timeout 10 --max-time 300 \
     --output "${archive}" \
     "https://github.com/peak/s5cmd/releases/download/v2.3.0/s5cmd_2.3.0_Linux-${S5CMD_ARCH}.tar.gz"
   printf '%s  %s\n' "${S5CMD_SHA256}" "${archive}" | sha256sum --check --status || {
@@ -110,6 +123,8 @@ object_storage = boto3.client(
     endpoint_url=endpoint,
     region_name=region,
     config=Config(
+        connect_timeout=10,
+        read_timeout=60,
         s3={"addressing_style": "path"},
         retries={"max_attempts": 5, "mode": "standard"},
     ),

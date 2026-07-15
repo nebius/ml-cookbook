@@ -94,10 +94,11 @@ collective.
 
 ### What to do after an interruption
 
-First inspect the end of the job log. If it contains both
-`stop signal observed at a safe step boundary` and `checkpoint committed`, the
-graceful path completed. If those lines are absent, assume a hard stop and use
-the previous committed marker.
+First inspect the end of the job log. If it contains
+`SIGUSR1 observed at a safe step boundary` or
+`SIGTERM observed at a safe step boundary`, followed by `checkpoint committed`,
+the graceful path completed. If those lines are absent, assume a hard stop and
+use the previous committed marker.
 
 Check Slurm's view of the event and restart count:
 
@@ -126,8 +127,8 @@ Before you start, make sure you have:
 - access to a [Nebius Soperator cluster](https://nebius.com/services/soperator)
   with two GPU worker nodes
 - this repository cloned to the shared filesystem
-- Linux and Python 3.10 or newer with `venv`, `curl`, `tar`, and `sha256sum`
-  on the login node
+- Linux and Python 3.10 or newer with `venv`, `curl`, `tar`, `sha256sum`, and
+  `flock` on the login node
 - a readable `/etc/nebius-checkpoints.env` prepared by the platform operator
 
 Check the platform handoff without displaying any credentials:
@@ -162,8 +163,8 @@ bash setup.sh
 
 The setup script:
 
-1. creates a shared `.env` virtual environment
-2. installs the exact versions from `requirements.txt`
+1. takes an exclusive setup lock and creates a shared `.env` virtual environment
+2. installs the pinned pip version and exact versions from `requirements.txt`
 3. downloads checksum-verified `s5cmd` 2.3.0 into `bin/`
 4. creates `outputs/` for Slurm logs
 5. verifies create, read, and delete access to the checkpoint bucket

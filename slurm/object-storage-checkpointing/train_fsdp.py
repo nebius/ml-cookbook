@@ -100,6 +100,8 @@ class ObjectStorageCheckpointManager:
             endpoint_url=endpoint,
             region_name=region,
             config=Config(
+                connect_timeout=10,
+                read_timeout=60,
                 s3={"addressing_style": "path"},
                 retries={"max_attempts": 5, "mode": "standard"},
             ),
@@ -457,13 +459,15 @@ def main() -> None:
     else:
         log("no checkpoint found, starting fresh")
 
-    # On SIGTERM/SIGUSR1: commit the current step so no progress is lost, then
-    # exit non-zero. Automatic requeue still depends on
+    # On SIGTERM/SIGUSR1: remember the first signal, commit the current step so
+    # no progress is lost, then exit with its conventional signal-derived code.
+    # Automatic requeue still depends on
     # the scheduler event and site policy; a user cancellation is not requeued.
-    stop_requested = {"flag": False}
+    stop_requested = {"signum": None}
 
-    def _stop_handler(_signum, _frame):
-        stop_requested["flag"] = True
+    def _stop_handler(signum, _frame):
+        if stop_requested["signum"] is None:
+            stop_requested["signum"] = signum
 
     signal.signal(signal.SIGTERM, _stop_handler)
     signal.signal(signal.SIGUSR1, _stop_handler)
@@ -472,6 +476,7 @@ def main() -> None:
     last_save = time.monotonic()
     step = start_step
     stop_now = False
+    stop_signal = None
 
     while step < args.steps and not stop_now:
         step += 1
@@ -496,7 +501,7 @@ def main() -> None:
                 and time.monotonic() - last_save >= args.save_every_seconds
             )
             control[0] = 1 if due else 0
-        control[1] = 1 if stop_requested["flag"] else 0
+        control[1] = stop_requested["signum"] or 0
         dist.all_reduce(control, op=dist.ReduceOp.MAX, group=control_group)
 
         if control[0]:
@@ -515,8 +520,10 @@ def main() -> None:
         elif step % 50 == 0:
             log(f"step {step} loss {loss.item():.4f}")
         if control[1]:
-            log("stop signal observed at a safe step boundary; checkpointing before exit")
-        stop_now = bool(control[1])
+            stop_signal = int(control[1].item())
+            signal_name = signal.Signals(stop_signal).name
+            log(f"{signal_name} observed at a safe step boundary; checkpointing before exit")
+        stop_now = stop_signal is not None
 
     # Final checkpoint: synchronous unless this exact step is already being
     # persisted. Never rewrite a prefix that `latest` may already reference: a
@@ -538,9 +545,10 @@ def main() -> None:
     dist.barrier()
     dist.destroy_process_group(control_group)
     dist.destroy_process_group()
-    if stop_now:
-        log(f"exiting after signal at step {step} (checkpoint committed)")
-        raise SystemExit(143)
+    if stop_signal is not None:
+        signal_name = signal.Signals(stop_signal).name
+        log(f"exiting after {signal_name} at step {step} (checkpoint committed)")
+        raise SystemExit(128 + stop_signal)
     log(f"finished at step {step}")
 
 

@@ -73,6 +73,8 @@ client = boto3.client(
     endpoint_url=os.environ["NEBIUS_OBJECT_STORAGE_ENDPOINT"],
     region_name=os.environ["NEBIUS_OBJECT_STORAGE_REGION"],
     config=Config(
+        connect_timeout=10,
+        read_timeout=60,
         s3={"addressing_style": "path"},
         retries={"max_attempts": 5, "mode": "standard"},
     ),
@@ -207,7 +209,7 @@ pass "resume - job ${job2} resumed from step ${marker_after_kill} and committed 
 echo "[4/4] Sending SIGUSR1 (graceful stop) and waiting for the final checkpoint..."
 scancel --signal=USR1 "${job2}"
 wait_gone "${job2}" 180 "SIGUSR1"
-grep -q "exiting after signal at step" "${log2}" \
+grep -q "exiting after SIGUSR1 at step" "${log2}" \
   || fail "job ${job2} did not log a final checkpoint after SIGUSR1 (see ${log2})"
 final_marker="$(read_marker)" || fail "marker unreadable after graceful stop"
 [ "${final_marker}" -ge "${resumed}" ] 2>/dev/null \
