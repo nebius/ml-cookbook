@@ -131,6 +131,10 @@ Before you start, make sure you have:
   `flock` on the login node
 - a readable `/etc/nebius-checkpoints.env` prepared by the platform operator
 
+Standard Soperator 4.1.x jail images include these command-line tools. The setup
+script checks them explicitly so that older or customized images fail with a
+clear request for the platform operator.
+
 Check the platform handoff without displaying any credentials:
 
 ```bash
@@ -141,13 +145,13 @@ else
 fi
 ```
 
-If the file is missing, send the operator this request:
+If the file is missing or unreadable, send the operator this request:
 
 > Enable Soperator Object Storage checkpointing for this cluster and make
 > `/etc/nebius-checkpoints.env` readable by my Slurm user.
 
-The researcher does not need to create a bucket, access key, or IAM policy.
-Those platform details are collected in
+You do not need to create a bucket, access key, or IAM policy. Those platform
+details are collected in
 [For platform operators](#for-platform-operators).
 
 ## Steps
@@ -195,7 +199,7 @@ Useful trainer options include:
 | --- | ---: | --- |
 | `--save-every-seconds` | `120` | Time-based checkpoint cadence |
 | `--save-every-steps` | unset | Step-based cadence; overrides time-based cadence |
-| `--keep-last` | `3` | Number of committed checkpoints to retain; `0` keeps all |
+| `--keep-last` | `3` | Number of committed checkpoints to retain; `0` keeps all committed checkpoints, while stale uncommitted steps are still removed |
 | `--prefix` | job name and job ID | Object key namespace used for resume |
 | `--steps` | `10000000` | Maximum training steps |
 
@@ -315,9 +319,9 @@ GPU-to-host staging, while Object Storage transfer continues in a background
 thread.
 
 Only one save is allowed in flight. Before another save begins, all ranks confirm
-that the previous upload and commit succeeded. A persistence failure on one rank
-is converted into a fatal error on every rank instead of leaving peers stuck in
-a later collective.
+that the previous upload and marker commit succeeded. A checkpoint upload or
+marker failure on one rank is converted into a fatal error on every rank instead
+of leaving peers stuck in a later collective.
 
 ### Atomic commit marker
 
@@ -334,7 +338,10 @@ or throttling, the job fails instead of silently starting from step zero.
 
 A hard kill during upload can leave objects or multipart uploads under a newer
 step, but `latest` continues to identify the previous complete checkpoint.
-Retention removes these stale step directories after the next successful commit.
+Cleanup removes these stale step directories after the next successful commit,
+including when `--keep-last=0`. Retention runs only after `latest` is committed;
+if cleanup fails, the committed checkpoint remains valid, the job logs a warning,
+and cleanup is retried after the next commit.
 
 ### Prefixes and resume behavior
 
@@ -365,7 +372,8 @@ these invariants:
 - publish the marker only after every checkpoint object is complete
 - resume only from the marker
 - treat marker read errors as fatal
-- make persistence failures fatal on all ranks
+- make checkpoint upload and marker failures fatal on all ranks
+- treat retention cleanup as retryable housekeeping after a successful commit
 - coordinate stop decisions at safe collective boundaries
 - keep a prefix single-writer
 - measure staging and upload time before choosing a cadence
@@ -380,7 +388,8 @@ marker only after the upload succeeds.
   FP32 weights plus two FP32 AdamW moments are roughly 12 bytes per parameter.
 - Bucket capacity should cover `keep_last × checkpoint size` plus any separately
   retained milestone checkpoints.
-- The log reports both training-blocking staging time and total upload time.
+- The log reports both training-blocking staging time and total upload time, and
+  reports the complete duration of a final synchronous save through marker commit.
 - A starting interval can use the Young/Daly approximation
   `sqrt(2 × checkpoint blocking time × mean time between failures)`.
 - The background upload must finish before the next interval. Otherwise host
@@ -407,8 +416,9 @@ cross-cluster reuse belong to the linked Soperator infrastructure workflow.
 
 ## Troubleshooting
 
-- `/etc/nebius-checkpoints.env` is missing: confirm checkpoint storage is enabled
-  in the Soperator installation and that its credential-rendering job completed.
+- `/etc/nebius-checkpoints.env` is missing or unreadable: confirm checkpoint
+  storage is enabled in the Soperator installation, its credential-rendering job
+  completed, and the Slurm user has read access.
 - Setup reports an Object Storage permission error: verify the service account has
   create, read, and delete access on the configured bucket.
 - The job refuses to start fresh after a marker error: this is intentional. Fix

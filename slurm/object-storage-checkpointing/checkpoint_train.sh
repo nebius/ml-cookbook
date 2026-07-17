@@ -29,9 +29,14 @@ export PATH="${CHECKPOINTING_DIR}/bin:${PATH}"
 # Nebius Object Storage credentials, endpoint, and bucket, delivered by the
 # platform setup. AWS_* exports inside the file are SDK compatibility inputs;
 # workload-facing settings use NEBIUS_* names.
+ENV_FILE='/etc/nebius-checkpoints.env'
+if [ ! -r "${ENV_FILE}" ]; then
+  echo "ERROR: ${ENV_FILE} is missing or unreadable; see the README's platform-operators section." >&2
+  exit 1
+fi
 set -a
-# shellcheck disable=SC1091 # rendered by the platform checkpointing setup
-source /etc/nebius-checkpoints.env
+# shellcheck disable=SC1090 # rendered at an installation-specific path
+source "${ENV_FILE}"
 set +a
 
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | sed -n '1p')

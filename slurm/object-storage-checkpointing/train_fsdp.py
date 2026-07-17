@@ -38,6 +38,7 @@ import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
 import torch.nn as nn
 from botocore.config import Config
+from checkpoint_retention import plan_checkpoint_pruning
 from s3torchconnector import S3ClientConfig
 from s3torchconnector.dcp import S3StorageReader, S3StorageWriter
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
@@ -176,8 +177,6 @@ class ObjectStorageCheckpointManager:
         Counting partials toward retention would let a killed high-numbered save
         push the marker's own checkpoint out of the keep window.
         """
-        if keep_last <= 0:
-            return
         steps = set()
         step_prefix_re = re.compile(rf"^{re.escape(self.prefix)}/step-([0-9]+)/$")
         paginator = self._object_storage.get_paginator("list_objects_v2")
@@ -188,10 +187,7 @@ class ObjectStorageCheckpointManager:
                 match = step_prefix_re.fullmatch(cp["Prefix"])
                 if match:
                     steps.add(int(match.group(1)))
-        stale_partials = sorted(s for s in steps if s > committed_step)
-        committed = sorted(s for s in steps if s <= committed_step)
-        doomed = [(s, "stale partial") for s in stale_partials]
-        doomed += [(s, "retention") for s in committed[:-keep_last]]
+        doomed = plan_checkpoint_pruning(steps, committed_step, keep_last)
         for step, reason in doomed:
             keys = []
             for page in paginator.paginate(
@@ -212,6 +208,17 @@ class ObjectStorageCheckpointManager:
                         f"{first.get('Message', 'no message')}"
                     )
             log(f"pruned checkpoint step {step} ({reason}, {len(keys)} objects)")
+
+    def _prune_best_effort(self, committed_step: int) -> None:
+        """Prune after commit without misreporting housekeeping as data loss."""
+        try:
+            self._prune(self.keep_last, committed_step)
+        except Exception as exc:  # noqa: BLE001 - warn and retry after the next commit
+            log(
+                "WARNING: retention prune failed after checkpoint "
+                f"step {committed_step} was committed (prefix={self.prefix}): "
+                f"{type(exc).__name__}: {exc}"
+            )
 
     def wait_pending(self) -> None:
         """Wait until the in-flight upload (if any) is finished and committed.
@@ -266,27 +273,32 @@ class ObjectStorageCheckpointManager:
                     log(
                         f"checkpoint step {step}: upload finished in {upload_s:.1f}s, marker committed"
                     )
-                    self._prune(self.keep_last, step)
             except BaseException as exc:  # noqa: BLE001 - DCP uses BaseException
                 self._commit_error = exc
+                return
+            if rank == 0:
+                self._prune_best_effort(step)
 
         self._pending = threading.Thread(target=_commit, daemon=True)
         self._pending.start()
         return blocked_s
 
     def save_sync(self, state_dict: dict, step: int) -> None:
-        """Blocking save + marker commit (used for the final/SIGTERM save)."""
+        """Blocking save + marker commit (used for the final/signal save)."""
         self.wait_pending()
+        t0 = time.perf_counter()
         dcp.save(state_dict, storage_writer=self._writer(step))
         commit_error = None
         if dist.get_rank() == 0:
             try:
                 self._write_marker(step)
-                self._prune(self.keep_last, step)
             except Exception as exc:  # noqa: BLE001 - propagated collectively below
                 commit_error = exc
-        self._raise_if_any_rank_failed(commit_error, "synchronous checkpoint commit failed")
-        log(f"checkpoint step {step}: synchronous save committed")
+        self._raise_if_any_rank_failed(commit_error, "synchronous marker commit failed")
+        save_s = time.perf_counter() - t0
+        log(f"checkpoint step {step}: synchronous save committed in {save_s:.1f}s")
+        if dist.get_rank() == 0:
+            self._prune_best_effort(step)
 
     def load(self, model, optimizer, step: int) -> None:
         reader = S3StorageReader(

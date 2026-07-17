@@ -34,9 +34,14 @@ START_DEADLINE="${VERIFY_START_DEADLINE:-1800}"   # submit -> job running
 COMMIT_DEADLINE="${VERIFY_COMMIT_DEADLINE:-300}"  # running -> first commit
 RESUME_DEADLINE="${VERIFY_RESUME_DEADLINE:-300}"  # resume -> next commit
 
+ENV_FILE='/etc/nebius-checkpoints.env'
+if [ ! -r "${ENV_FILE}" ]; then
+  echo "ERROR: ${ENV_FILE} is missing or unreadable; see the README's platform-operators section." >&2
+  exit 1
+fi
 set -a
-# shellcheck disable=SC1091 # rendered by the platform checkpointing setup
-source /etc/nebius-checkpoints.env
+# shellcheck disable=SC1090 # rendered at an installation-specific path
+source "${ENV_FILE}"
 set +a
 
 S5CMD=(s5cmd --endpoint-url "${NEBIUS_OBJECT_STORAGE_ENDPOINT}")
