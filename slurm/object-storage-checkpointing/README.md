@@ -127,7 +127,7 @@ Before you start, make sure you have:
 - access to a [Nebius Soperator cluster](https://nebius.com/services/soperator)
   with two GPU worker nodes
 - this repository cloned to the shared filesystem
-- Linux and Python 3.10 or newer with `venv`, `curl`, `tar`, `sha256sum`, and
+- Linux and Python 3.11 or newer with `venv`, `curl`, `tar`, `sha256sum`, and
   `flock` on the login node
 - a readable `/etc/nebius-checkpoints.env` prepared by the platform operator
 

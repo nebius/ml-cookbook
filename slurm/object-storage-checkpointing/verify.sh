@@ -33,6 +33,7 @@ export PATH="${CHECKPOINTING_DIR}/bin:${PATH}"
 START_DEADLINE="${VERIFY_START_DEADLINE:-1800}"   # submit -> job running
 COMMIT_DEADLINE="${VERIFY_COMMIT_DEADLINE:-300}"  # running -> first commit
 RESUME_DEADLINE="${VERIFY_RESUME_DEADLINE:-300}"  # resume -> next commit
+CLEANUP_DEADLINE="${VERIFY_CLEANUP_DEADLINE:-120}" # cancellation -> absent from squeue
 
 ENV_FILE='/etc/nebius-checkpoints.env'
 if [ ! -r "${ENV_FILE}" ]; then
@@ -58,9 +59,34 @@ pass() {
 JOB_IDS=()
 PREFIX=""
 cleanup() {
+  local all_jobs_gone=true job waited
+  trap - EXIT
+
+  # Submit every cancellation before waiting so concurrently active jobs start
+  # shutting down as soon as possible.
   for job in "${JOB_IDS[@]}"; do
     scancel "${job}" 2>/dev/null || true
   done
+
+  # scancel can return before the job has left RUNNING/COMPLETING. Do not delete
+  # its checkpoint prefix while its processes may still be uploading objects.
+  for job in "${JOB_IDS[@]}"; do
+    waited=0
+    while squeue --jobs="${job}" --noheader >/dev/null 2>&1; do
+      if [ "${waited}" -ge "${CLEANUP_DEADLINE}" ]; then
+        echo "WARNING: job ${job} is still in Slurm after ${CLEANUP_DEADLINE}s; leaving verification objects intact." >&2
+        all_jobs_gone=false
+        break
+      fi
+      sleep 5
+      waited=$((waited + 5))
+    done
+  done
+
+  if [ "${all_jobs_gone}" != "true" ]; then
+    return
+  fi
+
   if [ -n "${PREFIX}" ]; then
     "${S5CMD[@]}" rm "s3://${NEBIUS_CHECKPOINT_BUCKET}/${PREFIX}/*" >/dev/null 2>&1 || true
     # The hard-kill phase interrupts an active upload, which can orphan an

@@ -25,8 +25,8 @@ require_command curl "Ask the operator to install curl on the login node."
 require_command tar "Ask the operator to install tar on the login node."
 require_command sha256sum "Ask the operator to install GNU coreutils on the login node."
 require_command flock "Ask the operator to install util-linux on the login node."
-if ! python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
-  echo "ERROR: Python 3.10 or newer is required on the login node." >&2
+if ! python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'; then
+  echo "ERROR: Python 3.11 or newer is required on the login node." >&2
   exit 1
 fi
 
