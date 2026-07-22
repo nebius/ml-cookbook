@@ -26,6 +26,7 @@ To get started, first choose:
 | --- | --- |
 | Verify your GPU environment works | [`skypilot/examples/basic-job.yaml`](./skypilot/examples/basic-job.yaml) or [`volcano/nccl-test-pytorch/`](./volcano/nccl-test-pytorch/) |
 | Run a simple distributed training example | [`slurm/hf-accelerate/`](./slurm/hf-accelerate/) |
+| Persist and recover Slurm training checkpoints | [`slurm/object-storage-checkpointing/`](./slurm/object-storage-checkpointing/) |
 | Use a generic PyTorch DDP training template | [`slurm/train-script/`](./slurm/train-script/) |
 | Fine-tune an LLM on Slurm | [`slurm/torchtune/`](./slurm/torchtune/) |
 | Run RLHF / VERL training | [`slurm/verl/`](./slurm/verl/) |
@@ -77,7 +78,7 @@ Most recipes follow the same high-level flow:
 - [`pytorch-dsv3-mxfp8/`](./pytorch-dsv3-mxfp8/) - DeepSeek-V3 pre-training recipes for large B200 Slurm clusters
 - [`runai/`](./runai/) - Run:ai examples for distributed MPI / NCCL validation
 - [`skypilot/`](./skypilot/) - SkyPilot job examples for training, inference, storage, and migration
-- [`slurm/`](./slurm/) - Slurm / Soperator recipes for distributed training, fine-tuning, and RLHF
+- [`slurm/`](./slurm/) - Slurm / Soperator recipes for distributed training, durable checkpoint recovery, fine-tuning, and RLHF
 - [`volcano/`](./volcano/) - Volcano scheduler examples for Kubernetes batch workloads
 - [`workload-samples/`](./workload-samples/) - Supporting container build examples for selected workloads
 
@@ -142,6 +143,9 @@ Here’s a sneak peek of the recipes available in this cookbook:
 - **I need shared storage before training**
   - Use [`common/shared-filesystem-mount/`](./common/shared-filesystem-mount/)
   - Then use [`common/hf-downloader/`](./common/hf-downloader/)
+
+- **I need durable Object Storage checkpoints for Slurm training**
+  - Use [`slurm/object-storage-checkpointing/`](./slurm/object-storage-checkpointing/)
 
 ## License
 

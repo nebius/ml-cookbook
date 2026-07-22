@@ -1,0 +1,6 @@
+.env/
+.setup.lock
+__pycache__/
+*.py[cod]
+bin/
+outputs/
