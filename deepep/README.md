@@ -49,13 +49,19 @@ export HCA='mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_
 ulimit -l unlimited   # RDMA needs pinned memory
 ```
 
-## Install DeepEP (v2)
+## Setup DeepEP
 
 ```bash
+export TORCH_CUDA_ARCH_LIST="9.0"  # 9.0 H100/H200 · 10.0 B200 · "10.3" B300
 git clone https://github.com/deepseek-ai/DeepEP.git
 cd DeepEP && git checkout dd758ca   # v2.1.0
 sed -i 's/"r"(kNumBytes)/"n"(kNumBytes)/' deep_ep/include/deep_ep/common/ptx.cuh   # CUDA 13 only
-TORCH_CUDA_ARCH_LIST="9.0" python setup.py install   # 9.0 H100/H200 · 10.0 B200 · 10.3 B300
+```
+
+### Install and Test V2 Engine
+
+```bash
+python setup.py install
 ```
 
 After installation, run the tests to verify everything is working. One process per node
@@ -75,10 +81,11 @@ export EP_NIC_NAME=mlx5_0                        # any fabric NIC
 export EP_JIT_CACHE_DIR=/tmp/deep_ep_jit-$USER   # node-local
 # In code: ElasticBuffer(..., num_allocated_qps=65)   # VF QP budget; 33 at 4+ nodes
 ```
+End of DeepEP V2 installation instructions
 
 ---
 
-## v1 — Buffer (NVSHMEM, legacy)
+### Install and Test v1 Engine (NVSHMEM based)
 
 v1 is the engine needed to verify the results from the PyTorch blog
 ([pytorch-dsv3-mxfp8](https://github.com/nebius/ml-cookbook/tree/main/pytorch-dsv3-mxfp8)).
@@ -86,23 +93,15 @@ v1 is the engine needed to verify the results from the PyTorch blog
 > Note: the blog's published numbers were produced at the older DeepEP commit `29d31c0`.
 > The instructions below use `dd758ca`, where both engines are verified.
 
-### Install NVSHMEM
-
+Install NVSHMEM
 ```bash
 pip install nvidia-nvshmem-cu13   # cu12 on CUDA 12
 ```
 
-### Install DeepEP
-
+Install DeepEP
 ```bash
 # NVSHMEM setup
 export NVSHMEM_DIR=$(python3 -c "import nvidia.nvshmem; print(nvidia.nvshmem.__path__[0])")
-export TORCH_CUDA_ARCH_LIST="9.0"  # 9.0 H100/H200 · 10.0 B200 · "10.0+PTX" B300
-
-# Build and install
-git clone https://github.com/deepseek-ai/DeepEP.git
-cd DeepEP && git checkout dd758ca
-sed -i 's/"r"(kNumBytes)/"n"(kNumBytes)/' deep_ep/include/deep_ep/common/ptx.cuh   # CUDA 13 only
 python3 setup.py install
 ```
 
