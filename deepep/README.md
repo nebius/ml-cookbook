@@ -4,9 +4,8 @@
 (Mixture-of-Experts) model training and inference. It ships two engines: **v2 `ElasticBuffer`**
 (NCCL GIN) and **v1 `Buffer`** (NVSHMEM, legacy). Here is a setup guide on Nebius clusters.
 
-> Verified at DeepEP `dd758ca` (v2.1.0) on H200, B200, and B300.
-
-## Prerequisites
+> Verified at DeepEP [`dd758ca`](https://github.com/deepseek-ai/DeepEP/tree/dd758caf451848bd150e1046af3d0a73e5fff38d) (v2.1.0) on H200, B200, and B300.
+> Hardware requirement: Minimum 1 node with 8 GPUs.
 
 ### 1. Confirm IBGDA and GDRCopy Kernels
 
@@ -19,8 +18,8 @@ cat /proc/driver/nvidia/params | grep -E "EnableStreamMemOPs|PeerMappingOverride
 # EnableStreamMemOPs: 1
 # RegistryDwords: "PeerMappingOverride=1;"
 
-# GDRCopy (wait a few minutes, should output test results)
-gdrcopy_sanity
+# GDRCopy (~10 s; prints per-GPU copy bandwidth)
+gdrcopy_copybw   # or run the full test suite with gdrcopy_sanity (~4 min)
 ```
 
 ### 2. Python environment
@@ -30,7 +29,7 @@ python3 -m venv ~/venvs/deepep && source ~/venvs/deepep/bin/activate
 pip install "torch==2.13.*" --index-url https://download.pytorch.org/whl/cu130
 pip install numpy ninja
 pip install --force-reinstall --no-deps "nvidia-nccl-cu13>=2.30.4"   # torch pins 2.29.x; DeepEP needs >=2.30.4 to build
-sudo apt install -y python3-dev libibverbs-dev
+sudo apt update && sudo apt install -y python3-dev libibverbs-dev
 ```
 
 ### 3. Identify the GPU fabric NICs (compute network)
@@ -40,6 +39,15 @@ for d in /sys/class/infiniband/*; do echo "$(basename $d) $(cat $d/ports/1/rate)
 ```
 
 H100/H200: `mlx5_0..7` · B200/B300: `mlx5_4..11` (exclude `mlx5_0..3`) · GB200/GB300: `mlx5_0..3`
+
+### 4. Environment variables
+
+```bash
+export HCA='mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1'    # H100/H200
+# export HCA='mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1,mlx5_8:1,mlx5_9:1,mlx5_10:1,mlx5_11:1' # B200/B300
+# export HCA='mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1'                                        # GB200/GB300
+ulimit -l unlimited   # RDMA needs pinned memory
+```
 
 ## Install DeepEP (v2)
 
@@ -55,17 +63,16 @@ After installation, run the tests to verify everything is working. One process p
 
 ```bash
 MASTER_ADDR=localhost MASTER_PORT=29500 WORLD_SIZE=1 RANK=0 python tests/elastic/test_barrier.py --num-allocated-qps 8
-MASTER_ADDR=localhost MASTER_PORT=29500 WORLD_SIZE=1 RANK=0 python tests/elastic/test_ep.py --num-allocated-qps 65
+MASTER_ADDR=localhost MASTER_PORT=29500 WORLD_SIZE=1 RANK=0 python tests/elastic/test_ep.py --num-allocated-qps 65   # ~8 min (includes first-use JIT compile)
 # 2 nodes: same commands on both nodes, MASTER_ADDR=<node0-ip> WORLD_SIZE=2 RANK=0|1
 ```
 
 ### Recommended Environment Settings (v2)
 
 ```bash
-export NCCL_IB_HCA='=mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1'   # set to your cluster's NICs from step 3; '=' = exact match
-export EP_NIC_NAME=mlx5_0                        # any compute rail
+export NCCL_IB_HCA="=$HCA"                       # '=' = exact match (NCCL-only syntax)
+export EP_NIC_NAME=mlx5_0                        # any fabric NIC
 export EP_JIT_CACHE_DIR=/tmp/deep_ep_jit-$USER   # node-local
-ulimit -l unlimited
 # In code: ElasticBuffer(..., num_allocated_qps=65)   # VF QP budget; 33 at 4+ nodes
 ```
 
@@ -74,8 +81,10 @@ ulimit -l unlimited
 ## v1 — Buffer (NVSHMEM, legacy)
 
 v1 is the engine needed to verify the results from the PyTorch blog
-([pytorch-dsv3-mxfp8](https://github.com/nebius/ml-cookbook/tree/main/pytorch-dsv3-mxfp8);
-blog results were produced at DeepEP `29d31c0`).
+([pytorch-dsv3-mxfp8](https://github.com/nebius/ml-cookbook/tree/main/pytorch-dsv3-mxfp8)).
+
+> Note: the blog's published numbers were produced at the older DeepEP commit `29d31c0`.
+> The instructions below use `dd758ca`, where both engines are verified.
 
 ### Install NVSHMEM
 
@@ -119,26 +128,17 @@ export NVSHMEM_IBGDA_NIC_HANDLER=gpu
 export NVSHMEM_MAX_TEAMS=32       # low-latency mode at 16+ ranks
 ```
 
-**Increase Memory Lock Limits:**
-
-RDMA requires pinned memory for transfers:
-
-```bash
-ulimit -l unlimited
-```
-
 **Restrict NIC Discovery for RDMA:**
 
 `mlx5_12` is a virtualized NIC used for VPC offloading and should not be used for RDMA
 transport. Whitelist only the physical NICs to prevent it from being discovered:
 
 ```bash
-# no '=' prefix here — that's NCCL-only syntax
-export UCX_NET_DEVICES=mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1
-export NVSHMEM_HCA_LIST=mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1
+export UCX_NET_DEVICES="$HCA"    # no '=' prefix — that's NCCL-only syntax
+export NVSHMEM_HCA_LIST="$HCA"
 ```
 
-For Kubernetes deployments, set these as environment variables in your pod spec:
+For Kubernetes deployments, set these as environment variables in your pod spec (example for H100/H200):
 
 ```yaml
 env:
