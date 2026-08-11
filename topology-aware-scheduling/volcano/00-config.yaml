@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tas-volcano
+---
+apiVersion: scheduling.volcano.sh/v1beta1
+kind: Queue
+metadata:
+  name: gb300-tas-volcano
+spec:
+  weight: 1
+  reclaimable: false
+  capability:
+    cpu: "3456"
+    memory: 23040Gi
+    nvidia.com/gpu: "128"

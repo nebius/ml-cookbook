@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tas-kai
+---
+apiVersion: kai.scheduler/v1alpha1
+kind: Topology
+metadata:
+  name: nebius-gb300-kai-guide
+spec:
+  levels:
+    - nodeLabel: topology.nebius.com/gpu-cluster-id
+    - nodeLabel: topology.nebius.com/nvl-instance-group-id
+    - nodeLabel: kubernetes.io/hostname
+---
+apiVersion: scheduling.run.ai/v2
+kind: Queue
+metadata:
+  name: gb300-tas-kai
+spec:
+  displayName: GB300 TAS guide
+  resources:
+    # KAI represents CPU in millicores and memory in decimal MB.
+    cpu:
+      quota: 3456000
+      limit: 3456000
+      overQuotaWeight: 1
+    memory:
+      quota: 24739012
+      limit: 24739012
+      overQuotaWeight: 1
+    gpu:
+      quota: 128
+      limit: 128
+      overQuotaWeight: 1
