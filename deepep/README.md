@@ -7,22 +7,7 @@
 > Verified at DeepEP [`dd758ca`](https://github.com/deepseek-ai/DeepEP/tree/dd758caf451848bd150e1046af3d0a73e5fff38d) (v2.1.0) on H200, B200, and B300.
 > Hardware requirement: Minimum 1 node with 8 GPUs.
 
-### 1. Confirm IBGDA and GDRCopy Kernels
-
-IBGDA and GDRCopy are enabled by default on all Nebius clusters.
-
-```bash
-# IBGDA
-cat /proc/driver/nvidia/params | grep -E "EnableStreamMemOPs|PeerMappingOverride"
-# Should output:
-# EnableStreamMemOPs: 1
-# RegistryDwords: "PeerMappingOverride=1;"
-
-# GDRCopy (~10 s; prints per-GPU copy bandwidth)
-gdrcopy_copybw   # or run the full test suite with gdrcopy_sanity (~4 min)
-```
-
-### 2. Python environment
+### 1. Python environment
 
 ```bash
 python3 -m venv ~/venvs/deepep && source ~/venvs/deepep/bin/activate
@@ -32,7 +17,7 @@ pip install --force-reinstall --no-deps "nvidia-nccl-cu13>=2.30.4"   # torch pin
 sudo apt update && sudo apt install -y python3-dev libibverbs-dev
 ```
 
-### 3. Identify the GPU fabric NICs (compute network)
+### 2. Identify the GPU fabric NICs (compute network)
 
 ```bash
 for d in /sys/class/infiniband/*; do echo "$(basename $d) $(cat $d/ports/1/rate) $(cat $d/ports/1/link_layer) pkey0=$(cat $d/ports/1/pkeys/0)"; done
@@ -40,7 +25,7 @@ for d in /sys/class/infiniband/*; do echo "$(basename $d) $(cat $d/ports/1/rate)
 
 H100/H200: `mlx5_0..7` · B200/B300: `mlx5_4..11` (exclude `mlx5_0..3`) · GB200/GB300: `mlx5_0..3`
 
-### 4. Environment variables
+### 3. Environment variables
 
 ```bash
 export HCA='mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1'    # H100/H200
@@ -92,6 +77,21 @@ v1 is the engine needed to verify the results from the PyTorch blog
 
 > Note: the blog's published numbers were produced at the older DeepEP commit `29d31c0`.
 > The instructions below use `dd758ca`, where both engines are verified.
+
+
+IBGDA and GDRCopy are enabled by default on all Nebius clusters. We will first confirm IBGDA and GDRCopy Kernels are available:
+
+```bash
+# IBGDA
+cat /proc/driver/nvidia/params | grep -E "EnableStreamMemOPs|PeerMappingOverride"
+# Should output:
+# EnableStreamMemOPs: 1
+# RegistryDwords: "PeerMappingOverride=1;"
+
+# GDRCopy (~10 s; prints per-GPU copy bandwidth)
+gdrcopy_copybw   # or run the full test suite with gdrcopy_sanity (~4 min)
+```
+
 
 Install NVSHMEM
 ```bash
