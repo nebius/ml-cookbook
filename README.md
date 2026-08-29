@@ -30,6 +30,7 @@ To get started, first choose:
 | Use a generic PyTorch DDP training template | [`slurm/train-script/`](./slurm/train-script/) |
 | Fine-tune an LLM on Slurm | [`slurm/torchtune/`](./slurm/torchtune/) |
 | Run RLHF / VERL training | [`slurm/verl/`](./slurm/verl/) |
+| Connect an agent to BioNeMo NIMs | [`agents/bionemo/`](./agents/bionemo/) |
 | Try agentic web intelligence workflows with Tavily | [`agents/tavily/`](./agents/tavily/) |
 | Fine-tune on Kubernetes with Volcano | [`volcano/llama-cookbook-finetuning/`](./volcano/llama-cookbook-finetuning/) |
 | Prepare shared filesystem storage on Kubernetes | [`common/shared-filesystem-mount/`](./common/shared-filesystem-mount/) |
@@ -73,6 +74,7 @@ Most recipes follow the same high-level flow:
 ## Repository Map
 
 - [`common/`](./common/) - Shared Kubernetes utilities such as filesystem mounts and model download pods
+- [`agents/bionemo/`](./agents/bionemo/) - BioNeMo NIM deployment selection and read-only MCP readiness validation
 - [`agents/tavily/`](./agents/tavily/) - Tavily-based agent recipes for search, extraction, mapping, crawling, and research
 - [`deepep/`](./deepep/) - DeepEP installation and RDMA / NVSHMEM setup guidance
 - [`pytorch-dsv3-mxfp8/`](./pytorch-dsv3-mxfp8/) - DeepSeek-V3 pre-training recipes for large B200 Slurm clusters
@@ -131,6 +133,7 @@ Here’s a sneak peek of the recipes available in this cookbook:
   - See [`skypilot/examples/verl-grpo-multiturn-async.yaml`](./skypilot/examples/verl-grpo-multiturn-async.yaml) for a SkyPilot-based example
 
 - **I want to try an agent workflow**
+  - Use [`agents/bionemo/`](./agents/bionemo/) to connect an agent to hosted or customer-owned BioNeMo NIMs
   - Start with [`agents/tavily/search/`](./agents/tavily/search/)
   - Use [`agents/tavily/research/`](./agents/tavily/research/) for a higher-value report-generation workflow
   - See [`agents/tavily/`](./agents/tavily/) for all five Tavily capabilities
