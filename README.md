@@ -26,6 +26,7 @@ To get started, first choose:
 | --- | --- |
 | Verify your GPU environment works | [`skypilot/examples/basic-job.yaml`](./skypilot/examples/basic-job.yaml) or [`volcano/nccl-test-pytorch/`](./volcano/nccl-test-pytorch/) |
 | Run a simple distributed training example | [`slurm/hf-accelerate/`](./slurm/hf-accelerate/) |
+| Train directly from a dataset in Object Storage by mounting the bucket | [`object-storage-dataset-streaming/`](./object-storage-dataset-streaming/) |
 | Persist and recover Slurm training checkpoints | [`slurm/object-storage-checkpointing/`](./slurm/object-storage-checkpointing/) |
 | Use a generic PyTorch DDP training template | [`slurm/train-script/`](./slurm/train-script/) |
 | Fine-tune an LLM on Slurm | [`slurm/torchtune/`](./slurm/torchtune/) |
@@ -66,7 +67,7 @@ Most recipes follow the same high-level flow:
 1. Provision or connect to a cluster
 2. Configure storage and credentials
 3. Prepare the environment with `setup.sh` or a container image
-4. Download model weights and/or datasets
+4. Download model weights and stage datasets, or mount the dataset bucket and read it in place
 5. Submit the job with `sbatch`, `kubectl apply`, `sky launch`, or `runai`
 6. Monitor logs and metrics
 
@@ -75,6 +76,7 @@ Most recipes follow the same high-level flow:
 - [`common/`](./common/) - Shared Kubernetes utilities such as filesystem mounts and model download pods
 - [`agents/tavily/`](./agents/tavily/) - Tavily-based agent recipes for search, extraction, mapping, crawling, and research
 - [`deepep/`](./deepep/) - DeepEP installation and RDMA / NVSHMEM setup guidance
+- [`object-storage-dataset-streaming/`](./object-storage-dataset-streaming/) - Mount an Object Storage bucket with Mountpoint and train on it with the loader you already have, shown with a Qwen3.8 QLoRA fine-tune
 - [`pytorch-dsv3-mxfp8/`](./pytorch-dsv3-mxfp8/) - DeepSeek-V3 pre-training recipes for large B200 Slurm clusters
 - [`runai/`](./runai/) - Run:ai examples for distributed MPI / NCCL validation
 - [`skypilot/`](./skypilot/) - SkyPilot job examples for training, inference, storage, and migration
@@ -143,6 +145,9 @@ Here’s a sneak peek of the recipes available in this cookbook:
 - **I need shared storage before training**
   - Use [`common/shared-filesystem-mount/`](./common/shared-filesystem-mount/)
   - Then use [`common/hf-downloader/`](./common/hf-downloader/)
+
+- **I want to train directly from Object Storage without staging the dataset**
+  - Use [`object-storage-dataset-streaming/`](./object-storage-dataset-streaming/)
 
 - **I need durable Object Storage checkpoints for Slurm training**
   - Use [`slurm/object-storage-checkpointing/`](./slurm/object-storage-checkpointing/)

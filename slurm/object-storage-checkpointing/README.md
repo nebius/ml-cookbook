@@ -24,6 +24,14 @@ PyTorch Distributed Checkpoint (DCP) pattern: asynchronous sharded uploads, an
 atomic commit marker, retention, consistent failure handling across ranks, and
 signal-safe shutdown.
 
+This recipe covers checkpoint persistence and recovery. Reading training data
+directly from an Object Storage bucket is a separate recipe,
+[`object-storage-dataset-streaming/`](../../object-storage-dataset-streaming/),
+which mounts the bucket with Mountpoint for Amazon S3. On Compute VMs the
+bucket is mounted on the host; on Soperator it is attached as a Mountpoint CSI
+volume submounted into the jail (see that recipe's "Where this runs"). The two
+recipes are not wired together.
+
 ## Interruptions, signals, and checkpoint recovery
 
 A signal is a short operating-system notification sent to a running process. It
