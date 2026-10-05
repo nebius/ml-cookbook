@@ -55,31 +55,38 @@ and container images.
 ## Prepare the example (optional)
 
 Skip this section if you are using your own dataset and training environment.
-The bundled example needs Linux x86_64 and Python 3.12. Training targets an
-NVIDIA GPU with 80 GB of memory. The pinned PyTorch wheel requires a CUDA 13
-driver; on Nebius, use the `ubuntu24.04-cuda13.0` image. Allow disk space for
-the model weights and saved adapter.
+The bundled example targets Linux x86_64 and Python 3.14. ARM GPU machines
+were not available for testing. Training targets an NVIDIA GPU with 80 GB
+of memory. The pinned PyTorch wheel requires a CUDA 13 driver; on Nebius,
+use the `ubuntu24.04-cuda13.0` image. Allow disk space for the model weights
+and saved adapter.
 
 `--max-pixels` limits page resolution, but page count and text length also
 affect GPU memory use. Lowering the resolution alone may not make a document fit.
 
 ### Set up the example's environment
 
-From a clone of this repository:
+Run these commands from the `object-storage-dataset-streaming` directory of
+your repository clone. Use [uv](https://docs.astral.sh/uv/) to install Python
+3.14.7 and create the example's environment on Ubuntu 24.04:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential python3.12-dev python3.12-venv
-cd ml-cookbook/object-storage-dataset-streaming || exit
-python3.12 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip==26.2.1
-.venv/bin/python -m pip install --require-hashes -r requirements.lock
+sudo apt-get install -y curl ca-certificates
+curl -LsSf https://astral.sh/uv/0.12.12/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+uv venv --python 3.14.7 .venv
+uv pip sync --python .venv/bin/python --require-hashes --only-binary :all: requirements.lock
 export HF_HOME=/persistent/path/huggingface
 ```
 
-`requirements.lock` pins dependencies for Linux x86_64 and Python 3.12;
-`--require-hashes` verifies the downloaded packages against those pins.
-Set `HF_HOME` to a writable location with room for the model weights.
+`requirements.txt` lists the direct dependencies; `requirements.lock` also
+pins their transitive dependencies so later installations use the same
+versions. `--require-hashes` verifies that downloaded packages match the
+recorded SHA-256 hashes. The lock is resolved for Linux x86_64 and Python
+3.14, the example's target environment; hash checking itself does not impose
+an architecture restriction. The lock's header records its regeneration
+command. Set `HF_HOME` to a writable location with room for the model weights.
 
 ### Publish the sample dataset
 
@@ -458,11 +465,20 @@ smaller partitions therefore replay their documents more often. Equal file
 counts alone do not guarantee uniform sampling. These details are specific to
 the pinned library versions; check shard assignment again when upgrading.
 
-In `datasets` 5.0, `IterableDataset.shuffle()` reports a single shard,
-regardless of buffer size. This prevents Accelerate from assigning disjoint
-files to multiple processes. TRL's `shuffle_dataset=True` calls that method,
-so the example explicitly keeps the TRL 1.10 default, `False`, and randomizes
-the file list instead. Randomize rows within shards when publishing them.
+In the pinned `datasets` 5.0.1, `IterableDataset.shuffle()` defaults to
+`max_buffer_input_shards=10`, interleaving up to ten input shard streams to
+fill its shuffle buffer. This behavior, introduced in
+[Datasets PR #8194](https://github.com/huggingface/datasets/pull/8194), reduces
+the reported shard count: the four-shard sample becomes one shard, while
+forty input shards become four. If the resulting count is below the number
+of processes, Accelerate can no longer assign disjoint files to them.
+
+TRL's `shuffle_dataset=True` uses that default shuffle, so the example keeps
+`shuffle_dataset=False` and randomizes the file list instead. Randomize rows
+within shards when publishing them. If you add buffered row shuffling in
+the loader, use `dataset.shuffle(seed=seed, max_buffer_input_shards=1)` to
+preserve the shard count, and keep TRL's shuffle off to avoid applying a
+second shuffle with the defaults. Size the buffer for your document sizes.
 
 ### WebDataset and tokenized shards
 
@@ -599,7 +615,7 @@ provide FUSE, see [in-process streaming](SOPERATOR.md#fallback-no-fuse).
 | --- | --- |
 | [`train_sft.py`](train_sft.py) | QLoRA example that streams Parquet shards from a directory |
 | [`prepare_docmatix.py`](prepare_docmatix.py) | Writes the sample shards locally for upload |
-| [`requirements.txt`](requirements.txt) / [`requirements.lock`](requirements.lock) | Direct dependencies and hash-locked environment for Linux x86_64 and Python 3.12 |
+| [`requirements.txt`](requirements.txt) / [`requirements.lock`](requirements.lock) | Direct dependencies and hash-locked environment for Linux x86_64 and Python 3.14 |
 | [`SOPERATOR.md`](SOPERATOR.md) | Cluster setup and streaming fallbacks for Soperator |
 
 ## Cleanup

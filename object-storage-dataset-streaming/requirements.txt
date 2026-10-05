@@ -1,5 +1,5 @@
 # Direct dependencies of the recipe. requirements.lock pins the full tree with hashes
-# for Linux x86_64 / Python 3.12; it was generated with uv 0.12.12 and its header
+# for Linux x86_64 / Python 3.14; it was generated with uv 0.12.12 and its header
 # records the exact command to regenerate it.
 torch==2.13.0
 torchvision==0.28.0

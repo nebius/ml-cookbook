@@ -81,9 +81,10 @@ def load_documents(
             "every worker busy; use similar row counts per shard to balance sampling",
             flush=True,
         )
-    # Randomize shard order here rather than with IterableDataset.shuffle(): in datasets 5.0
-    # a buffer shuffle collapses n_shards to one, and Accelerate then makes every process
-    # read every file instead of splitting the files across processes.
+    # Randomize shard order here: datasets 5.0.1's default shuffle interleaves up to ten
+    # shard streams, reducing n_shards (four sample shards become one). With fewer shards
+    # than processes, Accelerate makes every process read every file. A custom shuffle
+    # with max_buffer_input_shards=1 would also preserve the shard count.
     random.Random(seed).shuffle(files)  # noqa: S311 - ordering, not cryptography
     # Local Parquet files on the mount, not a Hub download, so no revision applies.
     dataset = load_dataset(  # nosec B615
