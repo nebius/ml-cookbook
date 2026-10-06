@@ -1,0 +1,30 @@
+custom:
+  scheduler_config_override: |-
+    actions: "enqueue, allocate, backfill"
+    tiers:
+      - plugins:
+          - name: priority
+          - name: gang
+            enablePreemptable: false
+          - name: conformance
+      - plugins:
+          - name: overcommit
+          - name: drf
+            enablePreemptable: false
+          - name: predicates
+          - name: proportion
+          - name: nodeorder
+          - name: binpack
+          - name: network-topology-aware
+
+  controller_config_override: |-
+    networkTopologyDiscovery:
+      - source: label
+        enabled: true
+        interval: 10m
+        config:
+          networkTopologyTypes:
+            nebius-gb300:
+              - nodeLabel: topology.nebius.com/gpu-cluster-id
+              - nodeLabel: topology.nebius.com/nvl-instance-group-id
+              - nodeLabel: kubernetes.io/hostname

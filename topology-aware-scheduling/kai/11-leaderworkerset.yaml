@@ -1,0 +1,249 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: megatron-tas-kai-lws
+  namespace: tas-kai
+  labels:
+    kai.scheduler/queue: gb300-tas-kai
+  annotations:
+    kai.scheduler/topology: nebius-gb300-kai-guide
+    kai.scheduler/topology-required-placement: topology.nebius.com/gpu-cluster-id
+spec:
+  replicas: 1
+  startupPolicy: LeaderCreated
+  leaderWorkerTemplate:
+    size: 32
+    restartPolicy: RecreateGroupOnPodRestart
+    subGroupPolicy:
+      subGroupSize: 16
+      subGroupPolicyType: LeaderWorker
+    leaderTemplate:
+      metadata:
+        labels:
+          app.kubernetes.io/name: megatron-tas-kai-lws
+          app.kubernetes.io/component: leader
+          kai.scheduler/queue: gb300-tas-kai
+      spec:
+        schedulerName: kai-scheduler
+        terminationGracePeriodSeconds: 120
+        nodeSelector:
+          node.kubernetes.io/instance-type: gpu-gb300
+        tolerations:
+          - key: nvidia.com/gpu
+            operator: Exists
+            effect: NoSchedule
+        initContainers:
+          - name: wait-master
+            image: busybox:1.36.1
+            imagePullPolicy: IfNotPresent
+            command:
+              - /opt/tas/wait-master.sh
+            env:
+              - name: NODE_RANK
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/worker-index']
+              - name: MASTER_ADDR
+                value: megatron-tas-kai-lws-0.megatron-tas-kai-lws
+            volumeMounts:
+              - name: scripts
+                mountPath: /opt/tas
+                readOnly: true
+        containers:
+          - name: megatron-bridge
+            image: nvcr.io/nvidia/nemo:26.06
+            imagePullPolicy: IfNotPresent
+            command:
+              - /opt/tas/train-and-hold.sh
+            ports:
+              - name: rendezvous
+                containerPort: 12345
+            env:
+              - name: NODE_RANK
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/worker-index']
+              - name: MASTER_ADDR
+                value: megatron-tas-kai-lws-0.megatron-tas-kai-lws
+              - name: HF_TOKEN
+                valueFrom:
+                  secretKeyRef:
+                    name: hf-token
+                    key: HF_TOKEN
+              - name: TORCH_NCCL_AVOID_RECORD_STREAMS
+                value: "1"
+              - name: TOKENIZERS_PARALLELISM
+                value: "False"
+              - name: TORCH_NCCL_HIGH_PRIORITY
+                value: "1"
+              - name: CUDA_DEVICE_MAX_CONNECTIONS
+                value: "32"
+              - name: NVTE_FWD_LAYERNORM_SM_MARGIN
+                value: "20"
+              - name: NVTE_BWD_LAYERNORM_SM_MARGIN
+                value: "20"
+              - name: NCCL_MNNVL_ENABLE
+                value: "1"
+              - name: NCCL_DEBUG
+                value: INFO
+              - name: NCCL_DEBUG_SUBSYS
+                value: INIT,NET,GRAPH,NVLS
+            resources:
+              requests:
+                nvidia.com/gpu: "4"
+                cpu: "108"
+                memory: 720Gi
+              limits:
+                nvidia.com/gpu: "4"
+                cpu: "112"
+                memory: 760Gi
+            securityContext:
+              privileged: true
+              runAsUser: 0
+              capabilities:
+                add:
+                  - IPC_LOCK
+                  - SYS_RESOURCE
+            volumeMounts:
+              - name: scripts
+                mountPath: /opt/tas
+                readOnly: true
+              - name: dshm
+                mountPath: /dev/shm
+              - name: infiniband
+                mountPath: /dev/infiniband
+              - name: imex-channels
+                mountPath: /dev/nvidia-caps-imex-channels
+        volumes:
+          - name: scripts
+            configMap:
+              name: megatron-tas-scripts
+              defaultMode: 365
+          - name: dshm
+            emptyDir:
+              medium: Memory
+              sizeLimit: 64Gi
+          - name: infiniband
+            hostPath:
+              path: /dev/infiniband
+              type: Directory
+          - name: imex-channels
+            hostPath:
+              path: /dev/nvidia-caps-imex-channels
+              type: Directory
+    workerTemplate:
+      metadata:
+        labels:
+          app.kubernetes.io/name: megatron-tas-kai-lws
+          app.kubernetes.io/component: worker
+          kai.scheduler/queue: gb300-tas-kai
+        annotations:
+          kai.scheduler/segment-topology-required-placement: topology.nebius.com/nvl-instance-group-id
+      spec:
+        schedulerName: kai-scheduler
+        terminationGracePeriodSeconds: 120
+        nodeSelector:
+          node.kubernetes.io/instance-type: gpu-gb300
+        tolerations:
+          - key: nvidia.com/gpu
+            operator: Exists
+            effect: NoSchedule
+        initContainers:
+          - name: wait-master
+            image: busybox:1.36.1
+            imagePullPolicy: IfNotPresent
+            command:
+              - /opt/tas/wait-master.sh
+            env:
+              - name: NODE_RANK
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/worker-index']
+              - name: MASTER_ADDR
+                value: megatron-tas-kai-lws-0.megatron-tas-kai-lws
+            volumeMounts:
+              - name: scripts
+                mountPath: /opt/tas
+                readOnly: true
+        containers:
+          - name: megatron-bridge
+            image: nvcr.io/nvidia/nemo:26.06
+            imagePullPolicy: IfNotPresent
+            command:
+              - /opt/tas/train-and-hold.sh
+            ports:
+              - name: rendezvous
+                containerPort: 12345
+            env:
+              - name: NODE_RANK
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/worker-index']
+              - name: MASTER_ADDR
+                value: megatron-tas-kai-lws-0.megatron-tas-kai-lws
+              - name: HF_TOKEN
+                valueFrom:
+                  secretKeyRef:
+                    name: hf-token
+                    key: HF_TOKEN
+              - name: TORCH_NCCL_AVOID_RECORD_STREAMS
+                value: "1"
+              - name: TOKENIZERS_PARALLELISM
+                value: "False"
+              - name: TORCH_NCCL_HIGH_PRIORITY
+                value: "1"
+              - name: CUDA_DEVICE_MAX_CONNECTIONS
+                value: "32"
+              - name: NVTE_FWD_LAYERNORM_SM_MARGIN
+                value: "20"
+              - name: NVTE_BWD_LAYERNORM_SM_MARGIN
+                value: "20"
+              - name: NCCL_MNNVL_ENABLE
+                value: "1"
+              - name: NCCL_DEBUG
+                value: INFO
+              - name: NCCL_DEBUG_SUBSYS
+                value: INIT,NET,GRAPH,NVLS
+            resources:
+              requests:
+                nvidia.com/gpu: "4"
+                cpu: "108"
+                memory: 720Gi
+              limits:
+                nvidia.com/gpu: "4"
+                cpu: "112"
+                memory: 760Gi
+            securityContext:
+              privileged: true
+              runAsUser: 0
+              capabilities:
+                add:
+                  - IPC_LOCK
+                  - SYS_RESOURCE
+            volumeMounts:
+              - name: scripts
+                mountPath: /opt/tas
+                readOnly: true
+              - name: dshm
+                mountPath: /dev/shm
+              - name: infiniband
+                mountPath: /dev/infiniband
+              - name: imex-channels
+                mountPath: /dev/nvidia-caps-imex-channels
+        volumes:
+          - name: scripts
+            configMap:
+              name: megatron-tas-scripts
+              defaultMode: 365
+          - name: dshm
+            emptyDir:
+              medium: Memory
+              sizeLimit: 64Gi
+          - name: infiniband
+            hostPath:
+              path: /dev/infiniband
+              type: Directory
+          - name: imex-channels
+            hostPath:
+              path: /dev/nvidia-caps-imex-channels
+              type: Directory

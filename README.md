@@ -79,10 +79,11 @@ Most recipes follow the same high-level flow:
 - [`runai/`](./runai/) - Run:ai examples for distributed MPI / NCCL validation
 - [`skypilot/`](./skypilot/) - SkyPilot job examples for training, inference, storage, and migration
 - [`slurm/`](./slurm/) - Slurm / Soperator recipes for distributed training, durable checkpoint recovery, fine-tuning, and RLHF
+- [`topology-aware-scheduling/`](./topology-aware-scheduling/) - Topology-aware placement examples for Kubernetes and Slurm / Soperator
 - [`volcano/`](./volcano/) - Volcano scheduler examples for Kubernetes batch workloads
 - [`workload-samples/`](./workload-samples/) - Supporting container build examples for selected workloads
 
-## 🚀 What's Inside?
+## What's Inside?
 
 This repository is organized into **recipes** that cover a variety of ML tasks, leveraging popular tools and technologies such as:
 
@@ -96,7 +97,8 @@ Each recipe includes:
 - **Code examples** for training and inference.
 - **Tips and tricks** to optimize performance and avoid common pitfalls.
 
-## 📚 Recipes
+
+## Recipes
 
 Here’s a sneak peek of the recipes available in this cookbook:
 
@@ -114,6 +116,18 @@ Here’s a sneak peek of the recipes available in this cookbook:
    - Search, extract, map, crawl, and research workflows using Tavily APIs.
    - Nebius-shaped recipes for SkyPilot and Slurm.
    - Good fit for agent demos, corpus building, and research workflows.
+
+### 4. **Topology-Aware Scheduling** ([topology-aware-scheduling](./topology-aware-scheduling/))
+
+For large distributed GPU workloads, [`topology-aware-scheduling`](./topology-aware-scheduling/)
+shows how to keep workers inside one GPU-cluster boundary while placing smaller
+segments in rack-local NVLink domains. It provides equivalent runbooks for
+Kueue, KAI Scheduler, Volcano, and Soperator / Slurm using a shared 32-node,
+128-GPU Megatron Bridge workload.
+
+Start with the [topology-aware scheduling guide](./topology-aware-scheduling/)
+to inspect the available topology labels, choose one scheduler integration,
+and verify the resulting Pod or Slurm rank placement.
 
 ## Quick Navigation by Use Case
 
@@ -149,7 +163,7 @@ Here’s a sneak peek of the recipes available in this cookbook:
 
 ## License
 
-Copyright 2025 Nebius B.V.
+Copyright 2026 Nebius B.V.
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
