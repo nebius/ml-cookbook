@@ -1,0 +1,43 @@
+schema_version = 1
+id = "b300"
+aliases = ["nvidia-b300", "gpu-b300-sxm"]
+display_name = "NVIDIA B300"
+maturity = "supported"
+notes = [
+  "B300 and GB300 share SM103 but use different CPU architectures and platform topologies.",
+  "The NCCL floor matches the first NVIDIA framework release with explicit G/B300 performant support; B300 fabric behavior still requires hardware validation.",
+]
+
+[hardware]
+cpu_architectures = ["amd64"]
+gpu_architecture = "blackwell-ultra"
+compute_capability = "10.3"
+native_sm_targets = ["sm_103", "sm_103f", "sm_103a"]
+nebius_platforms = ["gpu-b300-sxm"]
+
+[validation]
+minimum_cuda_version = "12.9"
+minimum_nccl_version = "2.27.7"
+runtime_checks = [
+  "cuda-runtime",
+  "nccl-intra-node",
+  "nccl-infiniband",
+  "framework-smoke",
+  "workload-smoke",
+]
+
+[[sources]]
+title = "NVIDIA CUDA GPU compute capability"
+url = "https://developer.nvidia.com/cuda/gpus"
+
+[[sources]]
+title = "NVIDIA CUDA 12.9 release notes"
+url = "https://docs.nvidia.com/cuda/archive/12.9.0/cuda-toolkit-release-notes/"
+
+[[sources]]
+title = "NVIDIA HGX B300 on Nebius"
+url = "https://nebius.com/compute/b300"
+
+[[sources]]
+title = "NVIDIA JAX 25.10 release notes (G/B300 performant support)"
+url = "https://docs.nvidia.com/deeplearning/frameworks/jax-release-notes/rel-25-10.html"
