@@ -258,15 +258,36 @@ def parse_manifest_output(reference: str, text: str) -> ImageManifestSet:
 
 
 def _docker_error(arguments: tuple[str, ...], stderr: str) -> ImageInspectionError:
-    detail = _redact_sensitive_diagnostic(" ".join(stderr.strip().split()))[-1500:]
-    detail = detail or "no diagnostic was returned"
+    detail = _redact_sensitive_diagnostic(" ".join(stderr.strip().split()))
+    # Docker prints rejected manifests as Go byte slices ("[123 10 32 32 ...]"); a long run
+    # of byte values carries no diagnostic value and would otherwise fill the whole message.
+    detail = re.sub(r"(?:\b\d{1,3}\b[ ,]+){32,}\d{1,3}\b", "<raw bytes omitted>", detail)
+    detail = detail[-1500:] or "no diagnostic was returned"
     operation = " ".join(arguments[:3])
     return ImageInspectionError(f"docker {operation} failed: {detail}")
 
 
-def _exact_reference(reference: str, digest: str) -> str:
+def _repository(reference: str) -> str:
+    """Return the repository part of ``name[:tag][@digest]``, keeping registry ports."""
     name = reference.rsplit("@", maxsplit=1)[0]
-    return f"{name}@{digest}" if digest else reference
+    registry, slash, last = name.rpartition("/")
+    return f"{registry}{slash}{last.split(':', maxsplit=1)[0]}"
+
+
+def _digest_reference(reference: str) -> str:
+    """Return ``name@digest`` for ``name:tag@digest``; other references are unchanged.
+
+    The digest alone identifies the content. Docker rejects ``manifest inspect`` of a
+    tag-plus-digest reference that resolves to a single-platform manifest ("unsupported
+    manifest format"), while ``name@digest`` works for both single- and multi-platform images.
+    """
+    if "@" not in reference:
+        return reference
+    return f"{_repository(reference)}@{reference.rsplit('@', maxsplit=1)[1]}"
+
+
+def _exact_reference(reference: str, digest: str) -> str:
+    return f"{_repository(reference)}@{digest}" if digest else _digest_reference(reference)
 
 
 def _environment(items: object) -> dict[str, str]:
@@ -947,7 +968,7 @@ class DockerImageClient:
         return result.stdout
 
     def inspect_manifest(self, reference: str) -> ImageManifestSet:
-        output = self._run(("manifest", "inspect", "--verbose", reference))
+        output = self._run(("manifest", "inspect", "--verbose", _digest_reference(reference)))
         return parse_manifest_output(reference, output)
 
     def pull_config(

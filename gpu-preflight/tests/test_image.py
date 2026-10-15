@@ -30,6 +30,9 @@ from gpu_preflight.image import (
     _cuda_artifact_findings,
     _cuda_compatibility_exceptions,
     _cuda_exception_assessment,
+    _digest_reference,
+    _docker_error,
+    _exact_reference,
     _redact_sensitive_diagnostic,
     inspect_image_reference,
     inspect_with_image,
@@ -1355,6 +1358,66 @@ class ImageInspectionTests(unittest.TestCase):
         self.assertNotIn("GPF-CUDA-017", finding_ids)
         self.assertEqual(target.compatibility_status, "INSUFFICIENT_EVIDENCE")
         self.assertIsNone(target.artifact_inspection_coverage_percent)
+
+    def test_tag_and_digest_reference_is_inspected_by_digest(self) -> None:
+        # A customer Dockerfile pins the AWS DLC base this way; Docker rejects
+        # `manifest inspect` of tag@digest for a single-platform manifest.
+        reference = (
+            "public.ecr.aws/deep-learning-containers/pytorch:2.13-cu133-amzn2023"
+            "@sha256:e82f6817e9c6a5aaabb33c91df3ebd3c34dc34d1a0f1df32dd062ab8249faff0"
+        )
+        single_platform = json.dumps(
+            {
+                "Descriptor": {
+                    "digest": "sha256:e82f6817",
+                    "platform": {"os": "linux", "architecture": "amd64"},
+                },
+                "SchemaV2Manifest": {"config": {"digest": "sha256:c"}, "layers": [{"size": 7}]},
+            }
+        )
+        client = DockerImageClient(cuobjdump_mode="off")
+        client.docker_binary = "/usr/bin/docker"
+        with patch.object(client, "_run", return_value=single_platform) as run:
+            manifests = client.inspect_manifest(reference)
+        run.assert_called_once_with(
+            (
+                "manifest",
+                "inspect",
+                "--verbose",
+                "public.ecr.aws/deep-learning-containers/pytorch"
+                "@sha256:e82f6817e9c6a5aaabb33c91df3ebd3c34dc34d1a0f1df32dd062ab8249faff0",
+            )
+        )
+        self.assertEqual(manifests.reference, reference)
+        self.assertEqual(manifests.platforms[0].platform, "linux/amd64")
+
+    def test_digest_and_exact_references_keep_registry_ports(self) -> None:
+        self.assertEqual(
+            _digest_reference("registry.example:5000/team/img:tag@sha256:abc"),
+            "registry.example:5000/team/img@sha256:abc",
+        )
+        self.assertEqual(
+            _digest_reference("registry.example:5000/img:1"), "registry.example:5000/img:1"
+        )
+        self.assertEqual(_digest_reference("ubuntu@sha256:abc"), "ubuntu@sha256:abc")
+        self.assertEqual(
+            _exact_reference("registry.example:5000/team/img:tag", "sha256:platform"),
+            "registry.example:5000/team/img@sha256:platform",
+        )
+        self.assertEqual(
+            _exact_reference("nvcr.io/nvidia/pytorch:26.09-py3@sha256:index", "sha256:platform"),
+            "nvcr.io/nvidia/pytorch@sha256:platform",
+        )
+
+    def test_docker_error_omits_raw_manifest_bytes(self) -> None:
+        dump = " ".join(str(value) for value in range(30, 130) for _ in range(4))
+        error = _docker_error(
+            ("manifest", "inspect", "--verbose", "x"),
+            f"unsupported manifest format: &{{[{dump}] application/vnd.docker}}",
+        )
+        self.assertIn("unsupported manifest format", str(error))
+        self.assertIn("<raw bytes omitted>", str(error))
+        self.assertLess(len(str(error)), 200)
 
 
 if __name__ == "__main__":
