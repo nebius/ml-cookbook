@@ -26,6 +26,7 @@ from gpu_preflight.cuda_inspection import (
     CuobjdumpTool,
     classify_artifact_role,
     is_core_framework_library,
+    is_required_runtime_library,
     kernel_catalog_declared_targets,
     kernel_catalog_group,
     kernel_catalog_kind,
@@ -1668,6 +1669,33 @@ def _cuda_artifact_findings(
                 details=tuple(
                     FindingDetail(label=path, value=f"CUDA {release}")
                     for path, release in sorted(releases.items())[:8]
+                ),
+            )
+        )
+    required_without_code = [
+        artifact for artifact in incompatible_runtime if is_required_runtime_library(artifact.path)
+    ]
+    if required_without_code:
+        findings.append(
+            Finding(
+                id="GPF-CUDA-021",
+                severity="blocker",
+                category="compatibility",
+                title="A library every GPU job loads has no code for this GPU",
+                evidence=(
+                    "cuobjdump listed every embedded target in "
+                    + "; ".join(
+                        f"{artifact.path} ({', '.join(artifact.targets)})"
+                        for artifact in required_without_code
+                    )
+                    + f". None is a cubin or PTX that runs on sm_{profile.compute_capability_number}. "
+                    "PyTorch loads libtorch_cuda and libc10_cuda for any GPU work, and multi-GPU "
+                    "jobs load NCCL for every collective."
+                ),
+                remediation=(
+                    f"Use a framework and NCCL release built for "
+                    f"{', '.join(profile.native_sm_targets)}, or one that retains PTX the driver "
+                    "can compile for this GPU."
                 ),
             )
         )

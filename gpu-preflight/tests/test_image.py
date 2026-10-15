@@ -1645,6 +1645,59 @@ class ImageInspectionTests(unittest.TestCase):
         )
         self.assertEqual(report.observations["final_platform"], "linux/amd64")
 
+    def test_nccl_without_target_code_makes_the_image_incompatible(self) -> None:
+        # NGC 24.01 ships NCCL 2.19.4 with sm_50..sm_90 cubins and no PTX; PyTorch keeps
+        # compute_90 PTX, so only NCCL blocks B300.
+        rootfs = rootfs_with(
+            (
+                CudaArtifactEvidence(
+                    path="/usr/lib/x86_64-linux-gnu/libnccl.so.2.19.4",
+                    size_bytes=200 * 1024 * 1024,
+                    targets=("sm_50", "sm_60", "sm_61", "sm_70", "sm_80", "sm_90"),
+                    method="cuobjdump",
+                    complete=True,
+                    role="runtime",
+                ),
+                CudaArtifactEvidence(
+                    path="/usr/local/lib/python3.10/dist-packages/torch/lib/libtorch_cuda.so",
+                    size_bytes=1400 * 1024 * 1024,
+                    targets=("compute_90", "sm_80", "sm_90"),
+                    method="cuobjdump",
+                    complete=True,
+                    role="runtime",
+                ),
+            )
+        )
+        findings = {
+            finding.id: finding
+            for finding in _cuda_artifact_findings(
+                rootfs,
+                self.profiles["b300"],
+                ("12.3",),
+                max_scan_bytes=1024,
+                max_cuobjdump_files=None,
+                max_artifact_bytes=2048 * 1024 * 1024,
+                cuobjdump_timeout_seconds=30,
+            )
+        }
+        blocker = findings["GPF-CUDA-021"]
+        self.assertEqual(blocker.severity, "blocker")
+        self.assertIn("libnccl.so.2.19.4", blocker.evidence)
+        self.assertNotIn("libtorch_cuda.so (", blocker.evidence)
+        h100 = {
+            finding.id
+            for finding in _cuda_artifact_findings(
+                rootfs,
+                self.profiles["h100"],
+                ("12.3",),
+                max_scan_bytes=1024,
+                max_cuobjdump_files=None,
+                max_artifact_bytes=2048 * 1024 * 1024,
+                cuobjdump_timeout_seconds=30,
+            )
+        }
+        self.assertNotIn("GPF-CUDA-021", h100)
+
 
 if __name__ == "__main__":
     unittest.main()

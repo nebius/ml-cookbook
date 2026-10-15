@@ -180,6 +180,19 @@ def cuda_targets_from_text(text: str) -> tuple[str, ...]:
     )
 
 
+# Every PyTorch GPU job loads these; a multi-GPU job also loads NCCL. If one of them has no
+# code for the target GPU, the image cannot run a GPU training job there.
+REQUIRED_RUNTIME_LIBRARY_RE = re.compile(
+    r"/(?:libtorch_cuda\.so|libc10_cuda\.so|libnccl\.so(?:\.\d+)*)$",
+    re.IGNORECASE,
+)
+
+
+def is_required_runtime_library(image_path: str) -> bool:
+    """Return whether a path is a library that every PyTorch GPU job loads."""
+    return bool(REQUIRED_RUNTIME_LIBRARY_RE.search(f"/{image_path.strip('/')}"))
+
+
 def is_core_framework_library(image_path: str) -> bool:
     """Return whether a path is a framework library that every GPU job is expected to load."""
     return bool(CORE_FRAMEWORK_LIBRARY_RE.search(f"/{image_path.strip('/')}"))
