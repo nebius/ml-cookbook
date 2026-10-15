@@ -135,6 +135,15 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--cuobjdump-fallback",
+        default="auto",
+        metavar="AUTO|PATH|OFF",
+        help=(
+            "second analyzer retried when cuobjdump reports an error: auto uses "
+            "/usr/local/cuda-13.0/bin/cuobjdump when installed (default), or provide a path"
+        ),
+    )
+    parser.add_argument(
         "--cuobjdump-timeout",
         type=int,
         default=30,
@@ -278,6 +287,11 @@ def main(argv: list[str] | None = None) -> int:
             "max_scan_bytes": args.max_scan_mb * 1024 * 1024,
             "cuobjdump_mode": "auto" if args.cuobjdump.lower() == "auto" else args.cuobjdump,
             "cuobjdump_timeout_seconds": args.cuobjdump_timeout,
+            "cuobjdump_fallback_mode": (
+                args.cuobjdump_fallback.lower()
+                if args.cuobjdump_fallback.lower() in {"auto", "off"}
+                else args.cuobjdump_fallback
+            ),
             "max_cuobjdump_files": None if args.exhaustive else args.max_cuobjdump_files,
             "max_artifact_bytes": args.max_artifact_mb * 1024 * 1024,
             "command_timeout_seconds": args.command_timeout,

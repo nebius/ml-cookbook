@@ -49,6 +49,63 @@ class CudaInspectionTests(unittest.TestCase):
         )
         self.assertEqual(targets, ("compute_103", "sm_103a", "sm_90"))
 
+    def test_analyzer_error_is_retried_with_fallback_cuobjdump(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            primary = Path(directory) / "cuobjdump-13.4"
+            primary.write_text(
+                "#!/bin/sh\n"
+                "echo 'ELF file    1: libcublas.1.sm_50.cubin'\n"
+                "echo \"cuobjdump fatal   : Invalid ELF in 'libcublas.so.12.3.4.1'\" >&2\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            fallback = Path(directory) / "cuobjdump-13.0"
+            fallback.write_text(
+                "#!/bin/sh\n"
+                "echo 'ELF file    1: libcublas.1.sm_50.cubin'\n"
+                "echo 'ELF file    2: libcublas.2.sm_90.cubin'\n"
+                "echo 'PTX file    1: libcublas.1.sm_90.ptx'\n",
+                encoding="utf-8",
+            )
+            primary.chmod(0o755)
+            fallback.chmod(0o755)
+            artifact = Path(directory) / "libcublas.so"
+            artifact.write_bytes(b"payload")
+            tool = CuobjdumpTool(
+                str(primary),
+                "CUDA 13.4 (V13.4.92)",
+                timeout_seconds=2,
+                fallback=CuobjdumpTool(str(fallback), "CUDA 13.0 (V13.0.88)", timeout_seconds=2),
+            )
+            evidence = tool.inspect(artifact, "/usr/lib/libcublas.so", len(b"payload"))
+            self.assertTrue(evidence.complete)
+            self.assertEqual(evidence.targets, ("compute_90", "sm_50", "sm_90"))
+            self.assertIn("Invalid ELF", evidence.diagnostic or "")
+            self.assertIn("fallback cuobjdump CUDA 13.0", evidence.diagnostic or "")
+
+    def test_fallback_is_attached_only_when_it_differs_from_the_primary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scripts = {}
+            for name, release in (("primary", "13.4"), ("fallback", "13.0")):
+                path = Path(directory) / name
+                path.write_text(
+                    f"#!/bin/sh\necho 'Cuda compilation tools, release {release}, V{release}.1'\n",
+                    encoding="utf-8",
+                )
+                path.chmod(0o755)
+                scripts[name] = str(path)
+            tool = resolve_cuobjdump(scripts["primary"], 2, fallback_mode=scripts["fallback"])
+            self.assertIsNotNone(tool)
+            assert tool is not None
+            self.assertIsNotNone(tool.fallback)
+            self.assertEqual(
+                tool.fallback.version if tool.fallback else None, "CUDA 13.0 (V13.0.1)"
+            )
+            same = resolve_cuobjdump(scripts["primary"], 2, fallback_mode=scripts["primary"])
+            self.assertIsNone(same.fallback if same else None)
+            off = resolve_cuobjdump(scripts["primary"], 2, fallback_mode="off")
+            self.assertIsNone(off.fallback if off else None)
+
     def test_artifact_role_distinguishes_test_data_from_runtime_library(self) -> None:
         self.assertEqual(classify_artifact_role("/opt/project/tests/kernel.cubin"), "test")
         self.assertEqual(

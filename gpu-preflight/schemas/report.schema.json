@@ -56,6 +56,7 @@
               "description": "Null when --exhaustive removes the cuobjdump file-count cap."
             },
             "cuobjdump_mode": {"type": "string"},
+            "cuobjdump_fallback_mode": {"type": "string"},
             "cuobjdump_timeout_seconds": {"type": "integer", "minimum": 1},
             "command_timeout_seconds": {"type": "integer", "minimum": 1}
           }
@@ -75,7 +76,8 @@
             "image_config_inspected": {"type": "boolean"},
             "filesystem_inspected": {"type": "boolean"},
             "cuobjdump_available": {"type": "boolean"},
-            "cuobjdump_version": {"type": ["string", "null"]}
+            "cuobjdump_version": {"type": ["string", "null"]},
+            "cuobjdump_fallback_version": {"type": ["string", "null"]}
           }
         }
       }

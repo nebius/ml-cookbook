@@ -918,10 +918,15 @@ class DockerImageClient:
         cuobjdump_timeout_seconds: int = 30,
         max_cuobjdump_files: int | None = 256,
         max_artifact_bytes: int = 768 * 1024 * 1024,
+        cuobjdump_fallback_mode: str = "auto",
     ) -> None:
         self.docker_binary = shutil.which("docker")
         self.command_timeout_seconds = command_timeout_seconds
-        self.cuobjdump = resolve_cuobjdump(cuobjdump_mode, cuobjdump_timeout_seconds)
+        self.cuobjdump = resolve_cuobjdump(
+            cuobjdump_mode,
+            cuobjdump_timeout_seconds,
+            cuobjdump_fallback_mode,
+        )
         self.max_cuobjdump_files = max_cuobjdump_files
         self.max_artifact_bytes = max_artifact_bytes
 
@@ -2076,6 +2081,7 @@ def inspect_with_image(
     max_scan_bytes: int = 2048 * 1024 * 1024,
     cuobjdump_mode: str = "auto",
     cuobjdump_timeout_seconds: int = 30,
+    cuobjdump_fallback_mode: str = "auto",
     max_cuobjdump_files: int | None = 256,
     max_artifact_bytes: int = 768 * 1024 * 1024,
     command_timeout_seconds: int = 3600,
@@ -2090,6 +2096,7 @@ def inspect_with_image(
         "max_artifact_bytes": max_artifact_bytes,
         "max_cuobjdump_files": max_cuobjdump_files,
         "cuobjdump_mode": cuobjdump_mode,
+        "cuobjdump_fallback_mode": cuobjdump_fallback_mode,
         "cuobjdump_timeout_seconds": cuobjdump_timeout_seconds,
         "command_timeout_seconds": command_timeout_seconds,
     }
@@ -2131,11 +2138,15 @@ def inspect_with_image(
             cuobjdump_timeout_seconds=cuobjdump_timeout_seconds,
             max_cuobjdump_files=max_cuobjdump_files,
             max_artifact_bytes=max_artifact_bytes,
+            cuobjdump_fallback_mode=cuobjdump_fallback_mode,
         )
         client.preflight(
             require_daemon=scan_mode in {"pull", "filesystem"},
             require_cuobjdump=scan_mode == "filesystem",
         )
+    analyzer = getattr(client, "cuobjdump", None)
+    if analyzer is not None and analyzer.fallback is not None:
+        capabilities["cuobjdump_fallback_version"] = analyzer.fallback.version
     manifests = client.inspect_manifest(image_reference)
 
     capabilities["registry_manifest_inspected"] = True
@@ -2538,6 +2549,7 @@ def inspect_image_reference(
     max_scan_bytes: int = 2048 * 1024 * 1024,
     cuobjdump_mode: str = "auto",
     cuobjdump_timeout_seconds: int = 30,
+    cuobjdump_fallback_mode: str = "auto",
     max_cuobjdump_files: int | None = 256,
     max_artifact_bytes: int = 768 * 1024 * 1024,
     command_timeout_seconds: int = 3600,
@@ -2566,6 +2578,7 @@ def inspect_image_reference(
         max_scan_bytes=max_scan_bytes,
         cuobjdump_mode=cuobjdump_mode,
         cuobjdump_timeout_seconds=cuobjdump_timeout_seconds,
+        cuobjdump_fallback_mode=cuobjdump_fallback_mode,
         max_cuobjdump_files=max_cuobjdump_files,
         max_artifact_bytes=max_artifact_bytes,
         command_timeout_seconds=command_timeout_seconds,

@@ -12,7 +12,7 @@ Run GPU Preflight from a Linux VM with:
 - Python 3.11 or newer
 - the Docker CLI and an accessible Docker daemon
 - Docker registry access to pull the image
-- NVIDIA `cuobjdump` from the same CUDA Toolkit release as the newest image being inspected, or a newer compatible release. An older `cuobjdump` can fail to decode newer fat-binary formats and GPU targets, producing incomplete or misleading evidence.
+- NVIDIA `cuobjdump` from the same CUDA Toolkit release as the newest image being inspected, or a newer compatible release. An older `cuobjdump` can fail to decode newer fat-binary formats and GPU targets, producing incomplete or misleading evidence. Newer is not always safe either: `cuobjdump` 13.4 reports `Invalid ELF` on some CUDA 12.x libraries (for example cuBLAS 12.3 and HPC-X UCC) and lists only part of them. The installer therefore also installs `cuobjdump` 13.0, and GPU Preflight retries any analyzer error with `/usr/local/cuda-13.0/bin/cuobjdump` (`--cuobjdump-fallback`).
 
 ### Install `cuobjdump` on Ubuntu or Debian
 
@@ -27,7 +27,7 @@ The script:
 
 - detects the Ubuntu or Debian release and maps AMD64 to NVIDIA's `x86_64` repository or Arm64 to its `sbsa` repository
 - configures NVIDIA's official CUDA network repository
-- discovers and installs only the newest available versioned `cuda-cuobjdump` package
+- discovers and installs the newest available versioned `cuda-cuobjdump` package, plus `cuda-cuobjdump-13-0` as the fallback analyzer (`CUDA_CUOBJDUMP_FALLBACK_PACKAGE=none` skips it)
 - creates `/usr/local/bin/cuobjdump` without replacing an existing regular file
 - prints the resolved package, executable path, and analyzer version
 

@@ -133,6 +133,7 @@ class CliTests(unittest.TestCase):
         self.assertIsNone(call.kwargs["max_cuobjdump_files"])
         self.assertEqual(call.kwargs["max_scan_bytes"], 2048 * 1024 * 1024)
         self.assertEqual(call.kwargs["max_artifact_bytes"], 768 * 1024 * 1024)
+        self.assertEqual(call.kwargs["cuobjdump_fallback_mode"], "auto")
         self.assertEqual(call.kwargs["cuobjdump_timeout_seconds"], 30)
 
     def test_default_inspect_writes_all_report_formats(self) -> None:

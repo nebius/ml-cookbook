@@ -6,7 +6,7 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 CUDA_TARGET_TEXT_RE = re.compile(
@@ -25,6 +25,11 @@ CUOBJDUMP_LISTING_TARGET_RE = re.compile(
     r"\.sm_(?P<number>\d{2,3})(?P<suffix>[af]?)\.(?:cubin|ptx)$",
     re.IGNORECASE,
 )
+# cuobjdump 13.1+ rejects some fat binaries built by CUDA 12.x toolchains with "Invalid ELF"
+# and lists only part of the file. 13.0 lists them completely and still understands CUDA 13
+# targets, so it is the auto-discovered fallback for analyzer errors.
+FALLBACK_CUOBJDUMP_RELEASE = "13.0"
+FALLBACK_CUOBJDUMP_PATH = Path(f"/usr/local/cuda-{FALLBACK_CUOBJDUMP_RELEASE}/bin/cuobjdump")
 FLASHINFER_JIT_CACHE_MARKER = "/flashinfer_jit_cache/jit_cache/"
 FLASHINFER_SM_SELECTOR_RE = re.compile(
     r"_sm(?P<number>75|80|86|87|89|90|100|101|103|107|110|120|121)"
@@ -59,6 +64,7 @@ class CuobjdumpTool:
     executable: str
     version: str
     timeout_seconds: int
+    fallback: CuobjdumpTool | None = None
 
     def inspect(self, path: Path, image_path: str, size_bytes: int) -> CudaArtifactEvidence:
         try:
@@ -106,6 +112,16 @@ class CuobjdumpTool:
             )
         if result.returncode:
             detail = " ".join(output.split())[-500:] or f"exit status {result.returncode}"
+            if self.fallback is not None:
+                retried = self.fallback.inspect(path, image_path, size_bytes)
+                if retried.complete:
+                    return replace(
+                        retried,
+                        diagnostic=(
+                            f"cuobjdump {self.version} failed ({detail[-160:]}); listed with "
+                            f"fallback cuobjdump {self.fallback.version}"
+                        ),
+                    )
             return CudaArtifactEvidence(
                 path=image_path,
                 size_bytes=size_bytes,
@@ -266,8 +282,17 @@ def _flashinfer_dispatch_module(image_path: str) -> tuple[str, tuple[str, ...]] 
     return group, tuple(sorted(targets))
 
 
-def resolve_cuobjdump(mode: str, timeout_seconds: int) -> CuobjdumpTool | None:
-    """Resolve cuobjdump from PATH, a well-known CUDA path, an explicit path, or off."""
+def resolve_cuobjdump(
+    mode: str,
+    timeout_seconds: int,
+    fallback_mode: str = "auto",
+) -> CuobjdumpTool | None:
+    """Resolve cuobjdump from PATH, a well-known CUDA path, an explicit path, or off.
+
+    ``fallback_mode`` selects a second analyzer that is retried when the primary one
+    reports an error: ``auto`` uses a CUDA 13.0 cuobjdump when one is installed, ``off``
+    disables the retry, and any other value is an explicit executable path.
+    """
     if mode == "off":
         return None
     if timeout_seconds <= 0:
@@ -284,13 +309,38 @@ def resolve_cuobjdump(mode: str, timeout_seconds: int) -> CuobjdumpTool | None:
         if candidate is None:
             return None
     else:
-        explicit = Path(mode).expanduser()
-        if not explicit.is_file():
-            raise ValueError(f"cuobjdump executable not found: {mode}")
-        if not os.access(explicit, os.X_OK):
-            raise ValueError(f"cuobjdump is not executable: {mode}")
-        candidate = str(explicit)
+        candidate = _explicit_executable(mode)
 
+    tool = CuobjdumpTool(candidate, _cuobjdump_version(candidate, timeout_seconds), timeout_seconds)
+    fallback_candidate: str | None = None
+    if fallback_mode == "auto":
+        if FALLBACK_CUOBJDUMP_PATH.is_file() and os.access(FALLBACK_CUOBJDUMP_PATH, os.X_OK):
+            fallback_candidate = str(FALLBACK_CUOBJDUMP_PATH)
+    elif fallback_mode != "off":
+        fallback_candidate = _explicit_executable(fallback_mode)
+    if fallback_candidate is None or os.path.realpath(fallback_candidate) == os.path.realpath(
+        candidate
+    ):
+        return tool
+    fallback_version = _cuobjdump_version(fallback_candidate, timeout_seconds)
+    if fallback_version == tool.version:
+        return tool
+    return replace(
+        tool,
+        fallback=CuobjdumpTool(fallback_candidate, fallback_version, timeout_seconds),
+    )
+
+
+def _explicit_executable(value: str) -> str:
+    explicit = Path(value).expanduser()
+    if not explicit.is_file():
+        raise ValueError(f"cuobjdump executable not found: {value}")
+    if not os.access(explicit, os.X_OK):
+        raise ValueError(f"cuobjdump is not executable: {value}")
+    return str(explicit)
+
+
+def _cuobjdump_version(candidate: str, timeout_seconds: int) -> str:
     version = "unknown"
     try:
         result = subprocess.run(  # noqa: S603 - explicit argv; shell is disabled
@@ -322,4 +372,4 @@ def resolve_cuobjdump(mode: str, timeout_seconds: int) -> CuobjdumpTool | None:
             f"cuobjdump --version failed for {candidate}: "
             f"{detail or f'exit status {result.returncode}'}"
         )
-    return CuobjdumpTool(candidate, version, timeout_seconds)
+    return version
