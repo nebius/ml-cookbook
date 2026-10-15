@@ -9,6 +9,7 @@ from gpu_preflight.cuda_inspection import (
     classify_artifact_role,
     cuda_targets_from_listing,
     cuda_targets_from_text,
+    is_core_framework_library,
     kernel_catalog_declared_targets,
     kernel_catalog_group,
     kernel_catalog_kind,
@@ -48,6 +49,22 @@ class CudaInspectionTests(unittest.TestCase):
             "/opt/kernels/sm_090.cubin /opt/kernels/sm_103a.cubin /opt/compute_103.ptx"
         )
         self.assertEqual(targets, ("compute_103", "sm_103a", "sm_90"))
+
+    def test_core_framework_libraries_are_recognized(self) -> None:
+        for path in (
+            "/usr/local/lib/python3.12/dist-packages/torch/lib/libtorch_cuda.so",
+            "/usr/local/lib/python3.12/dist-packages/torch/lib/libtorch_cuda_linalg.so",
+            "/usr/lib/x86_64-linux-gnu/libnccl.so.2.31.2",
+            "/usr/local/lib/python3.12/dist-packages/flash_attn_2_cuda.cpython-312-x86_64-linux-gnu.so",
+            "/opt/venv/lib/python3.12/site-packages/transformer_engine/wheel_lib/libtransformer_engine.so",
+        ):
+            self.assertTrue(is_core_framework_library(path), path)
+        for path in (
+            "/opt/amazon/ofi-nccl/lib64/libnccl-net.so",
+            "/usr/local/cuda-13.4/targets/x86_64-linux/lib/libcublasLt.so.13",
+            "/opt/pytorch/ao/torchao/_C_cutlass_90a.abi3.so",
+        ):
+            self.assertFalse(is_core_framework_library(path), path)
 
     def test_profiler_injection_libraries_are_tooling(self) -> None:
         self.assertEqual(

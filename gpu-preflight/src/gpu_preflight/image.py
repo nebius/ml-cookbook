@@ -25,6 +25,7 @@ from gpu_preflight.cuda_inspection import (
     CudaArtifactEvidence,
     CuobjdumpTool,
     classify_artifact_role,
+    is_core_framework_library,
     kernel_catalog_declared_targets,
     kernel_catalog_group,
     kernel_catalog_kind,
@@ -57,6 +58,10 @@ CUDA_TARGET_BYTES_RE = re.compile(
 PACKAGE_METADATA_NAMES = {"METADATA", "PKG-INFO"}
 BINARY_SUFFIXES = (".a", ".bin", ".cubin", ".fatbin", ".ptx", ".so")
 VERSIONED_SO_RE = re.compile(r"\.so(?:\.\d+)*$", re.IGNORECASE)
+DEFAULT_MAX_SCAN_BYTES = 16384 * 1024 * 1024
+DEFAULT_MAX_CUOBJDUMP_FILES = 1024
+DEFAULT_MAX_ARTIFACT_BYTES = 2048 * 1024 * 1024
+SKIPPED_CANDIDATE_RECORD_LIMIT = 200
 METADATA_SCAN_LIMIT_BYTES = 64 * 1024 * 1024
 METADATA_FILE_LIMIT_BYTES = 8 * 1024 * 1024
 BINARY_FILE_LIMIT_BYTES = 64 * 1024 * 1024
@@ -496,8 +501,8 @@ def scan_rootfs_tar(
     max_scan_bytes: int,
     *,
     cuobjdump: CuobjdumpTool | None = None,
-    max_cuobjdump_files: int | None = 256,
-    max_artifact_bytes: int = 768 * 1024 * 1024,
+    max_cuobjdump_files: int | None = DEFAULT_MAX_CUOBJDUMP_FILES,
+    max_artifact_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
     progress: Callable[[int, int, int], None] | None = None,
 ) -> RootfsScan:
     """Inspect a merged rootfs tar stream without extracting it."""
@@ -632,6 +637,9 @@ def scan_rootfs_tar(
                     allowance = max_scan_bytes - bytes_scanned
                     artifact: CudaArtifactEvidence | None = None
                     skip_reason: str | None = None
+                    # The rootfs is a single tar stream, so files cannot be reordered; core
+                    # framework libraries instead bypass the shared budget and file cap.
+                    core_library = artifact_role == "runtime" and is_core_framework_library(name)
                     if cuobjdump is None:
                         skip_reason = "no-cuobjdump"
                         skipped_no_cuobjdump += 1
@@ -642,19 +650,23 @@ def scan_rootfs_tar(
                         skip_reason = "artifact-limit"
                         skipped_artifact_limit += 1
                     elif (
-                        max_cuobjdump_files is not None
+                        not core_library
+                        and max_cuobjdump_files is not None
                         and cuobjdump_files_analyzed >= max_cuobjdump_files
                     ):
                         skip_reason = "file-limit"
                         skipped_file_limit += 1
-                    elif allowance <= 0 or member.size > allowance:
+                    elif not core_library and (allowance <= 0 or member.size > allowance):
                         skip_reason = "scan-budget"
                         skipped_scan_budget += 1
                     if (
                         skip_reason
                         and skip_reason != "non-runtime"
                         and artifact_role in {"runtime", "kernel-catalog"}
-                        and len(skipped_cuda_candidates) < 200
+                        and (
+                            core_library
+                            or len(skipped_cuda_candidates) < SKIPPED_CANDIDATE_RECORD_LIMIT
+                        )
                     ):
                         skipped_cuda_candidates.append(
                             SkippedCudaCandidate(
@@ -664,7 +676,7 @@ def scan_rootfs_tar(
                             )
                         )
                     planned_cuobjdump = cuobjdump is not None and skip_reason is None
-                    if allowance <= 0:
+                    if allowance <= 0 and not planned_cuobjdump:
                         truncated = True
                         continue
                     temporary_path: Path | None = None
@@ -916,8 +928,8 @@ class DockerImageClient:
         command_timeout_seconds: int = 3600,
         cuobjdump_mode: str = "auto",
         cuobjdump_timeout_seconds: int = 30,
-        max_cuobjdump_files: int | None = 256,
-        max_artifact_bytes: int = 768 * 1024 * 1024,
+        max_cuobjdump_files: int | None = DEFAULT_MAX_CUOBJDUMP_FILES,
+        max_artifact_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
         cuobjdump_fallback_mode: str = "auto",
     ) -> None:
         self.docker_binary = shutil.which("docker")
@@ -1659,6 +1671,47 @@ def _cuda_artifact_findings(
                 ),
             )
         )
+    uninspected_core = [
+        (candidate.path, candidate.size_bytes, f"not inspected: {candidate.reason}")
+        for candidate in rootfs.skipped_cuda_candidates
+        if is_core_framework_library(candidate.path)
+    ] + [
+        (
+            artifact.path,
+            artifact.size_bytes,
+            f"incomplete: {artifact.diagnostic or artifact.incomplete_reason or 'analyzer error'}",
+        )
+        for artifact in rootfs.cuda_artifacts
+        if artifact.method == "cuobjdump"
+        and not artifact.complete
+        and is_core_framework_library(artifact.path)
+    ]
+    if uninspected_core:
+        findings.append(
+            Finding(
+                id="GPF-CUDA-019",
+                severity="info",
+                category="evidence",
+                title="Core framework libraries were not inspected",
+                evidence=(
+                    f"{len(uninspected_core)} framework library file(s) that GPU jobs normally "
+                    "load (PyTorch CUDA, NCCL, FlashAttention, Transformer Engine) have no "
+                    "cuobjdump target listing, so the image cannot be assessed as ready."
+                ),
+                remediation=(
+                    "Raise --max-artifact-mb above the largest listed size or resolve the named "
+                    "analyzer error, then repeat the scan."
+                ),
+                details=tuple(
+                    FindingDetail(
+                        label=path,
+                        value=f"{size / (1024**2):.0f} MiB",
+                        context=reason,
+                    )
+                    for path, size, reason in uninspected_core[:8]
+                ),
+            )
+        )
 
     if compatible_inspection_units and not incompatible_inspection_units:
         findings.append(
@@ -2220,12 +2273,12 @@ def inspect_with_image(
     facts: ImageFacts,
     profiles: tuple[HardwareProfile, ...],
     scan_mode: str = "filesystem",
-    max_scan_bytes: int = 2048 * 1024 * 1024,
+    max_scan_bytes: int = DEFAULT_MAX_SCAN_BYTES,
     cuobjdump_mode: str = "auto",
     cuobjdump_timeout_seconds: int = 30,
     cuobjdump_fallback_mode: str = "auto",
-    max_cuobjdump_files: int | None = 256,
-    max_artifact_bytes: int = 768 * 1024 * 1024,
+    max_cuobjdump_files: int | None = DEFAULT_MAX_CUOBJDUMP_FILES,
+    max_artifact_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
     command_timeout_seconds: int = 3600,
     client: DockerImageClient | None = None,
 ) -> InspectionReport:
@@ -2670,10 +2723,11 @@ def inspect_with_image(
         "rootfs_statistics": rootfs_statistics,
         "cuda_target_summaries": cuda_target_summaries,
     }
-    if len(profiles) == 1:
-        selected = _select_manifest(manifests, facts, profiles[0])
-        if selected:
-            observations["final_platform"] = selected.platform
+    selected_platforms = {str(item["platform"]) for item in selected_observations.values()}
+    if len(selected_platforms) == 1:
+        observations["final_platform"] = next(iter(selected_platforms))
+    elif selected_platforms:
+        observations["final_platform"] = ", ".join(sorted(selected_platforms))
     report = replace(base_report, observations=observations, targets=tuple(target_reports))
     return _finish_scan_report(
         report,
@@ -2689,12 +2743,12 @@ def inspect_image_reference(
     profiles: tuple[HardwareProfile, ...],
     platform: str | None = None,
     scan_mode: str = "filesystem",
-    max_scan_bytes: int = 2048 * 1024 * 1024,
+    max_scan_bytes: int = DEFAULT_MAX_SCAN_BYTES,
     cuobjdump_mode: str = "auto",
     cuobjdump_timeout_seconds: int = 30,
     cuobjdump_fallback_mode: str = "auto",
-    max_cuobjdump_files: int | None = 256,
-    max_artifact_bytes: int = 768 * 1024 * 1024,
+    max_cuobjdump_files: int | None = DEFAULT_MAX_CUOBJDUMP_FILES,
+    max_artifact_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
     command_timeout_seconds: int = 3600,
     client: DockerImageClient | None = None,
 ) -> InspectionReport:

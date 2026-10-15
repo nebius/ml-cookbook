@@ -550,7 +550,7 @@ class ImageInspectionTests(unittest.TestCase):
 
             stream = io.BytesIO()
             with tarfile.open(fileobj=stream, mode="w") as archive:
-                for name in ("usr/lib/libtorch_cuda.so", "usr/lib/libflash_cuda.so"):
+                for name in ("usr/lib/libcustom_cuda.so", "usr/lib/libflash_cuda.so"):
                     data = b"payload"
                     info = tarfile.TarInfo(name)
                     info.size = len(data)
@@ -563,7 +563,7 @@ class ImageInspectionTests(unittest.TestCase):
             self.assertEqual(scan.skipped_scan_budget, 2)
             self.assertEqual(
                 [candidate.path for candidate in scan.skipped_cuda_candidates],
-                ["/usr/lib/libtorch_cuda.so", "/usr/lib/libflash_cuda.so"],
+                ["/usr/lib/libcustom_cuda.so", "/usr/lib/libflash_cuda.so"],
             )
             self.assertEqual(
                 scan.cuda_candidate_files,
@@ -1256,6 +1256,8 @@ class ImageInspectionTests(unittest.TestCase):
             (self.profiles["gb300"],),
             scan_mode="filesystem",
             client=FakeImageClient((arm64,), pulled=pulled),
+            max_scan_bytes=2048 * 1024 * 1024,
+            max_cuobjdump_files=256,
         )
 
         findings = {finding.id: finding for finding in report.targets[0].findings}
@@ -1569,6 +1571,79 @@ class ImageInspectionTests(unittest.TestCase):
         # cuFFT is accounted for by release, so the remaining unit is fully compatible.
         self.assertIn("GPF-CUDA-009", findings)
         self.assertNotIn("GPF-CUDA-010", findings)
+
+    def test_core_framework_library_bypasses_scan_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "cuobjdump"
+            executable.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = "--version" ]; then '
+                "echo 'Cuda compilation tools, release 13.4, V13.4.92'; exit 0; fi\n"
+                "echo 'ELF file    1: lib.1.sm_100.cubin'\n"
+                "echo 'PTX file    1: lib.1.sm_100.ptx'\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            tool = resolve_cuobjdump(str(executable), timeout_seconds=2, fallback_mode="off")
+
+            stream = io.BytesIO()
+            with tarfile.open(fileobj=stream, mode="w") as archive:
+                for name in (
+                    "usr/lib/libcustom_cuda.so",
+                    "usr/local/lib/python3.12/dist-packages/torch/lib/libtorch_cuda.so",
+                ):
+                    data = b"payload"
+                    info = tarfile.TarInfo(name)
+                    info.size = len(data)
+                    archive.addfile(info, io.BytesIO(data))
+            stream.seek(0)
+            scan = scan_rootfs_tar(stream, max_scan_bytes=1, cuobjdump=tool)
+
+        self.assertEqual(scan.cuobjdump_files_analyzed, 1)
+        self.assertEqual(scan.skipped_scan_budget, 1)
+        self.assertEqual(
+            [artifact.path for artifact in scan.cuda_artifacts],
+            ["/usr/local/lib/python3.12/dist-packages/torch/lib/libtorch_cuda.so"],
+        )
+        self.assertEqual(scan.cuda_artifacts[0].targets, ("compute_100", "sm_100"))
+
+    def test_uninspected_core_library_is_named_and_blocks_a_ready_result(self) -> None:
+        rootfs = rootfs_with(
+            skipped=(
+                SkippedCudaCandidate(
+                    path="/usr/local/lib/python3.10/dist-packages/torch/lib/libtorch_cuda.so",
+                    size_bytes=1400 * 1024 * 1024,
+                    reason="artifact-limit",
+                ),
+            )
+        )
+        findings = {
+            finding.id: finding
+            for finding in _cuda_artifact_findings(
+                rootfs,
+                self.profiles["h100"],
+                ("12.3",),
+                max_scan_bytes=1024,
+                max_cuobjdump_files=None,
+                max_artifact_bytes=768 * 1024 * 1024,
+                cuobjdump_timeout_seconds=30,
+            )
+        }
+        core = findings["GPF-CUDA-019"]
+        self.assertEqual(
+            core.details[0].label,
+            "/usr/local/lib/python3.10/dist-packages/torch/lib/libtorch_cuda.so",
+        )
+        self.assertIn("artifact-limit", core.details[0].context or "")
+
+    def test_shared_platform_is_reported_for_multi_target_runs(self) -> None:
+        report = inspect_with_image(
+            image_facts(),
+            (self.profiles["b300"], self.profiles["h100"]),
+            scan_mode="manifest",
+            client=FakeImageClient((manifest("linux/amd64", "amd64"),)),
+        )
+        self.assertEqual(report.observations["final_platform"], "linux/amd64")
 
 
 if __name__ == "__main__":

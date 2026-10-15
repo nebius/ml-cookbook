@@ -193,9 +193,10 @@ An artifact present in an image may never be loaded by a particular workload. A 
 
 ## Resource limits
 
-- `--max-scan-mb` limits candidate-file content read during the filesystem scan; it does not limit the image download or rootfs stream. Default: 2048 MiB.
-- `--max-artifact-mb` limits one file passed to `cuobjdump`. Default: 768 MiB.
-- `--max-cuobjdump-files` bounds the number of `cuobjdump` invocations. Default: 256.
+- `--max-scan-mb` limits candidate-file content read during the filesystem scan; it does not limit the image download or rootfs stream. Default: 16384 MiB.
+- `--max-artifact-mb` limits one file passed to `cuobjdump`. Default: 2048 MiB, which covers PyTorch's `libtorch_cuda.so` (about 1.3–1.4 GiB in NGC 24.01–25.01).
+- `--max-cuobjdump-files` bounds the number of `cuobjdump` invocations. Default: 1024.
+- Core framework libraries (PyTorch CUDA, NCCL, FlashAttention, Transformer Engine) are always inspected: they do not count against `--max-scan-mb` or `--max-cuobjdump-files`, only against `--max-artifact-mb` and the timeout. If one cannot be inspected, the report names it (GPF-CUDA-019) and the result cannot be ready for hardware testing.
 - `--exhaustive` removes only the `cuobjdump` file-count cap. Candidate-byte, per-artifact-size, per-invocation-timeout, and Docker-command safeguards remain active.
 - `--cuobjdump-timeout` bounds each artifact analysis. Default: 30 seconds.
 - `--command-timeout` bounds individual Docker metadata and pull commands. Default: 3600 seconds.

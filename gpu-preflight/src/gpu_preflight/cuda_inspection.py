@@ -30,6 +30,14 @@ CUOBJDUMP_LISTING_TARGET_RE = re.compile(
 # targets, so it is the auto-discovered fallback for analyzer errors.
 FALLBACK_CUOBJDUMP_RELEASE = "13.0"
 FALLBACK_CUOBJDUMP_PATH = Path(f"/usr/local/cuda-{FALLBACK_CUOBJDUMP_RELEASE}/bin/cuobjdump")
+# Framework libraries whose kernels a training or inference job loads on every run. They are
+# inspected regardless of the candidate-byte budget and file-count cap (the per-artifact size
+# limit and timeout still apply), and are named in the report when they cannot be inspected.
+CORE_FRAMEWORK_LIBRARY_RE = re.compile(
+    r"/(?:libtorch_cuda[^/]*\.so|libc10_cuda\.so|libnccl\.so(?:\.\d+)*|flash_attn[^/]*\.so"
+    r"|libtransformer_engine[^/]*\.so|transformer_engine[^/]*\.so)$",
+    re.IGNORECASE,
+)
 FLASHINFER_JIT_CACHE_MARKER = "/flashinfer_jit_cache/jit_cache/"
 FLASHINFER_SM_SELECTOR_RE = re.compile(
     r"_sm(?P<number>75|80|86|87|89|90|100|101|103|107|110|120|121)"
@@ -170,6 +178,11 @@ def cuda_targets_from_text(text: str) -> tuple[str, ...]:
             }
         )
     )
+
+
+def is_core_framework_library(image_path: str) -> bool:
+    """Return whether a path is a framework library that every GPU job is expected to load."""
+    return bool(CORE_FRAMEWORK_LIBRARY_RE.search(f"/{image_path.strip('/')}"))
 
 
 def classify_artifact_role(image_path: str) -> str:

@@ -122,8 +122,11 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-scan-mb",
         type=int,
-        default=2048,
-        help="maximum candidate file content read during a filesystem scan (default: 2048 MiB)",
+        default=16384,
+        help=(
+            "maximum candidate file content read during a filesystem scan (default: 16384 MiB); "
+            "core framework libraries are always read"
+        ),
     )
     parser.add_argument(
         "--cuobjdump",
@@ -153,9 +156,12 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-cuobjdump-files",
         type=int,
-        default=256,
+        default=1024,
         metavar="COUNT",
-        help="maximum CUDA candidate files passed to cuobjdump (default: 256)",
+        help=(
+            "maximum CUDA candidate files passed to cuobjdump (default: 1024); core framework "
+            "libraries are not counted against it"
+        ),
     )
     parser.add_argument(
         "--exhaustive",
@@ -168,8 +174,8 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-artifact-mb",
         type=int,
-        default=768,
-        help="maximum size of one file passed to cuobjdump (default: 768 MiB)",
+        default=2048,
+        help="maximum size of one file passed to cuobjdump (default: 2048 MiB)",
     )
     parser.add_argument(
         "--command-timeout",
