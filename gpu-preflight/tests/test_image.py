@@ -34,6 +34,7 @@ from gpu_preflight.image import (
     _docker_error,
     _exact_reference,
     _redact_sensitive_diagnostic,
+    _toolkit_release,
     inspect_image_reference,
     inspect_with_image,
     parse_manifest_output,
@@ -62,6 +63,39 @@ def image_facts(reference: str = "registry.example/pytorch:1") -> ImageFacts:
         nccl_versions=(),
         detected_packages=(),
         environment={},
+    )
+
+
+def rootfs_with(
+    artifacts: tuple[CudaArtifactEvidence, ...] = (),
+    skipped: tuple[SkippedCudaCandidate, ...] = (),
+) -> RootfsScan:
+    return RootfsScan(
+        known_packages=(),
+        installed_packages=(),
+        cuda_targets=(),
+        cuda_versions=(),
+        nccl_versions=(),
+        files_seen=len(artifacts) + len(skipped),
+        bytes_scanned=0,
+        metadata_bytes_scanned=0,
+        truncated=False,
+        metadata_truncated=False,
+        cuda_candidate_files=len(artifacts) + len(skipped),
+        cuda_artifacts=artifacts,
+        cuobjdump_available=True,
+        cuobjdump_version="CUDA 13.4 (V13.4.92)",
+        cuobjdump_files_analyzed=len(artifacts),
+        cuobjdump_targets_found=len(artifacts),
+        cuobjdump_no_device_code=0,
+        cuobjdump_incomplete=0,
+        marker_only_files=0,
+        skipped_no_cuobjdump=0,
+        skipped_non_runtime=0,
+        skipped_scan_budget=0,
+        skipped_artifact_limit=sum(item.reason == "artifact-limit" for item in skipped),
+        skipped_file_limit=0,
+        skipped_cuda_candidates=skipped,
     )
 
 
@@ -818,11 +852,32 @@ class ImageInspectionTests(unittest.TestCase):
             self.assertEqual(
                 _cuda_exception_assessment(path, "runtime-artifact"),
                 (
-                    "CUDA math libraries",
+                    "CUDA Toolkit libraries",
                     "likely-runtime-compatibility-gap",
                     "no-compatible-target",
                 ),
             )
+        self.assertEqual(
+            _cuda_exception_assessment(
+                "/opt/pytorch/ao/torchao/_C_cutlass_90a.abi3.so",
+                "runtime-artifact",
+                targets=("sm_90a",),
+            ),
+            (
+                "PyTorch extensions",
+                "optional-alternate-gpu-implementation",
+                "alternate-architecture-only",
+            ),
+        )
+        # sm_90a code in a module whose name does not declare it stays a normal review item.
+        self.assertEqual(
+            _cuda_exception_assessment(
+                "/opt/project/custom_attention.so",
+                "runtime-artifact",
+                targets=("sm_90a",),
+            )[1],
+            "runtime-relevance-not-statically-established",
+        )
         self.assertEqual(
             _cuda_exception_assessment(
                 "/opt/flashinfer_jit_cache/jit_cache/example_sm90/example_sm90.so",
@@ -1418,6 +1473,102 @@ class ImageInspectionTests(unittest.TestCase):
         self.assertIn("unsupported manifest format", str(error))
         self.assertIn("<raw bytes omitted>", str(error))
         self.assertLess(len(str(error)), 200)
+
+    def test_toolkit_release_comes_from_path_then_wheel_then_image(self) -> None:
+        self.assertEqual(
+            _toolkit_release(
+                "/usr/local/cuda-12.3/targets/x86_64-linux/lib/libcufftw.so.11.0.12.1", ()
+            ),
+            "12.3",
+        )
+        self.assertEqual(
+            _toolkit_release(
+                "/opt/venv/lib/python3.12/site-packages/nvidia/cu13/lib/libcufft.so.12",
+                ("13.3", "13.3.0"),
+            ),
+            "13.3",
+        )
+        self.assertEqual(_toolkit_release("/usr/lib/libnppc.so.12", ("12.8", "12.8.0.038")), "12.8")
+        self.assertIsNone(_toolkit_release("/usr/lib/libnppc.so.12", ("12.8", "13.0")))
+
+    def test_toolkit_libraries_are_judged_by_cuda_release(self) -> None:
+        path = "/usr/local/cuda-12.3/targets/x86_64-linux/lib/libcufftw.so.11.0.12.1"
+        self.assertEqual(
+            _cuda_exception_assessment(
+                path,
+                "runtime-artifact",
+                toolkit_release="12.3",
+                minimum_cuda_version="11.8",
+            ),
+            (
+                "CUDA Toolkit libraries",
+                "vendor-library-supported-by-release",
+                "toolkit-release-supports-target",
+            ),
+        )
+        self.assertEqual(
+            _cuda_exception_assessment(
+                path,
+                "runtime-artifact",
+                toolkit_release="12.3",
+                minimum_cuda_version="12.9",
+            ),
+            (
+                "CUDA Toolkit libraries",
+                "likely-runtime-compatibility-gap",
+                "toolkit-release-predates-target",
+            ),
+        )
+
+    def test_cufft_placeholder_cubin_does_not_require_review_on_a_supported_release(self) -> None:
+        # AWS DLC PyTorch 2.13 base image: cuobjdump lists only one sm_75 cubin in cuFFT,
+        # whose kernels live in a vendor-packaged section.
+        rootfs = rootfs_with(
+            (
+                CudaArtifactEvidence(
+                    path="/opt/venv/lib/python3.12/site-packages/nvidia/cu13/lib/libcufft.so.12",
+                    size_bytes=273 * 1024 * 1024,
+                    targets=("sm_75",),
+                    method="cuobjdump",
+                    complete=True,
+                    role="runtime",
+                ),
+                CudaArtifactEvidence(
+                    path="/opt/venv/lib/python3.12/site-packages/torch/lib/libtorch_cuda.so",
+                    size_bytes=448 * 1024 * 1024,
+                    targets=("compute_120", "sm_100", "sm_103", "sm_90"),
+                    method="cuobjdump",
+                    complete=True,
+                    role="runtime",
+                ),
+            )
+        )
+        profile = self.profiles["b300"]
+        exceptions = _cuda_compatibility_exceptions(
+            rootfs,
+            profile,
+            platform="linux/amd64",
+            analyzer_matches_image=True,
+            image_cuda_versions=("13.3", "13.3.0"),
+        )
+        self.assertEqual([item["status_effect"] for item in exceptions], ["informational"])
+        findings = {
+            finding.id: finding
+            for finding in _cuda_artifact_findings(
+                rootfs,
+                profile,
+                ("13.3", "13.3.0"),
+                max_scan_bytes=1024,
+                max_cuobjdump_files=None,
+                max_artifact_bytes=1024,
+                cuobjdump_timeout_seconds=30,
+            )
+        }
+        self.assertNotIn("GPF-CUDA-016", findings)
+        self.assertIn("CUDA 13.3", findings["GPF-CUDA-020"].evidence)
+        # cuFFT is accounted for by release, so the remaining unit is fully compatible.
+        self.assertIn("GPF-CUDA-009", findings)
+        self.assertNotIn("GPF-CUDA-010", findings)
 
 
 if __name__ == "__main__":

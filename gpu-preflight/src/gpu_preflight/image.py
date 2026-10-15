@@ -1164,6 +1164,73 @@ def _cuobjdump_is_older(
     return (analyzer, newest_image) if analyzer < newest_image else None
 
 
+# CUDA Toolkit libraries are versioned with the toolkit release and support every GPU that
+# release supports. Several of them keep kernels where cuobjdump cannot list them (cuFFT keeps
+# most in a vendor-packaged .ldata section; cuFFTW and NPP core libraries carry one placeholder
+# cubin), so the release, not the cuobjdump listing, decides their compatibility.
+CUDA_TOOLKIT_LIBRARY_PREFIXES = (
+    "libcublas",
+    "libcufft",
+    "libcurand",
+    "libcusolver",
+    "libcusparse",
+    "libnpp",
+    "libnvblas",
+    "libnvjpeg",
+)
+
+
+def _is_cuda_toolkit_library(path: str) -> bool:
+    return PurePosixPath(path.lower()).name.startswith(CUDA_TOOLKIT_LIBRARY_PREFIXES)
+
+
+def _toolkit_release(path: str, image_cuda_versions: tuple[str, ...]) -> str | None:
+    """Return the CUDA major.minor release that shipped a toolkit library, when knowable.
+
+    Uses the versioned toolkit directory (``/usr/local/cuda-12.8/...``) first, then the
+    CUDA-major wheel layout (``site-packages/nvidia/cu13/lib``) matched against the image's
+    CUDA versions, then the image's CUDA version when it is unambiguous.
+    """
+    if match := re.search(r"/cuda-(\d+\.\d+)/", path):
+        return match.group(1)
+    releases = {release for version in image_cuda_versions if (release := _major_minor(version))}
+    if match := re.search(r"/nvidia/cu(\d+)/", path):
+        major = int(match.group(1))
+        same_major = sorted(release for release in releases if release[0] == major)
+        return f"{same_major[-1][0]}.{same_major[-1][1]}" if same_major else f"{major}.0"
+    if len(releases) == 1:
+        release = next(iter(releases))
+        return f"{release[0]}.{release[1]}"
+    return None
+
+
+def _toolkit_release_supports(
+    path: str,
+    profile: HardwareProfile,
+    image_cuda_versions: tuple[str, ...],
+) -> bool:
+    """Return whether a CUDA Toolkit library ships with a release that supports the GPU."""
+    if not _is_cuda_toolkit_library(path) or not profile.minimum_cuda_version:
+        return False
+    release = _toolkit_release(path, image_cuda_versions)
+    return bool(release) and _major_minor(release) >= _major_minor(profile.minimum_cuda_version)
+
+
+def _declares_other_architecture_only(path: str, targets: tuple[str, ...]) -> bool:
+    """Return whether a module holds only architecture-specific code its file name declares.
+
+    For example torchao's ``_C_cutlass_90a.abi3.so`` carries only ``sm_90a`` cubins: it is a
+    Hopper-only alternate implementation, the same pattern as FlashInfer's ``_sm90`` modules.
+    """
+    if not targets or not all(target.endswith("a") for target in targets):
+        return False
+    basename = PurePosixPath(path.lower()).name
+    numbers = {re.sub(r"\D", "", target) for target in targets}
+    return any(
+        re.search(rf"(?:^|[_.-])(?:sm_?)?{number}a(?:[_.-]|$)", basename) for number in numbers
+    )
+
+
 def _cuda_exception_component(path: str) -> str:
     """Return a stable, customer-facing component name from an image path."""
     normalized = path.lower()
@@ -1177,19 +1244,8 @@ def _cuda_exception_component(path: str) -> str:
         return "SGLang kernels"
     if "xformers" in normalized:
         return "XFormers"
-    if any(
-        marker in normalized
-        for marker in (
-            "cublas",
-            "cufft",
-            "curand",
-            "cusolver",
-            "cusparse",
-            "cutlass",
-            "libnpp",
-        )
-    ):
-        return "CUDA math libraries"
+    if _is_cuda_toolkit_library(path):
+        return "CUDA Toolkit libraries"
     if "nccl" in normalized or "nvshmem" in normalized:
         return "NVIDIA communication libraries"
     if "torch" in normalized:
@@ -1199,9 +1255,31 @@ def _cuda_exception_component(path: str) -> str:
     return "Other CUDA extensions"
 
 
-def _cuda_exception_assessment(path: str, kind: str) -> tuple[str, str, str]:
+def _cuda_exception_assessment(
+    path: str,
+    kind: str,
+    *,
+    toolkit_release: str | None = None,
+    minimum_cuda_version: str | None = None,
+    targets: tuple[str, ...] = (),
+) -> tuple[str, str, str]:
     """Classify an unresolved unit without claiming that the workload loads it."""
     component = _cuda_exception_component(path)
+    if kind == "runtime-artifact" and _declares_other_architecture_only(path, targets):
+        return component, "optional-alternate-gpu-implementation", "alternate-architecture-only"
+    if (
+        component == "CUDA Toolkit libraries"
+        and kind == "runtime-artifact"
+        and toolkit_release
+        and minimum_cuda_version
+    ):
+        if _major_minor(toolkit_release) >= _major_minor(minimum_cuda_version):
+            return (
+                component,
+                "vendor-library-supported-by-release",
+                "toolkit-release-supports-target",
+            )
+        return component, "likely-runtime-compatibility-gap", "toolkit-release-predates-target"
     if kind == "architecture-module-group":
         return (
             component,
@@ -1226,7 +1304,7 @@ def _cuda_exception_assessment(path: str, kind: str) -> tuple[str, str, str]:
             "alternate-architecture-only",
         )
     if component in {
-        "CUDA math libraries",
+        "CUDA Toolkit libraries",
         "HPC-X HCOLL",
         "NVIDIA communication libraries",
     }:
@@ -1247,6 +1325,13 @@ def _cuda_exception_reason_summary(reason: str) -> str:
             "Kernel catalog has no target-compatible member or PTX/JIT fallback"
         ),
         "no-compatible-target": "Inspected binary has no compatible embedded CUDA target",
+        "toolkit-release-supports-target": (
+            "Shipped with a CUDA release that supports this GPU; NVIDIA packages these kernels "
+            "in ways cuobjdump does not fully list"
+        ),
+        "toolkit-release-predates-target": (
+            "Shipped with a CUDA release older than this GPU's minimum supported release"
+        ),
         "alternate-architecture-only": (
             "Architecture-specific implementation has no identified compatible sibling or "
             "PTX/JIT fallback"
@@ -1321,6 +1406,7 @@ def _cuda_compatibility_exceptions(
     *,
     platform: str,
     analyzer_matches_image: bool,
+    image_cuda_versions: tuple[str, ...] = (),
 ) -> list[dict[str, object]]:
     """Return every verified runtime unit lacking a compatible target."""
     if not analyzer_matches_image:
@@ -1377,7 +1463,11 @@ def _cuda_compatibility_exceptions(
         result = summarize_compatibility(artifact.targets, target)
         if not result or not result.compatible:
             component, classification, reason = _cuda_exception_assessment(
-                artifact.path, "runtime-artifact"
+                artifact.path,
+                "runtime-artifact",
+                toolkit_release=_toolkit_release(artifact.path, image_cuda_versions),
+                minimum_cuda_version=profile.minimum_cuda_version,
+                targets=artifact.targets,
             )
             exceptions.append(
                 {
@@ -1393,7 +1483,11 @@ def _cuda_compatibility_exceptions(
                     "classification": classification,
                     "reason": reason,
                     "reason_summary": _cuda_exception_reason_summary(reason),
-                    "status_effect": "review-required",
+                    "status_effect": (
+                        "informational"
+                        if classification == "vendor-library-supported-by-release"
+                        else "review-required"
+                    ),
                     "has_compatible_sibling": False,
                     "has_jit_fallback": False,
                 }
@@ -1460,6 +1554,9 @@ def _cuda_artifact_findings(
             if result and result.compatible:
                 if artifact.role == "runtime":
                     compatible_runtime.append(artifact)
+            elif _toolkit_release_supports(artifact.path, profile, image_cuda_versions):
+                # Assessed by CUDA release in GPF-CUDA-020, not by its cuobjdump listing.
+                continue
             elif artifact.role == "runtime":
                 incompatible_runtime.append(artifact)
             else:
@@ -1482,8 +1579,16 @@ def _cuda_artifact_findings(
             ):
                 incompatible_catalogs.append(catalog)
 
+    release_assessed = {
+        artifact.path
+        for artifact in inspected_with_targets
+        if _toolkit_release_supports(artifact.path, profile, image_cuda_versions)
+    }
     inspected_runtime_with_targets = tuple(
-        artifact for artifact in inspected_with_targets if artifact.role == "runtime"
+        artifact
+        for artifact in inspected_with_targets
+        if artifact.role == "runtime"
+        and (artifact.path not in release_assessed or artifact in compatible_runtime)
     )
 
     precompiled_catalogs = [
@@ -1512,11 +1617,48 @@ def _cuda_artifact_findings(
         profile,
         platform="",
         analyzer_matches_image=not bool(analyzer_mismatch),
+        image_cuda_versions=image_cuda_versions,
     )
     review_exceptions = [
         item for item in compatibility_exceptions if item["status_effect"] == "review-required"
     ]
     exception_groups = _cuda_compatibility_exception_groups(review_exceptions)
+
+    toolkit_by_release = [
+        item
+        for item in compatibility_exceptions
+        if item["classification"] == "vendor-library-supported-by-release"
+    ]
+    if toolkit_by_release:
+        releases = {
+            str(item["path"]): _toolkit_release(str(item["path"]), image_cuda_versions) or "unknown"
+            for item in toolkit_by_release
+        }
+        findings.append(
+            Finding(
+                id="GPF-CUDA-020",
+                severity="info",
+                category="compatibility",
+                title="CUDA Toolkit libraries were assessed by CUDA release",
+                evidence=(
+                    f"{len(toolkit_by_release)} CUDA Toolkit library file(s) list no compatible "
+                    f"target with cuobjdump but ship with CUDA "
+                    f"{', '.join(sorted(set(releases.values())))}, which meets the "
+                    f"{profile.display_name} minimum of CUDA {profile.minimum_cuda_version}. "
+                    "NVIDIA packages kernels for these libraries in ways cuobjdump does not fully "
+                    "list (for example cuFFT's vendor-packaged section and single placeholder "
+                    "cubins in cuFFTW and NPP core libraries)."
+                ),
+                remediation=(
+                    "No image change is needed for these libraries. Exercise them in the hardware "
+                    "test plan if the workload uses them."
+                ),
+                details=tuple(
+                    FindingDetail(label=path, value=f"CUDA {release}")
+                    for path, release in sorted(releases.items())[:8]
+                ),
+            )
+        )
 
     if compatible_inspection_units and not incompatible_inspection_units:
         findings.append(
@@ -2337,6 +2479,7 @@ def inspect_with_image(
                         profile,
                         platform=content.platform,
                         analyzer_matches_image=analyzer_matches_image,
+                        image_cuda_versions=content.cuda_versions,
                     )
                 )
                 rootfs_statistics[selected.platform] = {

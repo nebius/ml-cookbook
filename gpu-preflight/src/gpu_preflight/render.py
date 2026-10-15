@@ -36,6 +36,7 @@ EXCEPTION_CLASSIFICATION_LABEL = {
     "runtime-relevance-not-statically-established": (
         "Runtime relevance not statically established"
     ),
+    "vendor-library-supported-by-release": "Supported by its CUDA release (informational)",
 }
 
 HARDWARE_CHECK_GUIDANCE = {

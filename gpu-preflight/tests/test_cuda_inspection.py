@@ -49,6 +49,14 @@ class CudaInspectionTests(unittest.TestCase):
         )
         self.assertEqual(targets, ("compute_103", "sm_103a", "sm_90"))
 
+    def test_profiler_injection_libraries_are_tooling(self) -> None:
+        self.assertEqual(
+            classify_artifact_role(
+                "/usr/local/cuda-12.3/targets/x86_64-linux/lib/libaccinj64.so.12.3.101"
+            ),
+            "tooling",
+        )
+
     def test_analyzer_error_is_retried_with_fallback_cuobjdump(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             primary = Path(directory) / "cuobjdump-13.4"

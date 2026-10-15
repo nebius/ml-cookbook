@@ -200,7 +200,9 @@ def classify_artifact_role(image_path: str) -> str:
             "/compute-sanitizer/",
             "/nvvm/",
         )
-    ):
+    ) or basename.startswith(("libaccinj", "libcuinj")):
+        # libaccinj64/libcuinj64 are CUDA Toolkit profiler-injection libraries; they carry a
+        # single placeholder cubin and are only loaded by profiling tools.
         return "tooling"
     if (
         "/compat/" in normalized
