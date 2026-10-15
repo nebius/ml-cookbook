@@ -460,8 +460,8 @@ class ImageInspectionTests(unittest.TestCase):
                 "#!/bin/sh\n"
                 'if [ "$1" = "--version" ]; then '
                 "echo 'Cuda compilation tools, release 13.0, V13.0.88'; exit 0; fi\n"
-                "echo 'ELF file 1: kernel.sm_103.cubin'\n"
-                "echo 'PTX file 1: kernel.compute_103.ptx'\n",
+                "echo 'ELF file    1: kernel.1.sm_103.cubin'\n"
+                "echo 'PTX file    1: kernel.1.sm_103.ptx'\n",
                 encoding="utf-8",
             )
             executable.chmod(0o755)
@@ -646,9 +646,15 @@ class ImageInspectionTests(unittest.TestCase):
 
             root = "usr/local/lib/python3.12/dist-packages/flashinfer_jit_cache/jit_cache"
             members = {
-                f"{root}/batch_prefill_x/batch_prefill_x.so": b"ELF sm_103a.cubin",
-                f"{root}/batch_prefill_x_sm90/batch_prefill_x_sm90.so": b"ELF sm_90.cubin",
-                f"{root}/selective_state_update/selective_state_update.so": (b"ELF sm_80.cubin"),
+                f"{root}/batch_prefill_x/batch_prefill_x.so": (
+                    b"ELF file    1: batch_prefill_x.1.sm_103a.cubin\n"
+                ),
+                f"{root}/batch_prefill_x_sm90/batch_prefill_x_sm90.so": (
+                    b"ELF file    1: batch_prefill_x_sm90.1.sm_90.cubin\n"
+                ),
+                f"{root}/selective_state_update/selective_state_update.so": (
+                    b"ELF file    1: selective_state_update.1.sm_80.cubin\n"
+                ),
             }
             stream = io.BytesIO()
             with tarfile.open(fileobj=stream, mode="w") as archive:

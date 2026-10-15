@@ -14,6 +14,17 @@ CUDA_TARGET_TEXT_RE = re.compile(
     r"(?P<suffix>[af]?)(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
+# cuobjdump --list-elf/--list-ptx prints one line per embedded image, for example
+# "ELF file    1: libx.1.sm_90a.cubin" or "PTX file    1: libx.1.sm_90.ptx". The target is
+# the final ".sm_<NN>[a|f].<ext>" component; the rest of the name echoes the input filename.
+CUOBJDUMP_LISTING_RE = re.compile(
+    r"^\s*(?P<kind>ELF|PTX) file\s+\d+:\s*(?P<name>.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+CUOBJDUMP_LISTING_TARGET_RE = re.compile(
+    r"\.sm_(?P<number>\d{2,3})(?P<suffix>[af]?)\.(?:cubin|ptx)$",
+    re.IGNORECASE,
+)
 FLASHINFER_JIT_CACHE_MARKER = "/flashinfer_jit_cache/jit_cache/"
 FLASHINFER_SM_SELECTOR_RE = re.compile(
     r"_sm(?P<number>75|80|86|87|89|90|100|101|103|107|110|120|121)"
@@ -82,7 +93,7 @@ class CuobjdumpTool:
             )
 
         output = f"{result.stdout}\n{result.stderr}".replace(str(path), image_path)
-        targets = cuda_targets_from_text(output)
+        targets = cuda_targets_from_listing(output)
         if result.returncode and "does not contain device code" in output.lower():
             return CudaArtifactEvidence(
                 path=image_path,
@@ -115,8 +126,25 @@ class CuobjdumpTool:
         )
 
 
+def cuda_targets_from_listing(text: str) -> tuple[str, ...]:
+    """Normalize the targets in ``cuobjdump --list-elf --list-ptx`` output.
+
+    ELF entries are cubins and keep their ``sm_<NN>`` name. PTX entries are virtual
+    architecture code that the driver can JIT on the same or a newer GPU, so they map to
+    ``compute_<NN>`` even though cuobjdump spells the file name with ``sm_<NN>``.
+    """
+    targets: set[str] = set()
+    for line in CUOBJDUMP_LISTING_RE.finditer(text):
+        target = CUOBJDUMP_LISTING_TARGET_RE.search(line.group("name"))
+        if not target:
+            continue
+        kind = "compute" if line.group("kind").upper() == "PTX" else "sm"
+        targets.add(f"{kind}_{int(target.group('number'))}{target.group('suffix').lower()}")
+    return tuple(sorted(targets))
+
+
 def cuda_targets_from_text(text: str) -> tuple[str, ...]:
-    """Normalize CUDA targets printed by cuobjdump."""
+    """Normalize CUDA target names that appear in free text such as file paths."""
     return tuple(
         sorted(
             {

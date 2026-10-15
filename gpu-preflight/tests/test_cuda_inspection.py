@@ -7,6 +7,7 @@ from pathlib import Path
 from gpu_preflight.cuda_inspection import (
     CuobjdumpTool,
     classify_artifact_role,
+    cuda_targets_from_listing,
     cuda_targets_from_text,
     kernel_catalog_declared_targets,
     kernel_catalog_group,
@@ -16,9 +17,35 @@ from gpu_preflight.cuda_inspection import (
 
 
 class CudaInspectionTests(unittest.TestCase):
-    def test_parses_cuobjdump_target_names(self) -> None:
+    def test_parses_cuobjdump_listing_and_maps_ptx_to_compute_targets(self) -> None:
+        # Verbatim `cuobjdump --list-elf --list-ptx` output for HPC-X hcoll's
+        # hmca_gpu_cuda.so in nvcr.io/nvidia/pytorch:26.09-py3 (CUDA 13.4.92).
+        listing = (
+            "ELF file    1: hcoll_2609.1.sm_80.cubin\n"
+            "PTX file    1: hcoll_2609.1.sm_80.ptx\n"
+            "ELF file    2: hcoll_2609.2.sm_90.cubin\n"
+            "PTX file    2: hcoll_2609.2.sm_90.ptx\n"
+        )
+        self.assertEqual(
+            cuda_targets_from_listing(listing),
+            ("compute_80", "compute_90", "sm_80", "sm_90"),
+        )
+
+    def test_listing_parser_reads_suffixes_and_ignores_input_names_and_info_lines(self) -> None:
+        listing = (
+            "ELF file    1: fp4_quantization_sm100.1.sm_103a.cubin\n"
+            "ELF file    2: fp4_quantization_sm100.2.sm_100f.cubin\n"
+            "PTX file    1: fp4_quantization_sm100.1.sm_100a.ptx\n"
+            "cuobjdump info    : No PTX file found to extract from 'libcufft.so.12'.\n"
+        )
+        self.assertEqual(
+            cuda_targets_from_listing(listing),
+            ("compute_100a", "sm_100f", "sm_103a"),
+        )
+
+    def test_path_target_parser_still_reads_declared_names(self) -> None:
         targets = cuda_targets_from_text(
-            "ELF file sm_090.cubin; ELF file sm_103a.cubin; PTX compute_103.ptx"
+            "/opt/kernels/sm_090.cubin /opt/kernels/sm_103a.cubin /opt/compute_103.ptx"
         )
         self.assertEqual(targets, ("compute_103", "sm_103a", "sm_90"))
 
