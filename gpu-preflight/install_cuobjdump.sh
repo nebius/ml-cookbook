@@ -3,16 +3,22 @@
 set -Eeuo pipefail
 
 readonly CUDA_KEYRING_VERSION="${CUDA_KEYRING_VERSION:-1.1-1}"
+readonly CUDA_CUOBJDUMP_FALLBACK_PACKAGE="${CUDA_CUOBJDUMP_FALLBACK_PACKAGE:-cuda-cuobjdump-13-0}"
 
 usage() {
   cat <<'EOF'
-Install the newest NVIDIA cuda-cuobjdump package available for this host.
+Install the newest NVIDIA cuda-cuobjdump package available for this host, plus the
+CUDA 13.0 cuobjdump that GPU Preflight retries when the newest one rejects an older
+fat binary ("Invalid ELF" from cuobjdump 13.1+ on some CUDA 12.x libraries).
 
 Usage:
   ./install_cuobjdump.sh
 
 Optional environment variables:
   CUDA_CUOBJDUMP_PACKAGE  Pin a package, for example cuda-cuobjdump-13-4.
+  CUDA_CUOBJDUMP_FALLBACK_PACKAGE
+                          Fallback analyzer package (default: cuda-cuobjdump-13-0;
+                          set to "none" to skip it).
   CUDA_REPO_DISTRO        Override repository distribution, for example ubuntu2404.
   CUDA_REPO_ARCH          Override repository architecture: x86_64 or sbsa.
   CUDA_KEYRING_VERSION    Override the NVIDIA keyring package version.
@@ -102,6 +108,20 @@ fi
 echo "Installing ${cuobjdump_package}"
 "${sudo_command[@]}" apt-get install -y "${cuobjdump_package}"
 
+fallback_package=""
+if [[ "${CUDA_CUOBJDUMP_FALLBACK_PACKAGE}" != "none" \
+  && "${CUDA_CUOBJDUMP_FALLBACK_PACKAGE}" != "${cuobjdump_package}" ]]; then
+  [[ "${CUDA_CUOBJDUMP_FALLBACK_PACKAGE}" =~ ^cuda-cuobjdump-[0-9]+-[0-9]+$ ]] \
+    || fail "CUDA_CUOBJDUMP_FALLBACK_PACKAGE must look like cuda-cuobjdump-13-0 or be none"
+  if apt-cache show "${CUDA_CUOBJDUMP_FALLBACK_PACKAGE}" >/dev/null 2>&1; then
+    echo "Installing fallback analyzer ${CUDA_CUOBJDUMP_FALLBACK_PACKAGE}"
+    "${sudo_command[@]}" apt-get install -y "${CUDA_CUOBJDUMP_FALLBACK_PACKAGE}"
+    fallback_package="${CUDA_CUOBJDUMP_FALLBACK_PACKAGE}"
+  else
+    echo "Fallback analyzer ${CUDA_CUOBJDUMP_FALLBACK_PACKAGE} is not in this repository; skipping." >&2
+  fi
+fi
+
 cuobjdump_path="$({
   dpkg-query -L "${cuobjdump_package}" \
     | grep -E '/bin/cuobjdump$' \
@@ -134,6 +154,10 @@ echo "Installed analyzer:"
 echo
 echo "Executable: ${cuobjdump_path}"
 echo "Package: ${cuobjdump_package}"
+if [[ -n "${fallback_package}" ]]; then
+  fallback_path="$(dpkg-query -L "${fallback_package}" | grep -E '/bin/cuobjdump$' | head -n 1 || true)"
+  echo "Fallback analyzer: ${fallback_path:-not found} (${fallback_package})"
+fi
 if [[ -L "${command_link}" ]]; then
   echo "Command link: ${command_link} -> $(readlink "${command_link}")"
 fi

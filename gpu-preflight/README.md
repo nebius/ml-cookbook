@@ -12,7 +12,7 @@ Run GPU Preflight from a Linux VM with:
 - Python 3.11 or newer
 - the Docker CLI and an accessible Docker daemon
 - Docker registry access to pull the image
-- NVIDIA `cuobjdump` from the same CUDA Toolkit release as the newest image being inspected, or a newer compatible release. An older `cuobjdump` can fail to decode newer fat-binary formats and GPU targets, producing incomplete or misleading evidence.
+- NVIDIA `cuobjdump` from the same CUDA Toolkit release as the newest image being inspected, or a newer compatible release. An older `cuobjdump` can fail to decode newer fat-binary formats and GPU targets, producing incomplete or misleading evidence. Newer is not always safe either: `cuobjdump` 13.4 reports `Invalid ELF` on some CUDA 12.x libraries (for example cuBLAS 12.3 and HPC-X UCC) and lists only part of them. The installer therefore also installs `cuobjdump` 13.0, and GPU Preflight retries any analyzer error with `/usr/local/cuda-13.0/bin/cuobjdump` (`--cuobjdump-fallback`).
 
 ### Install `cuobjdump` on Ubuntu or Debian
 
@@ -27,7 +27,7 @@ The script:
 
 - detects the Ubuntu or Debian release and maps AMD64 to NVIDIA's `x86_64` repository or Arm64 to its `sbsa` repository
 - configures NVIDIA's official CUDA network repository
-- discovers and installs only the newest available versioned `cuda-cuobjdump` package
+- discovers and installs the newest available versioned `cuda-cuobjdump` package, plus `cuda-cuobjdump-13-0` as the fallback analyzer (`CUDA_CUOBJDUMP_FALLBACK_PACKAGE=none` skips it)
 - creates `/usr/local/bin/cuobjdump` without replacing an existing regular file
 - prints the resolved package, executable path, and analyzer version
 
@@ -181,6 +181,7 @@ Report terms:
 - **unverified target strings**: a bounded raw-byte scan found target-like strings, but `cuobjdump` did not verify them as device-code records. Treat these as discovery hints.
 - **role-excluded**: path heuristics classified the file as a test, benchmark, tool, sample, or host-side CUDA runtime component rather than a loadable workload artifact.
 - **incomplete inspection**: `cuobjdump` timed out, returned an analyzer error, encountered an I/O error, or did not otherwise complete. The report aggregates those reasons and retains example paths and diagnostics.
+- **CUDA Toolkit libraries** (cuBLAS, cuFFT, cuRAND, cuSOLVER, cuSPARSE, NPP, nvJPEG): judged by the CUDA release that shipped them rather than by the `cuobjdump` listing, because NVIDIA packages several of them in ways `cuobjdump` does not fully list (cuFFT keeps most kernels in a vendor-packaged section; cuFFTW and the NPP core library carry one placeholder cubin). A library from a release at or above the profile's minimum CUDA version is informational (GPF-CUDA-020); an older release remains a likely runtime gap.
 - **kernel catalog member**: a standalone cubin below an explicit `cubins` dispatch tree. Members sharing a catalog directory and declared target are treated as selectable shape-specific alternatives.
 - **architecture-variant module group**: multiple shared-library modules in a recognized runtime cache that represent selectable builds of the same operation family for different GPU targets. GPU Preflight currently applies this conservative rule to FlashInfer's `flashinfer_jit_cache` layout and requires at least two variants before grouping.
 
@@ -192,9 +193,10 @@ An artifact present in an image may never be loaded by a particular workload. A 
 
 ## Resource limits
 
-- `--max-scan-mb` limits candidate-file content read during the filesystem scan; it does not limit the image download or rootfs stream. Default: 2048 MiB.
-- `--max-artifact-mb` limits one file passed to `cuobjdump`. Default: 768 MiB.
-- `--max-cuobjdump-files` bounds the number of `cuobjdump` invocations. Default: 256.
+- `--max-scan-mb` limits candidate-file content read during the filesystem scan; it does not limit the image download or rootfs stream. Default: 16384 MiB.
+- `--max-artifact-mb` limits one file passed to `cuobjdump`. Default: 2048 MiB, which covers PyTorch's `libtorch_cuda.so` (about 1.3–1.4 GiB in NGC 24.01–25.01).
+- `--max-cuobjdump-files` bounds the number of `cuobjdump` invocations. Default: 1024.
+- Core framework libraries (PyTorch CUDA, NCCL, FlashAttention, Transformer Engine) are always inspected: they do not count against `--max-scan-mb` or `--max-cuobjdump-files`, only against `--max-artifact-mb` and the timeout. If one cannot be inspected, the report names it (GPF-CUDA-019) and the result cannot be ready for hardware testing.
 - `--exhaustive` removes only the `cuobjdump` file-count cap. Candidate-byte, per-artifact-size, per-invocation-timeout, and Docker-command safeguards remain active.
 - `--cuobjdump-timeout` bounds each artifact analysis. Default: 30 seconds.
 - `--command-timeout` bounds individual Docker metadata and pull commands. Default: 3600 seconds.

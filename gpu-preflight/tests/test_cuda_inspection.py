@@ -7,7 +7,9 @@ from pathlib import Path
 from gpu_preflight.cuda_inspection import (
     CuobjdumpTool,
     classify_artifact_role,
+    cuda_targets_from_listing,
     cuda_targets_from_text,
+    is_core_framework_library,
     kernel_catalog_declared_targets,
     kernel_catalog_group,
     kernel_catalog_kind,
@@ -16,11 +18,118 @@ from gpu_preflight.cuda_inspection import (
 
 
 class CudaInspectionTests(unittest.TestCase):
-    def test_parses_cuobjdump_target_names(self) -> None:
+    def test_parses_cuobjdump_listing_and_maps_ptx_to_compute_targets(self) -> None:
+        # Verbatim `cuobjdump --list-elf --list-ptx` output for HPC-X hcoll's
+        # hmca_gpu_cuda.so in nvcr.io/nvidia/pytorch:26.09-py3 (CUDA 13.4.92).
+        listing = (
+            "ELF file    1: hcoll_2609.1.sm_80.cubin\n"
+            "PTX file    1: hcoll_2609.1.sm_80.ptx\n"
+            "ELF file    2: hcoll_2609.2.sm_90.cubin\n"
+            "PTX file    2: hcoll_2609.2.sm_90.ptx\n"
+        )
+        self.assertEqual(
+            cuda_targets_from_listing(listing),
+            ("compute_80", "compute_90", "sm_80", "sm_90"),
+        )
+
+    def test_listing_parser_reads_suffixes_and_ignores_input_names_and_info_lines(self) -> None:
+        listing = (
+            "ELF file    1: fp4_quantization_sm100.1.sm_103a.cubin\n"
+            "ELF file    2: fp4_quantization_sm100.2.sm_100f.cubin\n"
+            "PTX file    1: fp4_quantization_sm100.1.sm_100a.ptx\n"
+            "cuobjdump info    : No PTX file found to extract from 'libcufft.so.12'.\n"
+        )
+        self.assertEqual(
+            cuda_targets_from_listing(listing),
+            ("compute_100a", "sm_100f", "sm_103a"),
+        )
+
+    def test_path_target_parser_still_reads_declared_names(self) -> None:
         targets = cuda_targets_from_text(
-            "ELF file sm_090.cubin; ELF file sm_103a.cubin; PTX compute_103.ptx"
+            "/opt/kernels/sm_090.cubin /opt/kernels/sm_103a.cubin /opt/compute_103.ptx"
         )
         self.assertEqual(targets, ("compute_103", "sm_103a", "sm_90"))
+
+    def test_core_framework_libraries_are_recognized(self) -> None:
+        for path in (
+            "/usr/local/lib/python3.12/dist-packages/torch/lib/libtorch_cuda.so",
+            "/usr/local/lib/python3.12/dist-packages/torch/lib/libtorch_cuda_linalg.so",
+            "/usr/lib/x86_64-linux-gnu/libnccl.so.2.31.2",
+            "/usr/local/lib/python3.12/dist-packages/flash_attn_2_cuda.cpython-312-x86_64-linux-gnu.so",
+            "/opt/venv/lib/python3.12/site-packages/transformer_engine/wheel_lib/libtransformer_engine.so",
+        ):
+            self.assertTrue(is_core_framework_library(path), path)
+        for path in (
+            "/opt/amazon/ofi-nccl/lib64/libnccl-net.so",
+            "/usr/local/cuda-13.4/targets/x86_64-linux/lib/libcublasLt.so.13",
+            "/opt/pytorch/ao/torchao/_C_cutlass_90a.abi3.so",
+        ):
+            self.assertFalse(is_core_framework_library(path), path)
+
+    def test_profiler_injection_libraries_are_tooling(self) -> None:
+        self.assertEqual(
+            classify_artifact_role(
+                "/usr/local/cuda-12.3/targets/x86_64-linux/lib/libaccinj64.so.12.3.101"
+            ),
+            "tooling",
+        )
+
+    def test_analyzer_error_is_retried_with_fallback_cuobjdump(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            primary = Path(directory) / "cuobjdump-13.4"
+            primary.write_text(
+                "#!/bin/sh\n"
+                "echo 'ELF file    1: libcublas.1.sm_50.cubin'\n"
+                "echo \"cuobjdump fatal   : Invalid ELF in 'libcublas.so.12.3.4.1'\" >&2\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            fallback = Path(directory) / "cuobjdump-13.0"
+            fallback.write_text(
+                "#!/bin/sh\n"
+                "echo 'ELF file    1: libcublas.1.sm_50.cubin'\n"
+                "echo 'ELF file    2: libcublas.2.sm_90.cubin'\n"
+                "echo 'PTX file    1: libcublas.1.sm_90.ptx'\n",
+                encoding="utf-8",
+            )
+            primary.chmod(0o755)
+            fallback.chmod(0o755)
+            artifact = Path(directory) / "libcublas.so"
+            artifact.write_bytes(b"payload")
+            tool = CuobjdumpTool(
+                str(primary),
+                "CUDA 13.4 (V13.4.92)",
+                timeout_seconds=2,
+                fallback=CuobjdumpTool(str(fallback), "CUDA 13.0 (V13.0.88)", timeout_seconds=2),
+            )
+            evidence = tool.inspect(artifact, "/usr/lib/libcublas.so", len(b"payload"))
+            self.assertTrue(evidence.complete)
+            self.assertEqual(evidence.targets, ("compute_90", "sm_50", "sm_90"))
+            self.assertIn("Invalid ELF", evidence.diagnostic or "")
+            self.assertIn("fallback cuobjdump CUDA 13.0", evidence.diagnostic or "")
+
+    def test_fallback_is_attached_only_when_it_differs_from_the_primary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scripts = {}
+            for name, release in (("primary", "13.4"), ("fallback", "13.0")):
+                path = Path(directory) / name
+                path.write_text(
+                    f"#!/bin/sh\necho 'Cuda compilation tools, release {release}, V{release}.1'\n",
+                    encoding="utf-8",
+                )
+                path.chmod(0o755)
+                scripts[name] = str(path)
+            tool = resolve_cuobjdump(scripts["primary"], 2, fallback_mode=scripts["fallback"])
+            self.assertIsNotNone(tool)
+            assert tool is not None
+            self.assertIsNotNone(tool.fallback)
+            self.assertEqual(
+                tool.fallback.version if tool.fallback else None, "CUDA 13.0 (V13.0.1)"
+            )
+            same = resolve_cuobjdump(scripts["primary"], 2, fallback_mode=scripts["primary"])
+            self.assertIsNone(same.fallback if same else None)
+            off = resolve_cuobjdump(scripts["primary"], 2, fallback_mode="off")
+            self.assertIsNone(off.fallback if off else None)
 
     def test_artifact_role_distinguishes_test_data_from_runtime_library(self) -> None:
         self.assertEqual(classify_artifact_role("/opt/project/tests/kernel.cubin"), "test")

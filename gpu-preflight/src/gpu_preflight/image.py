@@ -25,6 +25,8 @@ from gpu_preflight.cuda_inspection import (
     CudaArtifactEvidence,
     CuobjdumpTool,
     classify_artifact_role,
+    is_core_framework_library,
+    is_required_runtime_library,
     kernel_catalog_declared_targets,
     kernel_catalog_group,
     kernel_catalog_kind,
@@ -57,6 +59,10 @@ CUDA_TARGET_BYTES_RE = re.compile(
 PACKAGE_METADATA_NAMES = {"METADATA", "PKG-INFO"}
 BINARY_SUFFIXES = (".a", ".bin", ".cubin", ".fatbin", ".ptx", ".so")
 VERSIONED_SO_RE = re.compile(r"\.so(?:\.\d+)*$", re.IGNORECASE)
+DEFAULT_MAX_SCAN_BYTES = 16384 * 1024 * 1024
+DEFAULT_MAX_CUOBJDUMP_FILES = 1024
+DEFAULT_MAX_ARTIFACT_BYTES = 2048 * 1024 * 1024
+SKIPPED_CANDIDATE_RECORD_LIMIT = 200
 METADATA_SCAN_LIMIT_BYTES = 64 * 1024 * 1024
 METADATA_FILE_LIMIT_BYTES = 8 * 1024 * 1024
 BINARY_FILE_LIMIT_BYTES = 64 * 1024 * 1024
@@ -258,15 +264,36 @@ def parse_manifest_output(reference: str, text: str) -> ImageManifestSet:
 
 
 def _docker_error(arguments: tuple[str, ...], stderr: str) -> ImageInspectionError:
-    detail = _redact_sensitive_diagnostic(" ".join(stderr.strip().split()))[-1500:]
-    detail = detail or "no diagnostic was returned"
+    detail = _redact_sensitive_diagnostic(" ".join(stderr.strip().split()))
+    # Docker prints rejected manifests as Go byte slices ("[123 10 32 32 ...]"); a long run
+    # of byte values carries no diagnostic value and would otherwise fill the whole message.
+    detail = re.sub(r"(?:\b\d{1,3}\b[ ,]+){32,}\d{1,3}\b", "<raw bytes omitted>", detail)
+    detail = detail[-1500:] or "no diagnostic was returned"
     operation = " ".join(arguments[:3])
     return ImageInspectionError(f"docker {operation} failed: {detail}")
 
 
-def _exact_reference(reference: str, digest: str) -> str:
+def _repository(reference: str) -> str:
+    """Return the repository part of ``name[:tag][@digest]``, keeping registry ports."""
     name = reference.rsplit("@", maxsplit=1)[0]
-    return f"{name}@{digest}" if digest else reference
+    registry, slash, last = name.rpartition("/")
+    return f"{registry}{slash}{last.split(':', maxsplit=1)[0]}"
+
+
+def _digest_reference(reference: str) -> str:
+    """Return ``name@digest`` for ``name:tag@digest``; other references are unchanged.
+
+    The digest alone identifies the content. Docker rejects ``manifest inspect`` of a
+    tag-plus-digest reference that resolves to a single-platform manifest ("unsupported
+    manifest format"), while ``name@digest`` works for both single- and multi-platform images.
+    """
+    if "@" not in reference:
+        return reference
+    return f"{_repository(reference)}@{reference.rsplit('@', maxsplit=1)[1]}"
+
+
+def _exact_reference(reference: str, digest: str) -> str:
+    return f"{_repository(reference)}@{digest}" if digest else _digest_reference(reference)
 
 
 def _environment(items: object) -> dict[str, str]:
@@ -475,8 +502,8 @@ def scan_rootfs_tar(
     max_scan_bytes: int,
     *,
     cuobjdump: CuobjdumpTool | None = None,
-    max_cuobjdump_files: int | None = 256,
-    max_artifact_bytes: int = 768 * 1024 * 1024,
+    max_cuobjdump_files: int | None = DEFAULT_MAX_CUOBJDUMP_FILES,
+    max_artifact_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
     progress: Callable[[int, int, int], None] | None = None,
 ) -> RootfsScan:
     """Inspect a merged rootfs tar stream without extracting it."""
@@ -611,6 +638,9 @@ def scan_rootfs_tar(
                     allowance = max_scan_bytes - bytes_scanned
                     artifact: CudaArtifactEvidence | None = None
                     skip_reason: str | None = None
+                    # The rootfs is a single tar stream, so files cannot be reordered; core
+                    # framework libraries instead bypass the shared budget and file cap.
+                    core_library = artifact_role == "runtime" and is_core_framework_library(name)
                     if cuobjdump is None:
                         skip_reason = "no-cuobjdump"
                         skipped_no_cuobjdump += 1
@@ -621,19 +651,23 @@ def scan_rootfs_tar(
                         skip_reason = "artifact-limit"
                         skipped_artifact_limit += 1
                     elif (
-                        max_cuobjdump_files is not None
+                        not core_library
+                        and max_cuobjdump_files is not None
                         and cuobjdump_files_analyzed >= max_cuobjdump_files
                     ):
                         skip_reason = "file-limit"
                         skipped_file_limit += 1
-                    elif allowance <= 0 or member.size > allowance:
+                    elif not core_library and (allowance <= 0 or member.size > allowance):
                         skip_reason = "scan-budget"
                         skipped_scan_budget += 1
                     if (
                         skip_reason
                         and skip_reason != "non-runtime"
                         and artifact_role in {"runtime", "kernel-catalog"}
-                        and len(skipped_cuda_candidates) < 200
+                        and (
+                            core_library
+                            or len(skipped_cuda_candidates) < SKIPPED_CANDIDATE_RECORD_LIMIT
+                        )
                     ):
                         skipped_cuda_candidates.append(
                             SkippedCudaCandidate(
@@ -643,7 +677,7 @@ def scan_rootfs_tar(
                             )
                         )
                     planned_cuobjdump = cuobjdump is not None and skip_reason is None
-                    if allowance <= 0:
+                    if allowance <= 0 and not planned_cuobjdump:
                         truncated = True
                         continue
                     temporary_path: Path | None = None
@@ -895,12 +929,17 @@ class DockerImageClient:
         command_timeout_seconds: int = 3600,
         cuobjdump_mode: str = "auto",
         cuobjdump_timeout_seconds: int = 30,
-        max_cuobjdump_files: int | None = 256,
-        max_artifact_bytes: int = 768 * 1024 * 1024,
+        max_cuobjdump_files: int | None = DEFAULT_MAX_CUOBJDUMP_FILES,
+        max_artifact_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
+        cuobjdump_fallback_mode: str = "auto",
     ) -> None:
         self.docker_binary = shutil.which("docker")
         self.command_timeout_seconds = command_timeout_seconds
-        self.cuobjdump = resolve_cuobjdump(cuobjdump_mode, cuobjdump_timeout_seconds)
+        self.cuobjdump = resolve_cuobjdump(
+            cuobjdump_mode,
+            cuobjdump_timeout_seconds,
+            cuobjdump_fallback_mode,
+        )
         self.max_cuobjdump_files = max_cuobjdump_files
         self.max_artifact_bytes = max_artifact_bytes
 
@@ -947,7 +986,7 @@ class DockerImageClient:
         return result.stdout
 
     def inspect_manifest(self, reference: str) -> ImageManifestSet:
-        output = self._run(("manifest", "inspect", "--verbose", reference))
+        output = self._run(("manifest", "inspect", "--verbose", _digest_reference(reference)))
         return parse_manifest_output(reference, output)
 
     def pull_config(
@@ -1138,6 +1177,73 @@ def _cuobjdump_is_older(
     return (analyzer, newest_image) if analyzer < newest_image else None
 
 
+# CUDA Toolkit libraries are versioned with the toolkit release and support every GPU that
+# release supports. Several of them keep kernels where cuobjdump cannot list them (cuFFT keeps
+# most in a vendor-packaged .ldata section; cuFFTW and NPP core libraries carry one placeholder
+# cubin), so the release, not the cuobjdump listing, decides their compatibility.
+CUDA_TOOLKIT_LIBRARY_PREFIXES = (
+    "libcublas",
+    "libcufft",
+    "libcurand",
+    "libcusolver",
+    "libcusparse",
+    "libnpp",
+    "libnvblas",
+    "libnvjpeg",
+)
+
+
+def _is_cuda_toolkit_library(path: str) -> bool:
+    return PurePosixPath(path.lower()).name.startswith(CUDA_TOOLKIT_LIBRARY_PREFIXES)
+
+
+def _toolkit_release(path: str, image_cuda_versions: tuple[str, ...]) -> str | None:
+    """Return the CUDA major.minor release that shipped a toolkit library, when knowable.
+
+    Uses the versioned toolkit directory (``/usr/local/cuda-12.8/...``) first, then the
+    CUDA-major wheel layout (``site-packages/nvidia/cu13/lib``) matched against the image's
+    CUDA versions, then the image's CUDA version when it is unambiguous.
+    """
+    if match := re.search(r"/cuda-(\d+\.\d+)/", path):
+        return match.group(1)
+    releases = {release for version in image_cuda_versions if (release := _major_minor(version))}
+    if match := re.search(r"/nvidia/cu(\d+)/", path):
+        major = int(match.group(1))
+        same_major = sorted(release for release in releases if release[0] == major)
+        return f"{same_major[-1][0]}.{same_major[-1][1]}" if same_major else f"{major}.0"
+    if len(releases) == 1:
+        release = next(iter(releases))
+        return f"{release[0]}.{release[1]}"
+    return None
+
+
+def _toolkit_release_supports(
+    path: str,
+    profile: HardwareProfile,
+    image_cuda_versions: tuple[str, ...],
+) -> bool:
+    """Return whether a CUDA Toolkit library ships with a release that supports the GPU."""
+    if not _is_cuda_toolkit_library(path) or not profile.minimum_cuda_version:
+        return False
+    release = _toolkit_release(path, image_cuda_versions)
+    return bool(release) and _major_minor(release) >= _major_minor(profile.minimum_cuda_version)
+
+
+def _declares_other_architecture_only(path: str, targets: tuple[str, ...]) -> bool:
+    """Return whether a module holds only architecture-specific code its file name declares.
+
+    For example torchao's ``_C_cutlass_90a.abi3.so`` carries only ``sm_90a`` cubins: it is a
+    Hopper-only alternate implementation, the same pattern as FlashInfer's ``_sm90`` modules.
+    """
+    if not targets or not all(target.endswith("a") for target in targets):
+        return False
+    basename = PurePosixPath(path.lower()).name
+    numbers = {re.sub(r"\D", "", target) for target in targets}
+    return any(
+        re.search(rf"(?:^|[_.-])(?:sm_?)?{number}a(?:[_.-]|$)", basename) for number in numbers
+    )
+
+
 def _cuda_exception_component(path: str) -> str:
     """Return a stable, customer-facing component name from an image path."""
     normalized = path.lower()
@@ -1151,19 +1257,8 @@ def _cuda_exception_component(path: str) -> str:
         return "SGLang kernels"
     if "xformers" in normalized:
         return "XFormers"
-    if any(
-        marker in normalized
-        for marker in (
-            "cublas",
-            "cufft",
-            "curand",
-            "cusolver",
-            "cusparse",
-            "cutlass",
-            "libnpp",
-        )
-    ):
-        return "CUDA math libraries"
+    if _is_cuda_toolkit_library(path):
+        return "CUDA Toolkit libraries"
     if "nccl" in normalized or "nvshmem" in normalized:
         return "NVIDIA communication libraries"
     if "torch" in normalized:
@@ -1173,9 +1268,31 @@ def _cuda_exception_component(path: str) -> str:
     return "Other CUDA extensions"
 
 
-def _cuda_exception_assessment(path: str, kind: str) -> tuple[str, str, str]:
+def _cuda_exception_assessment(
+    path: str,
+    kind: str,
+    *,
+    toolkit_release: str | None = None,
+    minimum_cuda_version: str | None = None,
+    targets: tuple[str, ...] = (),
+) -> tuple[str, str, str]:
     """Classify an unresolved unit without claiming that the workload loads it."""
     component = _cuda_exception_component(path)
+    if kind == "runtime-artifact" and _declares_other_architecture_only(path, targets):
+        return component, "optional-alternate-gpu-implementation", "alternate-architecture-only"
+    if (
+        component == "CUDA Toolkit libraries"
+        and kind == "runtime-artifact"
+        and toolkit_release
+        and minimum_cuda_version
+    ):
+        if _major_minor(toolkit_release) >= _major_minor(minimum_cuda_version):
+            return (
+                component,
+                "vendor-library-supported-by-release",
+                "toolkit-release-supports-target",
+            )
+        return component, "likely-runtime-compatibility-gap", "toolkit-release-predates-target"
     if kind == "architecture-module-group":
         return (
             component,
@@ -1200,7 +1317,7 @@ def _cuda_exception_assessment(path: str, kind: str) -> tuple[str, str, str]:
             "alternate-architecture-only",
         )
     if component in {
-        "CUDA math libraries",
+        "CUDA Toolkit libraries",
         "HPC-X HCOLL",
         "NVIDIA communication libraries",
     }:
@@ -1221,6 +1338,13 @@ def _cuda_exception_reason_summary(reason: str) -> str:
             "Kernel catalog has no target-compatible member or PTX/JIT fallback"
         ),
         "no-compatible-target": "Inspected binary has no compatible embedded CUDA target",
+        "toolkit-release-supports-target": (
+            "Shipped with a CUDA release that supports this GPU; NVIDIA packages these kernels "
+            "in ways cuobjdump does not fully list"
+        ),
+        "toolkit-release-predates-target": (
+            "Shipped with a CUDA release older than this GPU's minimum supported release"
+        ),
         "alternate-architecture-only": (
             "Architecture-specific implementation has no identified compatible sibling or "
             "PTX/JIT fallback"
@@ -1295,6 +1419,7 @@ def _cuda_compatibility_exceptions(
     *,
     platform: str,
     analyzer_matches_image: bool,
+    image_cuda_versions: tuple[str, ...] = (),
 ) -> list[dict[str, object]]:
     """Return every verified runtime unit lacking a compatible target."""
     if not analyzer_matches_image:
@@ -1351,7 +1476,11 @@ def _cuda_compatibility_exceptions(
         result = summarize_compatibility(artifact.targets, target)
         if not result or not result.compatible:
             component, classification, reason = _cuda_exception_assessment(
-                artifact.path, "runtime-artifact"
+                artifact.path,
+                "runtime-artifact",
+                toolkit_release=_toolkit_release(artifact.path, image_cuda_versions),
+                minimum_cuda_version=profile.minimum_cuda_version,
+                targets=artifact.targets,
             )
             exceptions.append(
                 {
@@ -1367,7 +1496,11 @@ def _cuda_compatibility_exceptions(
                     "classification": classification,
                     "reason": reason,
                     "reason_summary": _cuda_exception_reason_summary(reason),
-                    "status_effect": "review-required",
+                    "status_effect": (
+                        "informational"
+                        if classification == "vendor-library-supported-by-release"
+                        else "review-required"
+                    ),
                     "has_compatible_sibling": False,
                     "has_jit_fallback": False,
                 }
@@ -1434,6 +1567,9 @@ def _cuda_artifact_findings(
             if result and result.compatible:
                 if artifact.role == "runtime":
                     compatible_runtime.append(artifact)
+            elif _toolkit_release_supports(artifact.path, profile, image_cuda_versions):
+                # Assessed by CUDA release in GPF-CUDA-020, not by its cuobjdump listing.
+                continue
             elif artifact.role == "runtime":
                 incompatible_runtime.append(artifact)
             else:
@@ -1456,8 +1592,16 @@ def _cuda_artifact_findings(
             ):
                 incompatible_catalogs.append(catalog)
 
+    release_assessed = {
+        artifact.path
+        for artifact in inspected_with_targets
+        if _toolkit_release_supports(artifact.path, profile, image_cuda_versions)
+    }
     inspected_runtime_with_targets = tuple(
-        artifact for artifact in inspected_with_targets if artifact.role == "runtime"
+        artifact
+        for artifact in inspected_with_targets
+        if artifact.role == "runtime"
+        and (artifact.path not in release_assessed or artifact in compatible_runtime)
     )
 
     precompiled_catalogs = [
@@ -1486,11 +1630,116 @@ def _cuda_artifact_findings(
         profile,
         platform="",
         analyzer_matches_image=not bool(analyzer_mismatch),
+        image_cuda_versions=image_cuda_versions,
     )
     review_exceptions = [
         item for item in compatibility_exceptions if item["status_effect"] == "review-required"
     ]
     exception_groups = _cuda_compatibility_exception_groups(review_exceptions)
+
+    toolkit_by_release = [
+        item
+        for item in compatibility_exceptions
+        if item["classification"] == "vendor-library-supported-by-release"
+    ]
+    if toolkit_by_release:
+        releases = {
+            str(item["path"]): _toolkit_release(str(item["path"]), image_cuda_versions) or "unknown"
+            for item in toolkit_by_release
+        }
+        findings.append(
+            Finding(
+                id="GPF-CUDA-020",
+                severity="info",
+                category="compatibility",
+                title="CUDA Toolkit libraries were assessed by CUDA release",
+                evidence=(
+                    f"{len(toolkit_by_release)} CUDA Toolkit library file(s) list no compatible "
+                    f"target with cuobjdump but ship with CUDA "
+                    f"{', '.join(sorted(set(releases.values())))}, which meets the "
+                    f"{profile.display_name} minimum of CUDA {profile.minimum_cuda_version}. "
+                    "NVIDIA packages kernels for these libraries in ways cuobjdump does not fully "
+                    "list (for example cuFFT's vendor-packaged section and single placeholder "
+                    "cubins in cuFFTW and NPP core libraries)."
+                ),
+                remediation=(
+                    "No image change is needed for these libraries. Exercise them in the hardware "
+                    "test plan if the workload uses them."
+                ),
+                details=tuple(
+                    FindingDetail(label=path, value=f"CUDA {release}")
+                    for path, release in sorted(releases.items())[:8]
+                ),
+            )
+        )
+    required_without_code = [
+        artifact for artifact in incompatible_runtime if is_required_runtime_library(artifact.path)
+    ]
+    if required_without_code:
+        findings.append(
+            Finding(
+                id="GPF-CUDA-021",
+                severity="blocker",
+                category="compatibility",
+                title="A library every GPU job loads has no code for this GPU",
+                evidence=(
+                    "cuobjdump listed every embedded target in "
+                    + "; ".join(
+                        f"{artifact.path} ({', '.join(artifact.targets)})"
+                        for artifact in required_without_code
+                    )
+                    + f". None is a cubin or PTX that runs on sm_{profile.compute_capability_number}. "
+                    "PyTorch loads libtorch_cuda and libc10_cuda for any GPU work, and multi-GPU "
+                    "jobs load NCCL for every collective."
+                ),
+                remediation=(
+                    f"Use a framework and NCCL release built for "
+                    f"{', '.join(profile.native_sm_targets)}, or one that retains PTX the driver "
+                    "can compile for this GPU."
+                ),
+            )
+        )
+    uninspected_core = [
+        (candidate.path, candidate.size_bytes, f"not inspected: {candidate.reason}")
+        for candidate in rootfs.skipped_cuda_candidates
+        if is_core_framework_library(candidate.path)
+    ] + [
+        (
+            artifact.path,
+            artifact.size_bytes,
+            f"incomplete: {artifact.diagnostic or artifact.incomplete_reason or 'analyzer error'}",
+        )
+        for artifact in rootfs.cuda_artifacts
+        if artifact.method == "cuobjdump"
+        and not artifact.complete
+        and is_core_framework_library(artifact.path)
+    ]
+    if uninspected_core:
+        findings.append(
+            Finding(
+                id="GPF-CUDA-019",
+                severity="info",
+                category="evidence",
+                title="Core framework libraries were not inspected",
+                evidence=(
+                    f"{len(uninspected_core)} framework library file(s) that GPU jobs normally "
+                    "load (PyTorch CUDA, NCCL, FlashAttention, Transformer Engine) have no "
+                    "cuobjdump target listing, so the image cannot be assessed as ready."
+                ),
+                remediation=(
+                    "Raise --max-artifact-mb above the largest listed size or resolve the named "
+                    "analyzer error, then repeat the scan."
+                ),
+                details=tuple(
+                    FindingDetail(
+                        label=path,
+                        value=f"{size / (1024**2):.0f} MiB",
+                        context=reason,
+                    )
+                    for path, size, reason in uninspected_core[:8]
+                ),
+            )
+        )
 
     if compatible_inspection_units and not incompatible_inspection_units:
         findings.append(
@@ -2052,11 +2301,12 @@ def inspect_with_image(
     facts: ImageFacts,
     profiles: tuple[HardwareProfile, ...],
     scan_mode: str = "filesystem",
-    max_scan_bytes: int = 2048 * 1024 * 1024,
+    max_scan_bytes: int = DEFAULT_MAX_SCAN_BYTES,
     cuobjdump_mode: str = "auto",
     cuobjdump_timeout_seconds: int = 30,
-    max_cuobjdump_files: int | None = 256,
-    max_artifact_bytes: int = 768 * 1024 * 1024,
+    cuobjdump_fallback_mode: str = "auto",
+    max_cuobjdump_files: int | None = DEFAULT_MAX_CUOBJDUMP_FILES,
+    max_artifact_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
     command_timeout_seconds: int = 3600,
     client: DockerImageClient | None = None,
 ) -> InspectionReport:
@@ -2069,6 +2319,7 @@ def inspect_with_image(
         "max_artifact_bytes": max_artifact_bytes,
         "max_cuobjdump_files": max_cuobjdump_files,
         "cuobjdump_mode": cuobjdump_mode,
+        "cuobjdump_fallback_mode": cuobjdump_fallback_mode,
         "cuobjdump_timeout_seconds": cuobjdump_timeout_seconds,
         "command_timeout_seconds": command_timeout_seconds,
     }
@@ -2110,11 +2361,15 @@ def inspect_with_image(
             cuobjdump_timeout_seconds=cuobjdump_timeout_seconds,
             max_cuobjdump_files=max_cuobjdump_files,
             max_artifact_bytes=max_artifact_bytes,
+            cuobjdump_fallback_mode=cuobjdump_fallback_mode,
         )
         client.preflight(
             require_daemon=scan_mode in {"pull", "filesystem"},
             require_cuobjdump=scan_mode == "filesystem",
         )
+    analyzer = getattr(client, "cuobjdump", None)
+    if analyzer is not None and analyzer.fallback is not None:
+        capabilities["cuobjdump_fallback_version"] = analyzer.fallback.version
     manifests = client.inspect_manifest(image_reference)
 
     capabilities["registry_manifest_inspected"] = True
@@ -2305,6 +2560,7 @@ def inspect_with_image(
                         profile,
                         platform=content.platform,
                         analyzer_matches_image=analyzer_matches_image,
+                        image_cuda_versions=content.cuda_versions,
                     )
                 )
                 rootfs_statistics[selected.platform] = {
@@ -2495,10 +2751,11 @@ def inspect_with_image(
         "rootfs_statistics": rootfs_statistics,
         "cuda_target_summaries": cuda_target_summaries,
     }
-    if len(profiles) == 1:
-        selected = _select_manifest(manifests, facts, profiles[0])
-        if selected:
-            observations["final_platform"] = selected.platform
+    selected_platforms = {str(item["platform"]) for item in selected_observations.values()}
+    if len(selected_platforms) == 1:
+        observations["final_platform"] = next(iter(selected_platforms))
+    elif selected_platforms:
+        observations["final_platform"] = ", ".join(sorted(selected_platforms))
     report = replace(base_report, observations=observations, targets=tuple(target_reports))
     return _finish_scan_report(
         report,
@@ -2514,11 +2771,12 @@ def inspect_image_reference(
     profiles: tuple[HardwareProfile, ...],
     platform: str | None = None,
     scan_mode: str = "filesystem",
-    max_scan_bytes: int = 2048 * 1024 * 1024,
+    max_scan_bytes: int = DEFAULT_MAX_SCAN_BYTES,
     cuobjdump_mode: str = "auto",
     cuobjdump_timeout_seconds: int = 30,
-    max_cuobjdump_files: int | None = 256,
-    max_artifact_bytes: int = 768 * 1024 * 1024,
+    cuobjdump_fallback_mode: str = "auto",
+    max_cuobjdump_files: int | None = DEFAULT_MAX_CUOBJDUMP_FILES,
+    max_artifact_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
     command_timeout_seconds: int = 3600,
     client: DockerImageClient | None = None,
 ) -> InspectionReport:
@@ -2545,6 +2803,7 @@ def inspect_image_reference(
         max_scan_bytes=max_scan_bytes,
         cuobjdump_mode=cuobjdump_mode,
         cuobjdump_timeout_seconds=cuobjdump_timeout_seconds,
+        cuobjdump_fallback_mode=cuobjdump_fallback_mode,
         max_cuobjdump_files=max_cuobjdump_files,
         max_artifact_bytes=max_artifact_bytes,
         command_timeout_seconds=command_timeout_seconds,

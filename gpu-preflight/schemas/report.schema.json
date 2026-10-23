@@ -56,6 +56,7 @@
               "description": "Null when --exhaustive removes the cuobjdump file-count cap."
             },
             "cuobjdump_mode": {"type": "string"},
+            "cuobjdump_fallback_mode": {"type": "string"},
             "cuobjdump_timeout_seconds": {"type": "integer", "minimum": 1},
             "command_timeout_seconds": {"type": "integer", "minimum": 1}
           }
@@ -75,7 +76,8 @@
             "image_config_inspected": {"type": "boolean"},
             "filesystem_inspected": {"type": "boolean"},
             "cuobjdump_available": {"type": "boolean"},
-            "cuobjdump_version": {"type": ["string", "null"]}
+            "cuobjdump_version": {"type": ["string", "null"]},
+            "cuobjdump_fallback_version": {"type": ["string", "null"]}
           }
         }
       }
@@ -300,7 +302,8 @@
           "enum": [
             "likely-runtime-compatibility-gap",
             "optional-alternate-gpu-implementation",
-            "runtime-relevance-not-statically-established"
+            "runtime-relevance-not-statically-established",
+            "vendor-library-supported-by-release"
           ]
         },
         "reason": {
@@ -308,7 +311,9 @@
             "no-compatible-target",
             "alternate-architecture-cache-without-compatible-variant",
             "kernel-catalog-without-compatible-member",
-            "alternate-architecture-only"
+            "alternate-architecture-only",
+            "toolkit-release-supports-target",
+            "toolkit-release-predates-target"
           ]
         },
         "reason_summary": {"type": "string"},
@@ -343,7 +348,8 @@
           "enum": [
             "likely-runtime-compatibility-gap",
             "optional-alternate-gpu-implementation",
-            "runtime-relevance-not-statically-established"
+            "runtime-relevance-not-statically-established",
+            "vendor-library-supported-by-release"
           ]
         },
         "reason": {
@@ -351,7 +357,9 @@
             "no-compatible-target",
             "alternate-architecture-cache-without-compatible-variant",
             "kernel-catalog-without-compatible-member",
-            "alternate-architecture-only"
+            "alternate-architecture-only",
+            "toolkit-release-supports-target",
+            "toolkit-release-predates-target"
           ]
         },
         "reason_summary": {"type": "string"},

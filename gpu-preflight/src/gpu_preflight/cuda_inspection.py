@@ -6,12 +6,36 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 CUDA_TARGET_TEXT_RE = re.compile(
     r"(?<![A-Za-z0-9])(?P<kind>sm|compute)[_-]?(?P<number>\d{2,3})"
     r"(?P<suffix>[af]?)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+# cuobjdump --list-elf/--list-ptx prints one line per embedded image, for example
+# "ELF file    1: libx.1.sm_90a.cubin" or "PTX file    1: libx.1.sm_90.ptx". The target is
+# the final ".sm_<NN>[a|f].<ext>" component; the rest of the name echoes the input filename.
+CUOBJDUMP_LISTING_RE = re.compile(
+    r"^\s*(?P<kind>ELF|PTX) file\s+\d+:\s*(?P<name>.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+CUOBJDUMP_LISTING_TARGET_RE = re.compile(
+    r"\.sm_(?P<number>\d{2,3})(?P<suffix>[af]?)\.(?:cubin|ptx)$",
+    re.IGNORECASE,
+)
+# cuobjdump 13.1+ rejects some fat binaries built by CUDA 12.x toolchains with "Invalid ELF"
+# and lists only part of the file. 13.0 lists them completely and still understands CUDA 13
+# targets, so it is the auto-discovered fallback for analyzer errors.
+FALLBACK_CUOBJDUMP_RELEASE = "13.0"
+FALLBACK_CUOBJDUMP_PATH = Path(f"/usr/local/cuda-{FALLBACK_CUOBJDUMP_RELEASE}/bin/cuobjdump")
+# Framework libraries whose kernels a training or inference job loads on every run. They are
+# inspected regardless of the candidate-byte budget and file-count cap (the per-artifact size
+# limit and timeout still apply), and are named in the report when they cannot be inspected.
+CORE_FRAMEWORK_LIBRARY_RE = re.compile(
+    r"/(?:libtorch_cuda[^/]*\.so|libc10_cuda\.so|libnccl\.so(?:\.\d+)*|flash_attn[^/]*\.so"
+    r"|libtransformer_engine[^/]*\.so|transformer_engine[^/]*\.so)$",
     re.IGNORECASE,
 )
 FLASHINFER_JIT_CACHE_MARKER = "/flashinfer_jit_cache/jit_cache/"
@@ -48,6 +72,7 @@ class CuobjdumpTool:
     executable: str
     version: str
     timeout_seconds: int
+    fallback: CuobjdumpTool | None = None
 
     def inspect(self, path: Path, image_path: str, size_bytes: int) -> CudaArtifactEvidence:
         try:
@@ -82,7 +107,7 @@ class CuobjdumpTool:
             )
 
         output = f"{result.stdout}\n{result.stderr}".replace(str(path), image_path)
-        targets = cuda_targets_from_text(output)
+        targets = cuda_targets_from_listing(output)
         if result.returncode and "does not contain device code" in output.lower():
             return CudaArtifactEvidence(
                 path=image_path,
@@ -95,6 +120,16 @@ class CuobjdumpTool:
             )
         if result.returncode:
             detail = " ".join(output.split())[-500:] or f"exit status {result.returncode}"
+            if self.fallback is not None:
+                retried = self.fallback.inspect(path, image_path, size_bytes)
+                if retried.complete:
+                    return replace(
+                        retried,
+                        diagnostic=(
+                            f"cuobjdump {self.version} failed ({detail[-160:]}); listed with "
+                            f"fallback cuobjdump {self.fallback.version}"
+                        ),
+                    )
             return CudaArtifactEvidence(
                 path=image_path,
                 size_bytes=size_bytes,
@@ -115,8 +150,25 @@ class CuobjdumpTool:
         )
 
 
+def cuda_targets_from_listing(text: str) -> tuple[str, ...]:
+    """Normalize the targets in ``cuobjdump --list-elf --list-ptx`` output.
+
+    ELF entries are cubins and keep their ``sm_<NN>`` name. PTX entries are virtual
+    architecture code that the driver can JIT on the same or a newer GPU, so they map to
+    ``compute_<NN>`` even though cuobjdump spells the file name with ``sm_<NN>``.
+    """
+    targets: set[str] = set()
+    for line in CUOBJDUMP_LISTING_RE.finditer(text):
+        target = CUOBJDUMP_LISTING_TARGET_RE.search(line.group("name"))
+        if not target:
+            continue
+        kind = "compute" if line.group("kind").upper() == "PTX" else "sm"
+        targets.add(f"{kind}_{int(target.group('number'))}{target.group('suffix').lower()}")
+    return tuple(sorted(targets))
+
+
 def cuda_targets_from_text(text: str) -> tuple[str, ...]:
-    """Normalize CUDA targets printed by cuobjdump."""
+    """Normalize CUDA target names that appear in free text such as file paths."""
     return tuple(
         sorted(
             {
@@ -126,6 +178,24 @@ def cuda_targets_from_text(text: str) -> tuple[str, ...]:
             }
         )
     )
+
+
+# Every PyTorch GPU job loads these; a multi-GPU job also loads NCCL. If one of them has no
+# code for the target GPU, the image cannot run a GPU training job there.
+REQUIRED_RUNTIME_LIBRARY_RE = re.compile(
+    r"/(?:libtorch_cuda\.so|libc10_cuda\.so|libnccl\.so(?:\.\d+)*)$",
+    re.IGNORECASE,
+)
+
+
+def is_required_runtime_library(image_path: str) -> bool:
+    """Return whether a path is a library that every PyTorch GPU job loads."""
+    return bool(REQUIRED_RUNTIME_LIBRARY_RE.search(f"/{image_path.strip('/')}"))
+
+
+def is_core_framework_library(image_path: str) -> bool:
+    """Return whether a path is a framework library that every GPU job is expected to load."""
+    return bool(CORE_FRAMEWORK_LIBRARY_RE.search(f"/{image_path.strip('/')}"))
 
 
 def classify_artifact_role(image_path: str) -> str:
@@ -156,7 +226,9 @@ def classify_artifact_role(image_path: str) -> str:
             "/compute-sanitizer/",
             "/nvvm/",
         )
-    ):
+    ) or basename.startswith(("libaccinj", "libcuinj")):
+        # libaccinj64/libcuinj64 are CUDA Toolkit profiler-injection libraries; they carry a
+        # single placeholder cubin and are only loaded by profiling tools.
         return "tooling"
     if (
         "/compat/" in normalized
@@ -238,8 +310,17 @@ def _flashinfer_dispatch_module(image_path: str) -> tuple[str, tuple[str, ...]] 
     return group, tuple(sorted(targets))
 
 
-def resolve_cuobjdump(mode: str, timeout_seconds: int) -> CuobjdumpTool | None:
-    """Resolve cuobjdump from PATH, a well-known CUDA path, an explicit path, or off."""
+def resolve_cuobjdump(
+    mode: str,
+    timeout_seconds: int,
+    fallback_mode: str = "auto",
+) -> CuobjdumpTool | None:
+    """Resolve cuobjdump from PATH, a well-known CUDA path, an explicit path, or off.
+
+    ``fallback_mode`` selects a second analyzer that is retried when the primary one
+    reports an error: ``auto`` uses a CUDA 13.0 cuobjdump when one is installed, ``off``
+    disables the retry, and any other value is an explicit executable path.
+    """
     if mode == "off":
         return None
     if timeout_seconds <= 0:
@@ -256,13 +337,38 @@ def resolve_cuobjdump(mode: str, timeout_seconds: int) -> CuobjdumpTool | None:
         if candidate is None:
             return None
     else:
-        explicit = Path(mode).expanduser()
-        if not explicit.is_file():
-            raise ValueError(f"cuobjdump executable not found: {mode}")
-        if not os.access(explicit, os.X_OK):
-            raise ValueError(f"cuobjdump is not executable: {mode}")
-        candidate = str(explicit)
+        candidate = _explicit_executable(mode)
 
+    tool = CuobjdumpTool(candidate, _cuobjdump_version(candidate, timeout_seconds), timeout_seconds)
+    fallback_candidate: str | None = None
+    if fallback_mode == "auto":
+        if FALLBACK_CUOBJDUMP_PATH.is_file() and os.access(FALLBACK_CUOBJDUMP_PATH, os.X_OK):
+            fallback_candidate = str(FALLBACK_CUOBJDUMP_PATH)
+    elif fallback_mode != "off":
+        fallback_candidate = _explicit_executable(fallback_mode)
+    if fallback_candidate is None or os.path.realpath(fallback_candidate) == os.path.realpath(
+        candidate
+    ):
+        return tool
+    fallback_version = _cuobjdump_version(fallback_candidate, timeout_seconds)
+    if fallback_version == tool.version:
+        return tool
+    return replace(
+        tool,
+        fallback=CuobjdumpTool(fallback_candidate, fallback_version, timeout_seconds),
+    )
+
+
+def _explicit_executable(value: str) -> str:
+    explicit = Path(value).expanduser()
+    if not explicit.is_file():
+        raise ValueError(f"cuobjdump executable not found: {value}")
+    if not os.access(explicit, os.X_OK):
+        raise ValueError(f"cuobjdump is not executable: {value}")
+    return str(explicit)
+
+
+def _cuobjdump_version(candidate: str, timeout_seconds: int) -> str:
     version = "unknown"
     try:
         result = subprocess.run(  # noqa: S603 - explicit argv; shell is disabled
@@ -294,4 +400,4 @@ def resolve_cuobjdump(mode: str, timeout_seconds: int) -> CuobjdumpTool | None:
             f"cuobjdump --version failed for {candidate}: "
             f"{detail or f'exit status {result.returncode}'}"
         )
-    return CuobjdumpTool(candidate, version, timeout_seconds)
+    return version

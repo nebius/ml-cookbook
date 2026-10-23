@@ -122,8 +122,11 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-scan-mb",
         type=int,
-        default=2048,
-        help="maximum candidate file content read during a filesystem scan (default: 2048 MiB)",
+        default=16384,
+        help=(
+            "maximum candidate file content read during a filesystem scan (default: 16384 MiB); "
+            "core framework libraries are always read"
+        ),
     )
     parser.add_argument(
         "--cuobjdump",
@@ -132,6 +135,15 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
         help=(
             "CUDA artifact analyzer: auto-discover cuobjdump (default) or provide an executable "
             "path"
+        ),
+    )
+    parser.add_argument(
+        "--cuobjdump-fallback",
+        default="auto",
+        metavar="AUTO|PATH|OFF",
+        help=(
+            "second analyzer retried when cuobjdump reports an error: auto uses "
+            "/usr/local/cuda-13.0/bin/cuobjdump when installed (default), or provide a path"
         ),
     )
     parser.add_argument(
@@ -144,9 +156,12 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-cuobjdump-files",
         type=int,
-        default=256,
+        default=1024,
         metavar="COUNT",
-        help="maximum CUDA candidate files passed to cuobjdump (default: 256)",
+        help=(
+            "maximum CUDA candidate files passed to cuobjdump (default: 1024); core framework "
+            "libraries are not counted against it"
+        ),
     )
     parser.add_argument(
         "--exhaustive",
@@ -159,8 +174,8 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-artifact-mb",
         type=int,
-        default=768,
-        help="maximum size of one file passed to cuobjdump (default: 768 MiB)",
+        default=2048,
+        help="maximum size of one file passed to cuobjdump (default: 2048 MiB)",
     )
     parser.add_argument(
         "--command-timeout",
@@ -278,6 +293,11 @@ def main(argv: list[str] | None = None) -> int:
             "max_scan_bytes": args.max_scan_mb * 1024 * 1024,
             "cuobjdump_mode": "auto" if args.cuobjdump.lower() == "auto" else args.cuobjdump,
             "cuobjdump_timeout_seconds": args.cuobjdump_timeout,
+            "cuobjdump_fallback_mode": (
+                args.cuobjdump_fallback.lower()
+                if args.cuobjdump_fallback.lower() in {"auto", "off"}
+                else args.cuobjdump_fallback
+            ),
             "max_cuobjdump_files": None if args.exhaustive else args.max_cuobjdump_files,
             "max_artifact_bytes": args.max_artifact_mb * 1024 * 1024,
             "command_timeout_seconds": args.command_timeout,
