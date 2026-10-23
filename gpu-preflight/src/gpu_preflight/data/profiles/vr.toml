@@ -1,0 +1,42 @@
+schema_version = 1
+id = "vr"
+aliases = ["vera-rubin", "vr-nvl72", "nvidia-vera-rubin"]
+display_name = "NVIDIA Vera Rubin NVL72"
+maturity = "provisional"
+notes = [
+  "SM107 support is currently documented as developer preview.",
+  "NCCL 2.32.3 adds initial Rubin support but does not include Rubin performance-model tuning.",
+  "Platform requirements and hardware evidence must be updated as Nebius service details stabilize.",
+]
+
+[hardware]
+cpu_architectures = ["arm64"]
+gpu_architecture = "vera-rubin"
+compute_capability = "10.7"
+native_sm_targets = ["sm_107", "sm_107f", "sm_107a"]
+nebius_platforms = ["announced-vr-nvl72"]
+
+[validation]
+minimum_cuda_version = "13.4"
+minimum_nccl_version = "2.32.3"
+runtime_checks = [
+  "arm64-image",
+  "cuda-sm107-runtime",
+  "rack-fabric",
+  "scaleout-network",
+  "gpu-direct-rdma",
+  "framework-smoke",
+  "workload-smoke",
+]
+
+[[sources]]
+title = "NVIDIA Tile IR supported architectures"
+url = "https://docs.nvidia.com/cuda/tile-ir/13.4/sections/stability.html#supported-architectures"
+
+[[sources]]
+title = "NVIDIA CUDA compiler SM107 support"
+url = "https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/"
+
+[[sources]]
+title = "NVIDIA NCCL 2.32.3 release notes (initial Vera Rubin support)"
+url = "https://docs.nvidia.com/deeplearning/nccl/archives/nccl_2323/release-notes/rel_2-32-3.html"

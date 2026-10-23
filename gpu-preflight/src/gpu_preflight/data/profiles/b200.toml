@@ -1,0 +1,36 @@
+schema_version = 1
+id = "b200"
+aliases = ["nvidia-b200", "gpu-b200-sxm"]
+display_name = "NVIDIA B200"
+maturity = "supported"
+notes = ["Datacenter Blackwell uses SM100."]
+
+[hardware]
+cpu_architectures = ["amd64"]
+gpu_architecture = "blackwell"
+compute_capability = "10.0"
+native_sm_targets = ["sm_100", "sm_100f", "sm_100a"]
+nebius_platforms = ["gpu-b200-sxm"]
+
+[validation]
+minimum_cuda_version = "12.8"
+minimum_nccl_version = "2.25.1"
+runtime_checks = [
+  "cuda-runtime",
+  "nccl-intra-node",
+  "nccl-infiniband",
+  "framework-smoke",
+  "workload-smoke",
+]
+
+[[sources]]
+title = "NVIDIA CUDA GPU compute capability"
+url = "https://developer.nvidia.com/cuda/gpus"
+
+[[sources]]
+title = "NVIDIA CUDA 12.8 release notes"
+url = "https://docs.nvidia.com/cuda/archive/12.8.0/cuda-toolkit-release-notes/"
+
+[[sources]]
+title = "NVIDIA NCCL 2.25.1 release notes (Blackwell support)"
+url = "https://docs.nvidia.com/deeplearning/nccl/archives/nccl_2251/release-notes/rel_2-25-1.html"

@@ -1,0 +1,496 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nebius.ai/schemas/gpu-preflight/report-v1.json",
+  "title": "Nebius GPU Preflight Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tool",
+    "generated_at",
+    "duration_seconds",
+    "source",
+    "scan",
+    "disclaimer",
+    "observations",
+    "global_findings",
+    "targets"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"const": "nebius-gpu-preflight"},
+        "version": {"type": "string"}
+      }
+    },
+    "generated_at": {"type": "string", "format": "date-time"},
+    "duration_seconds": {"type": "number", "minimum": 0},
+    "source": {"type": "string"},
+    "scan": {"$ref": "#/$defs/scan"},
+    "disclaimer": {"type": "string"},
+    "observations": {"$ref": "#/$defs/observations"},
+    "global_findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+    "targets": {"type": "array", "items": {"$ref": "#/$defs/target"}}
+  },
+  "$defs": {
+    "scan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "duration_seconds", "settings", "capabilities"],
+      "properties": {
+        "mode": {"enum": ["static", "none", "manifest", "pull", "filesystem"]},
+        "duration_seconds": {"type": "number", "minimum": 0},
+        "settings": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_candidate_bytes": {"type": "integer", "minimum": 1},
+            "max_artifact_bytes": {"type": "integer", "minimum": 1},
+            "max_cuobjdump_files": {
+              "type": ["integer", "null"],
+              "minimum": 1,
+              "description": "Null when --exhaustive removes the cuobjdump file-count cap."
+            },
+            "cuobjdump_mode": {"type": "string"},
+            "cuobjdump_fallback_mode": {"type": "string"},
+            "cuobjdump_timeout_seconds": {"type": "integer", "minimum": 1},
+            "command_timeout_seconds": {"type": "integer", "minimum": 1}
+          }
+        },
+        "capabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "registry_manifest_inspected",
+            "image_config_inspected",
+            "filesystem_inspected",
+            "cuobjdump_available",
+            "cuobjdump_version"
+          ],
+          "properties": {
+            "registry_manifest_inspected": {"type": "boolean"},
+            "image_config_inspected": {"type": "boolean"},
+            "filesystem_inspected": {"type": "boolean"},
+            "cuobjdump_available": {"type": "boolean"},
+            "cuobjdump_version": {"type": ["string", "null"]},
+            "cuobjdump_fallback_version": {"type": ["string", "null"]}
+          }
+        }
+      }
+    },
+    "observations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image_references",
+        "final_platform",
+        "cuda_targets",
+        "cuda_versions",
+        "nccl_versions",
+        "detected_packages",
+        "torch_cuda_arch_list"
+      ],
+      "properties": {
+        "image_references": {"type": "array", "items": {"type": "string"}},
+        "final_platform": {"type": ["string", "null"]},
+        "cuda_targets": {"type": "array", "items": {"type": "string"}},
+        "cuda_versions": {"type": "array", "items": {"type": "string"}},
+        "nccl_versions": {"type": "array", "items": {"type": "string"}},
+        "detected_packages": {"type": "array", "items": {"type": "string"}},
+        "torch_cuda_arch_list": {"type": ["string", "null"]},
+        "image_scan_mode": {"enum": ["manifest", "pull", "filesystem"]},
+        "available_platforms": {"type": "array", "items": {"type": "string"}},
+        "selected_manifests": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/selectedManifest"}
+        },
+        "image_packages": {"type": "array", "items": {"type": "string"}},
+        "installed_packages": {"type": "array", "items": {"type": "string"}},
+        "image_cuda_targets": {"type": "array", "items": {"type": "string"}},
+        "verified_image_cuda_targets": {"type": "array", "items": {"type": "string"}},
+        "unverified_image_cuda_target_strings": {"type": "array", "items": {"type": "string"}},
+        "image_cuda_versions": {"type": "array", "items": {"type": "string"}},
+        "image_nccl_versions": {"type": "array", "items": {"type": "string"}},
+        "nccl_evidence": {"type": "array", "items": {"$ref": "#/$defs/ncclEvidence"}},
+        "cuda_artifacts": {"type": "array", "items": {"$ref": "#/$defs/cudaArtifact"}},
+        "cuda_compatibility_exceptions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/cudaCompatibilityException"}
+        },
+        "cuda_compatibility_exception_groups": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/cudaCompatibilityExceptionGroup"}
+        },
+        "static_analysis_limitations": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "skipped_cuda_candidates": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/skippedCudaCandidate"}
+        },
+        "kernel_catalogs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/kernelCatalog"}
+        },
+        "rootfs_statistics": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/rootfsStatistics"}
+        },
+        "cuda_target_summaries": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/cudaTargetSummary"}
+        }
+      }
+    },
+    "cudaTargetSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verified_target_count",
+        "base_target",
+        "base_target_present",
+        "specialized_targets_present",
+        "specialized_targets_absent"
+      ],
+      "properties": {
+        "verified_target_count": {"type": "integer", "minimum": 0},
+        "base_target": {"type": "string"},
+        "base_target_present": {"type": "boolean"},
+        "specialized_targets_present": {"type": "array", "items": {"type": "string"}},
+        "specialized_targets_absent": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "selectedManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "digest", "compressed_size_bytes"],
+      "properties": {
+        "platform": {"type": "string"},
+        "digest": {"type": "string"},
+        "compressed_size_bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "rootfsStatistics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "files_seen",
+        "candidate_bytes_scanned",
+        "metadata_bytes_scanned",
+        "candidate_scan_truncated",
+        "metadata_scan_truncated",
+        "cuda_candidate_files",
+        "cuobjdump_version",
+        "cuobjdump_files_analyzed",
+        "cuobjdump_targets_found",
+        "cuobjdump_no_device_code",
+        "cuobjdump_incomplete",
+        "cuobjdump_incomplete_reasons",
+        "marker_only_files",
+        "skipped_no_cuobjdump",
+        "skipped_non_runtime",
+        "skipped_scan_budget",
+        "skipped_artifact_limit",
+        "skipped_file_limit"
+      ],
+      "properties": {
+        "files_seen": {"type": "integer", "minimum": 0},
+        "candidate_bytes_scanned": {"type": "integer", "minimum": 0},
+        "metadata_bytes_scanned": {"type": "integer", "minimum": 0},
+        "candidate_scan_truncated": {"type": "boolean"},
+        "metadata_scan_truncated": {"type": "boolean"},
+        "cuda_candidate_files": {"type": "integer", "minimum": 0},
+        "cuobjdump_version": {"type": ["string", "null"]},
+        "cuobjdump_files_analyzed": {"type": "integer", "minimum": 0},
+        "cuobjdump_targets_found": {"type": "integer", "minimum": 0},
+        "cuobjdump_no_device_code": {"type": "integer", "minimum": 0},
+        "cuobjdump_incomplete": {"type": "integer", "minimum": 0},
+        "cuobjdump_incomplete_reasons": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["timeout", "analyzer-error", "io-error", "other"],
+          "properties": {
+            "timeout": {"type": "integer", "minimum": 0},
+            "analyzer-error": {"type": "integer", "minimum": 0},
+            "io-error": {"type": "integer", "minimum": 0},
+            "other": {"type": "integer", "minimum": 0}
+          }
+        },
+        "marker_only_files": {"type": "integer", "minimum": 0},
+        "kernel_catalog_groups": {"type": "integer", "minimum": 0},
+        "kernel_catalog_members": {"type": "integer", "minimum": 0},
+        "kernel_catalog_grouped_members": {"type": "integer", "minimum": 0},
+        "kernel_catalog_target_variants": {"type": "integer", "minimum": 0},
+        "dispatch_module_groups": {"type": "integer", "minimum": 0},
+        "dispatch_module_members": {"type": "integer", "minimum": 0},
+        "dispatch_module_target_variants": {"type": "integer", "minimum": 0},
+        "skipped_no_cuobjdump": {"type": "integer", "minimum": 0},
+        "skipped_non_runtime": {"type": "integer", "minimum": 0},
+        "skipped_scan_budget": {"type": "integer", "minimum": 0},
+        "skipped_artifact_limit": {"type": "integer", "minimum": 0},
+        "skipped_file_limit": {"type": "integer", "minimum": 0}
+      }
+    },
+    "cudaArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "path", "size_bytes", "targets", "method", "complete", "role", "diagnostic", "incomplete_reason"],
+      "properties": {
+        "platform": {"type": "string"},
+        "path": {"type": "string"},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "targets": {"type": "array", "items": {"type": "string"}},
+        "method": {"enum": ["cuobjdump", "marker-scan"]},
+        "complete": {"type": "boolean"},
+        "role": {"enum": ["runtime", "kernel-catalog", "host-runtime", "test", "tooling"]},
+        "diagnostic": {"type": ["string", "null"]},
+        "incomplete_reason": {
+          "enum": ["timeout", "analyzer-error", "io-error", "other", null]
+        }
+      }
+    },
+    "ncclEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "version", "source", "name", "path"],
+      "properties": {
+        "platform": {"type": "string"},
+        "version": {"type": "string"},
+        "source": {
+          "enum": ["image-config", "system-package", "python-package", "conda-package", "header"]
+        },
+        "name": {"type": "string"},
+        "path": {"type": ["string", "null"]}
+      }
+    },
+    "cudaCompatibilityException": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "platform",
+        "kind",
+        "path",
+        "targets",
+        "size_bytes",
+        "member_count",
+        "member_paths",
+        "component",
+        "classification",
+        "reason",
+        "reason_summary",
+        "status_effect",
+        "has_compatible_sibling",
+        "has_jit_fallback"
+      ],
+      "properties": {
+        "target": {"type": "string"},
+        "platform": {"type": "string"},
+        "kind": {"enum": ["runtime-artifact", "kernel-catalog", "architecture-module-group"]},
+        "path": {"type": "string"},
+        "targets": {"type": "array", "items": {"type": "string"}},
+        "size_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "member_count": {"type": ["integer", "null"], "minimum": 1},
+        "member_paths": {"type": "array", "items": {"type": "string"}},
+        "component": {"type": "string"},
+        "classification": {
+          "enum": [
+            "likely-runtime-compatibility-gap",
+            "optional-alternate-gpu-implementation",
+            "runtime-relevance-not-statically-established",
+            "vendor-library-supported-by-release"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "no-compatible-target",
+            "alternate-architecture-cache-without-compatible-variant",
+            "kernel-catalog-without-compatible-member",
+            "alternate-architecture-only",
+            "toolkit-release-supports-target",
+            "toolkit-release-predates-target"
+          ]
+        },
+        "reason_summary": {"type": "string"},
+        "status_effect": {"enum": ["review-required", "informational"]},
+        "has_compatible_sibling": {"type": "boolean"},
+        "has_jit_fallback": {"type": "boolean"}
+      }
+    },
+    "cudaCompatibilityExceptionGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "platform",
+        "component",
+        "classification",
+        "reason",
+        "reason_summary",
+        "status_effect",
+        "exception_count",
+        "file_count",
+        "artifact_count",
+        "catalog_count",
+        "representative_paths",
+        "inventory_reference"
+      ],
+      "properties": {
+        "target": {"type": "string"},
+        "platform": {"type": "string"},
+        "component": {"type": "string"},
+        "classification": {
+          "enum": [
+            "likely-runtime-compatibility-gap",
+            "optional-alternate-gpu-implementation",
+            "runtime-relevance-not-statically-established",
+            "vendor-library-supported-by-release"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "no-compatible-target",
+            "alternate-architecture-cache-without-compatible-variant",
+            "kernel-catalog-without-compatible-member",
+            "alternate-architecture-only",
+            "toolkit-release-supports-target",
+            "toolkit-release-predates-target"
+          ]
+        },
+        "reason_summary": {"type": "string"},
+        "status_effect": {"enum": ["review-required", "informational"]},
+        "exception_count": {"type": "integer", "minimum": 1},
+        "file_count": {"type": "integer", "minimum": 1},
+        "artifact_count": {"type": "integer", "minimum": 0},
+        "catalog_count": {"type": "integer", "minimum": 0},
+        "representative_paths": {"type": "array", "maxItems": 3, "items": {"type": "string"}},
+        "inventory_reference": {"const": "observations.cuda_compatibility_exceptions"}
+      }
+    },
+    "skippedCudaCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "path", "size_bytes", "reason"],
+      "properties": {
+        "platform": {"type": "string"},
+        "path": {"type": "string"},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "reason": {
+          "enum": ["no-cuobjdump", "scan-budget", "artifact-limit", "file-limit"]
+        }
+      }
+    },
+    "kernelCatalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "group",
+        "kind",
+        "member_count",
+        "target_variants",
+        "declared_targets",
+        "samples_inspected",
+        "samples_incomplete",
+        "verified_targets",
+        "member_paths"
+      ],
+      "properties": {
+        "platform": {"type": "string"},
+        "group": {"type": "string"},
+        "kind": {"enum": ["precompiled-cubin", "architecture-module"]},
+        "member_count": {"type": "integer", "minimum": 1},
+        "target_variants": {"type": "integer", "minimum": 1},
+        "declared_targets": {"type": "array", "items": {"type": "string"}},
+        "samples_inspected": {"type": "integer", "minimum": 0},
+        "samples_incomplete": {"type": "integer", "minimum": 0},
+        "verified_targets": {"type": "array", "items": {"type": "string"}},
+        "member_paths": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "severity", "category", "title", "evidence", "remediation", "details"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^GPF-[A-Z]+-[0-9]{3}$"},
+        "severity": {"enum": ["blocker", "warning", "info"]},
+        "category": {
+          "enum": ["compatibility", "reproducibility", "evidence", "hardware-validation", "profile"]
+        },
+        "title": {"type": "string"},
+        "evidence": {"type": "string"},
+        "remediation": {"type": "string"},
+        "details": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/findingDetail"}
+        }
+      }
+    },
+    "findingDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "value", "context"],
+      "properties": {
+        "label": {"type": "string"},
+        "value": {"type": ["string", "integer"]},
+        "context": {"type": ["string", "null"]}
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "display_name",
+        "profile_maturity",
+        "profile_schema_version",
+        "profile_hash",
+        "compatibility_status",
+        "artifact_inspection_coverage_percent",
+        "artifact_inspection_covered_candidates",
+        "artifact_inspection_eligible_candidates",
+        "reproducibility_status",
+        "summary",
+        "passed_checks",
+        "evidence_limitations",
+        "required_hardware_checks",
+        "findings"
+      ],
+      "properties": {
+        "target": {"type": "string"},
+        "display_name": {"type": "string"},
+        "profile_maturity": {"enum": ["supported", "provisional", "deprecated"]},
+        "profile_schema_version": {"type": "integer", "minimum": 1},
+        "profile_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "compatibility_status": {
+          "enum": ["INCOMPATIBLE", "ACTION_REQUIRED", "REVIEW_REQUIRED", "INSUFFICIENT_EVIDENCE", "READY_FOR_HARDWARE_TESTING"]
+        },
+        "artifact_inspection_coverage_percent": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 100
+        },
+        "artifact_inspection_covered_candidates": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "artifact_inspection_eligible_candidates": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "reproducibility_status": {"enum": ["PINNED", "UNPINNED", "UNKNOWN"]},
+        "summary": {"type": "string"},
+        "passed_checks": {"type": "array", "items": {"type": "string"}},
+        "evidence_limitations": {"type": "array", "items": {"type": "string"}},
+        "required_hardware_checks": {"type": "array", "items": {"type": "string"}},
+        "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}}
+      }
+    }
+  }
+}

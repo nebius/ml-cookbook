@@ -1,0 +1,39 @@
+schema_version = 1
+id = "h200"
+aliases = ["nvidia-h200", "gpu-h200-sxm"]
+display_name = "NVIDIA H200"
+maturity = "supported"
+notes = [
+  "H100 and H200 share compute capability 9.0 but remain separate evidence targets.",
+  "The NCCL floor matches NVIDIA's first qualified DGX H200 software stack, not the earlier Hopper architecture-introduction release.",
+]
+
+[hardware]
+cpu_architectures = ["amd64"]
+gpu_architecture = "hopper"
+compute_capability = "9.0"
+native_sm_targets = ["sm_90", "sm_90a"]
+nebius_platforms = ["gpu-h200-sxm"]
+
+[validation]
+minimum_cuda_version = "11.8"
+minimum_nccl_version = "2.22.3"
+runtime_checks = [
+  "cuda-runtime",
+  "nccl-intra-node",
+  "nccl-infiniband",
+  "framework-smoke",
+  "workload-smoke",
+]
+
+[[sources]]
+title = "NVIDIA CUDA GPU compute capability"
+url = "https://developer.nvidia.com/cuda/gpus"
+
+[[sources]]
+title = "NVIDIA CUDA 11.8 release notes"
+url = "https://docs.nvidia.com/cuda/archive/11.8.0/cuda-toolkit-release-notes/"
+
+[[sources]]
+title = "NVIDIA DGX OS 6.3.1 H200-qualified software stack"
+url = "https://docs.nvidia.com/dgx/dgx-os-6-user-guide/release_notes.html"

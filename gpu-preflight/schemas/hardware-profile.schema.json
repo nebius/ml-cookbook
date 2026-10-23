@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nebius.ai/schemas/gpu-preflight/hardware-profile-v1.json",
+  "title": "GPU Preflight Profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "aliases",
+    "display_name",
+    "maturity",
+    "hardware",
+    "validation",
+    "sources"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "aliases": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "display_name": {"type": "string", "minLength": 1},
+    "maturity": {"enum": ["supported", "provisional", "deprecated"]},
+    "notes": {"type": "array", "items": {"type": "string"}},
+    "hardware": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cpu_architectures",
+        "gpu_architecture",
+        "compute_capability",
+        "native_sm_targets",
+        "nebius_platforms"
+      ],
+      "properties": {
+        "cpu_architectures": {"type": "array", "items": {"enum": ["amd64", "arm64"]}},
+        "gpu_architecture": {"type": "string"},
+        "compute_capability": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+        "native_sm_targets": {"type": "array", "items": {"type": "string"}},
+        "nebius_platforms": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime_checks"],
+      "properties": {
+        "minimum_cuda_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)*$"
+        },
+        "minimum_nccl_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)*$"
+        },
+        "runtime_checks": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "url"],
+        "properties": {
+          "title": {"type": "string"},
+          "url": {"type": "string", "format": "uri"}
+        }
+      }
+    }
+  }
+}

@@ -24,6 +24,7 @@ To get started, first choose:
 
 | Goal | Recommended starting point |
 | --- | --- |
+| Assess whether a container stack is ready for Nebius GPU hardware | [`gpu-preflight/`](./gpu-preflight/) |
 | Verify your GPU environment works | [`skypilot/examples/basic-job.yaml`](./skypilot/examples/basic-job.yaml) or [`volcano/nccl-test-pytorch/`](./volcano/nccl-test-pytorch/) |
 | Run a simple distributed training example | [`slurm/hf-accelerate/`](./slurm/hf-accelerate/) |
 | Persist and recover Slurm training checkpoints | [`slurm/object-storage-checkpointing/`](./slurm/object-storage-checkpointing/) |
@@ -75,6 +76,7 @@ Most recipes follow the same high-level flow:
 - [`common/`](./common/) - Shared Kubernetes utilities such as filesystem mounts and model download pods
 - [`agents/tavily/`](./agents/tavily/) - Tavily-based agent recipes for search, extraction, mapping, crawling, and research
 - [`deepep/`](./deepep/) - DeepEP installation and RDMA / NVSHMEM setup guidance
+- [`gpu-preflight/`](./gpu-preflight/) - Local static readiness reports for H100, H200, B200, B300, GB300, and Vera Rubin container stacks
 - [`pytorch-dsv3-mxfp8/`](./pytorch-dsv3-mxfp8/) - DeepSeek-V3 pre-training recipes for large B200 Slurm clusters
 - [`runai/`](./runai/) - Run:ai examples for distributed MPI / NCCL validation
 - [`skypilot/`](./skypilot/) - SkyPilot job examples for training, inference, storage, and migration
@@ -139,6 +141,9 @@ Here’s a sneak peek of the recipes available in this cookbook:
   - Use [`runai/`](./runai/)
   - Use [`skypilot/examples/nccl-test.yaml`](./skypilot/examples/nccl-test.yaml)
   - Use [`volcano/nccl-test-pytorch/`](./volcano/nccl-test-pytorch/)
+
+- **I want to assess a built container image before requesting GPU capacity**
+  - Use [`gpu-preflight/`](./gpu-preflight/)
 
 - **I need shared storage before training**
   - Use [`common/shared-filesystem-mount/`](./common/shared-filesystem-mount/)
