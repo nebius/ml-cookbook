@@ -1,0 +1,42 @@
+# Repo-wide ignores for the ML Cookbook. Recipe directories may add their own
+# .gitignore for artifacts that only that recipe produces.
+
+# --- OS cruft ------------------------------------------------------------- #
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+
+# --- Python --------------------------------------------------------------- #
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.ipynb_checkpoints/
+
+# --- Virtual environments ------------------------------------------------- #
+.venv/
+venv/
+.env/
+.env
+.python-version
+
+# --- Tool caches ---------------------------------------------------------- #
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.uv-cache/
+
+# --- Editors -------------------------------------------------------------- #
+.vscode/
+.idea/
+*.swp
+
+# --- Cluster job output --------------------------------------------------- #
+# Slurm writes these next to the submission directory, which is often a clone
+# of this repo on the shared filesystem.
+slurm-*.out
+slurm-*.err
+logs/
+*.sqsh
