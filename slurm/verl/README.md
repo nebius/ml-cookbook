@@ -8,6 +8,7 @@
 
 - [PPO Multi-node](ppo_multinode.sh): PPO training with FSDP backend on GSM8K ([see details](#ppo-multi-node))
 - [GRPO Multi-node](grpo_multinode.sh): GRPO training with Megatron backend on GSM8K ([see details](#grpo-multi-node))
+- [GRPO Multi-node on GB300](grpo_multinode_gb300.sh): The GRPO Megatron example adapted for 36 GB300 nodes ([see details](#grpo-multi-node-on-gb300))
 - [GRPO Multi-turn Async Multi-node](grpo_multinode_multiturn_async.sh): Async multi-turn GRPO training with SGLang using FSDP on GSM8K ([see details](#grpo-multi-turn-async))
 
 ## Prerequisites
@@ -19,7 +20,7 @@ Before you start, make sure you have:
 
 ## Common Setup
 
-All examples share the same initial steps. SSH to the login node and run the following on the shared filesystem (by default, Soperator has `/` mounted as a shared filesystem).
+The PPO, GRPO Megatron, and multi-turn examples share the initial steps below. The GB300 recipe has a dedicated pinned environment, so follow its [setup section](#grpo-multi-node-on-gb300) instead. Run all setup commands on the shared filesystem (by default, Soperator has `/` mounted as a shared filesystem).
 
 ### Clone VERL repository
 
@@ -207,6 +208,46 @@ The script runs GRPO training on 2 nodes with 8 GPUs each (16 GPUs total). On H1
 (TaskRunner pid=395646)  "'val-aux/num_turns/min': 2, 'val-aux/num_turns/max': 2, "
 (TaskRunner pid=395646)  "'val-aux/num_turns/mean': 2.0}")
 ```
+
+---
+
+## GRPO Multi-node on GB300
+
+This is the same DeepSeek-LLM-7B GRPO Megatron trainer and configuration as [`grpo_multinode.sh`](grpo_multinode.sh), adapted to run across two racks of GB300 nodes: 36 nodes with 4 GPUs per node (144 GPUs total). The changes are limited to the Slurm allocation, CUDA 13 ARM64 environment, GB300 network selection and NCCL settings, and activation of the pinned uv environment.
+
+> [!NOTE]
+> MNNVL and NVLS are not supported by this recipe yet. `NCCL_MNNVL_ENABLE=0` and `NCCL_NVLS_ENABLE=0` are set explicitly in the job script.
+
+### Setup
+
+From a shared working directory that contains the `ml-cookbook` clone, run the setup job once:
+
+```bash
+sbatch ml-cookbook/slurm/verl/setup_gb300.sh
+```
+
+The setup job:
+
+- saves a reusable CUDA 13.0 ARM64/SM103 Enroot image under `artifacts/`
+- checks out the tested VERL revision and installs the vLLM and Megatron environment under `verl/`
+- downloads and converts `deepseek-ai/deepseek-llm-7b-chat` to safetensors under `models/`
+- downloads and preprocesses GSM8K under `data/gsm8k/`
+
+Set `VERL_ROOT` when submitting both jobs if the shared working directory should be somewhere other than the Slurm submission directory. `VERL_BASE_IMAGE`, `VERL_REF`, and `UV_VERSION` can also override the setup defaults.
+
+### Submit the job
+
+Submit the 36-node configuration:
+
+```bash
+sbatch ml-cookbook/slurm/verl/grpo_multinode_gb300.sh
+```
+
+Optionally enable W&B logging by exporting `WANDB_API_KEY` before submitting, as with the original GRPO example.
+
+### Monitor
+
+Check job status with `squeue`. Slurm output is written to `logs/slurm-<jobid>.out` / `logs/slurm-<jobid>.err`, and the driver output is also written to `logs/verl_grpo_gb300_slurm.log`.
 
 ---
 
