@@ -30,6 +30,21 @@ CUOBJDUMP_LISTING_TARGET_RE = re.compile(
 # targets, so it is the auto-discovered fallback for analyzer errors.
 FALLBACK_CUOBJDUMP_RELEASE = "13.0"
 FALLBACK_CUOBJDUMP_PATH = Path(f"/usr/local/cuda-{FALLBACK_CUOBJDUMP_RELEASE}/bin/cuobjdump")
+# cuobjdump writes its listing to stdout and its failure to stderr, so a partial listing
+# can be hundreds of characters of per-image lines before the one line that says why the
+# analysis failed. Those lines also echo the temporary input file's name, which means
+# nothing to a reader of the report.
+ANALYZER_ERROR_RE = re.compile(r"^.*\b(?:fatal|error)\b\s*:.*$", re.IGNORECASE | re.MULTILINE)
+# cuobjdump names each embedded image after its input file, so its output echoes the
+# temporary file's random stem. Left in, it both means nothing to a reader and makes the
+# report differ between runs of the same image.
+TEMPORARY_STEM_RE = re.compile(r"gpu-preflight-[A-Za-z0-9_]+")
+# Every PyTorch GPU job loads these; a multi-GPU job also loads NCCL. If one of them has no
+# code for the target GPU, the image cannot run a GPU training job there.
+REQUIRED_RUNTIME_LIBRARY_RE = re.compile(
+    r"/(?:libtorch_cuda\.so|libc10_cuda\.so|libnccl\.so(?:\.\d+)*)$",
+    re.IGNORECASE,
+)
 # Framework libraries whose kernels a training or inference job loads on every run. They are
 # inspected regardless of the candidate-byte budget and file-count cap (the per-artifact size
 # limit and timeout still apply), and are named in the report when they cannot be inspected.
@@ -119,7 +134,7 @@ class CuobjdumpTool:
                 diagnostic="cuobjdump reported no embedded CUDA device code",
             )
         if result.returncode:
-            detail = " ".join(output.split())[-500:] or f"exit status {result.returncode}"
+            detail = analyzer_error_detail(output, result.returncode)
             if self.fallback is not None:
                 retried = self.fallback.inspect(path, image_path, size_bytes)
                 if retried.complete:
@@ -150,6 +165,21 @@ class CuobjdumpTool:
         )
 
 
+def analyzer_error_detail(output: str, returncode: int) -> str:
+    """Summarize a failed cuobjdump run, leading with the line that explains it."""
+    errors = [" ".join(line.split()) for line in ANALYZER_ERROR_RE.findall(output)]
+    unique: list[str] = []
+    for line in errors:
+        if line and line not in unique:
+            unique.append(line)
+    # The stem is scrubbed over the whole output, before any trimming, so that a
+    # stem spanning the trim boundary is still matched whole.
+    detail = "; ".join(unique) if unique else " ".join(output.split())
+    detail = TEMPORARY_STEM_RE.sub("<artifact>", detail)
+    detail = detail if unique else detail[-500:]
+    return detail[:500] or f"exit status {returncode}"
+
+
 def cuda_targets_from_listing(text: str) -> tuple[str, ...]:
     """Normalize the targets in ``cuobjdump --list-elf --list-ptx`` output.
 
@@ -178,14 +208,6 @@ def cuda_targets_from_text(text: str) -> tuple[str, ...]:
             }
         )
     )
-
-
-# Every PyTorch GPU job loads these; a multi-GPU job also loads NCCL. If one of them has no
-# code for the target GPU, the image cannot run a GPU training job there.
-REQUIRED_RUNTIME_LIBRARY_RE = re.compile(
-    r"/(?:libtorch_cuda\.so|libc10_cuda\.so|libnccl\.so(?:\.\d+)*)$",
-    re.IGNORECASE,
-)
 
 
 def is_required_runtime_library(image_path: str) -> bool:
@@ -249,10 +271,10 @@ def kernel_catalog_group(image_path: str) -> str | None:
     """Group runtime-selected CUDA artifacts shipped in precompiled catalogs.
 
     Framework images can contain tens of thousands of shape-specific cubins below a
-    dispatch catalog.  Those files are alternatives selected by the runtime, not
-    libraries that every workload necessarily loads.  The containing directory is a
-    stable, deliberately conservative grouping boundary; ordinary standalone cubins
-    outside an explicit ``cubins`` tree remain normal runtime artifacts.
+    dispatch catalog. Those files are alternatives selected by the runtime, not
+    libraries that every workload necessarily loads. The containing directory is a
+    stable, narrow grouping boundary; ordinary standalone cubins outside an explicit
+    ``cubins`` tree remain normal runtime artifacts.
 
     FlashInfer also ships architecture-selected modules in ``flashinfer_jit_cache``.
     A generic module and explicitly suffixed variants such as ``_sm90`` are one
@@ -267,7 +289,7 @@ def kernel_catalog_group(image_path: str) -> str | None:
 
 
 def kernel_catalog_kind(image_path: str) -> str | None:
-    """Return the conservative catalog classification for an image artifact."""
+    """Return the catalog classification for an image artifact, or None."""
     normalized = f"/{image_path.lower().strip('/')}"
     if normalized.endswith(".cubin") and "/cubins/" in normalized:
         return "precompiled-cubin"

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -35,13 +34,20 @@ PASSED_CHECK_FINDINGS = {
     "GPF-UCX-005",
 }
 
+# Rank for order_findings, from platform prerequisites to detailed evidence. A finding with
+# no entry sorts to the unranked bucket and renders near the end of the report whatever it
+# says, so the table covers every finding the tool emits and a test holds it to that.
+# Reproducibility findings are global and render in their own section rather than through
+# order_findings; they are ranked here so that the table stays complete.
 FINDING_DISPLAY_ORDER = {
     "GPF-PROFILE-001": 10,
     "GPF-IMAGE-001": 20,
     "GPF-IMAGE-002": 20,
     "GPF-IMAGE-003": 21,
-    "GPF-IMAGE-007": 21,
-    "GPF-IMAGE-008": 21,
+    "GPF-IMAGE-004": 21,
+    "GPF-IMAGE-005": 21,
+    "GPF-REPRO-001": 22,
+    "GPF-REPRO-002": 22,
     "GPF-CPU-001": 30,
     "GPF-CPU-002": 30,
     "GPF-CPU-003": 30,
@@ -62,9 +68,11 @@ FINDING_DISPLAY_ORDER = {
     "GPF-CUDA-003": 60,
     "GPF-CUDA-004": 60,
     "GPF-CUDA-005": 61,
+    "GPF-CUDA-021": 62,
     "GPF-CUDA-015": 70,
     "GPF-CUDA-009": 71,
     "GPF-CUDA-010": 71,
+    "GPF-CUDA-020": 71,
     "GPF-CUDA-018": 72,
     "GPF-CUDA-017": 73,
     "GPF-CUDA-016": 74,
@@ -72,6 +80,7 @@ FINDING_DISPLAY_ORDER = {
     "GPF-CUDA-011": 80,
     "GPF-CUDA-012": 81,
     "GPF-CUDA-014": 82,
+    "GPF-CUDA-019": 82,
     "GPF-RUNTIME-001": 90,
 }
 
@@ -787,7 +796,7 @@ def artifact_inspection_coverage_percent_for(
 ) -> float | None:
     """Return the percentage of loadable runtime candidates inspected with cuobjdump."""
     finding_ids = {finding.id for finding in findings}
-    if finding_ids & {"GPF-CUDA-011", "GPF-CUDA-015", "GPF-IMAGE-007", "GPF-IMAGE-008"}:
+    if finding_ids & {"GPF-CUDA-011", "GPF-CUDA-015", "GPF-IMAGE-004", "GPF-IMAGE-005"}:
         return None
 
     coverage_finding = next(
@@ -1022,8 +1031,3 @@ def has_threshold(report: InspectionReport, threshold: str) -> bool:
     if threshold == "warning":
         return any(finding.severity in {"blocker", "warning"} for finding in findings)
     return any(finding.severity == "blocker" for finding in findings)
-
-
-def normalize_output_path(value: str) -> str:
-    """Keep report source paths stable while avoiding accidental whitespace."""
-    return re.sub(r"\s+", " ", value).strip()

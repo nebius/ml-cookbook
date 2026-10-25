@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from dataclasses import asdict, dataclass
 from hashlib import sha256
@@ -22,9 +23,8 @@ class Source:
 class FabricProfile:
     """Version floors and provenance for one compute-fabric network adapter.
 
-    Floors live here rather than on a hardware profile because adapter support is
-    a property of the NIC generation: one citation covers every GPU platform that
-    ships the same adapter.
+    Adapter support is a property of the NIC generation, so one entry and one
+    citation cover every GPU platform that ships the same adapter.
     """
 
     schema_version: int
@@ -93,6 +93,24 @@ def _optional_string(value: object, field: str, path: str) -> str | None:
     return _string(value, field, path)
 
 
+VERSION_RE = re.compile(r"^\d+(?:\.\d+)+$")
+
+
+def _optional_version(value: object, field: str, path: str) -> str | None:
+    """Return a dotted numeric version floor, or None when the field is unset.
+
+    Floors are compared component-wise against versions detected in an image, so a
+    value such as "12" or "latest" would fail that comparison deep inside a scan.
+    Rejecting it here names the file and the field instead.
+    """
+    version = _optional_string(value, field, path)
+    if version is not None and not VERSION_RE.match(version):
+        raise ValueError(
+            f"{path}: {field} must be a dotted numeric version such as 12.9, got {version!r}"
+        )
+    return version
+
+
 def _optional_lower(value: object, field: str, path: str) -> str | None:
     lowered = _optional_string(value, field, path)
     return lowered.lower() if lowered else None
@@ -136,10 +154,10 @@ def parse_fabric(document: dict[str, object], path: str) -> FabricProfile:
         id=_string(document.get("id"), "id", path).lower(),
         display_name=_string(document.get("display_name"), "display_name", path),
         generation=generation,
-        minimum_ucx_version=_optional_string(
+        minimum_ucx_version=_optional_version(
             validation.get("minimum_ucx_version"), "validation.minimum_ucx_version", path
         ),
-        minimum_hpcx_version=_optional_string(
+        minimum_hpcx_version=_optional_version(
             validation.get("minimum_hpcx_version"), "validation.minimum_hpcx_version", path
         ),
         notes=_strings(document.get("notes", []), "notes", path),
@@ -188,12 +206,12 @@ def parse_profile(document: dict[str, object], path: str) -> HardwareProfile:
             "fabric.compute_adapter",
             path,
         ),
-        minimum_cuda_version=_optional_string(
+        minimum_cuda_version=_optional_version(
             validation.get("minimum_cuda_version"),
             "validation.minimum_cuda_version",
             path,
         ),
-        minimum_nccl_version=_optional_string(
+        minimum_nccl_version=_optional_version(
             validation.get("minimum_nccl_version"),
             "validation.minimum_nccl_version",
             path,

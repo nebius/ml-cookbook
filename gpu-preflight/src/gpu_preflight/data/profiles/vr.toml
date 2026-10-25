@@ -4,7 +4,7 @@ aliases = ["vera-rubin", "vr-nvl72", "nvidia-vera-rubin"]
 display_name = "NVIDIA Vera Rubin NVL72"
 maturity = "provisional"
 notes = [
-  "SM107 support is currently documented as developer preview.",
+  "NVIDIA documents SM107 support as developer preview.",
   "NCCL 2.32.3 adds initial Rubin support but does not include Rubin performance-model tuning.",
   "Platform requirements and hardware evidence must be updated as Nebius service details stabilize.",
 ]

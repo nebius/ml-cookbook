@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import re
 import unittest
+from pathlib import Path
 
 from gpu_preflight.facts import ImageFacts
 from gpu_preflight.inspection import (
+    FINDING_DISPLAY_ORDER,
     Finding,
     FindingDetail,
     artifact_inspection_coverage_percent_for,
@@ -249,6 +252,19 @@ class InspectionTests(unittest.TestCase):
             report.targets[0].compatibility_status,
             "INSUFFICIENT_EVIDENCE",
         )
+
+
+class FindingDisplayOrderTest(unittest.TestCase):
+    def test_every_emitted_finding_has_a_display_rank(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "src" / "gpu_preflight"
+        emitted = {
+            match.group(1)
+            for path in source.rglob("*.py")
+            for match in re.finditer(r'id="(GPF-[A-Z]+-\d+)"', path.read_text())
+        }
+        self.assertTrue(emitted)
+        self.assertEqual(emitted - set(FINDING_DISPLAY_ORDER), set())
+        self.assertEqual(set(FINDING_DISPLAY_ORDER) - emitted, set())
 
 
 if __name__ == "__main__":

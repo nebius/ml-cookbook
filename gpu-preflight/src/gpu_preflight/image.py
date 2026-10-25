@@ -144,9 +144,8 @@ class UcxEvidence:
 # UCX installs its core libraries as libucp/libuct/libucs/libucm and, in a modular
 # build, its transports as separate objects in a directory named ucx. Neither name
 # carries a CUDA marker, so the main CUDA candidate gate never sees them.
-# The soname suffix is excluded from the captured name so libuct_cuda.so,
-# libuct_cuda.so.1, and libuct_cuda.so.1.0.0 collapse to one module rather than
-# tripling every module count.
+# The captured name excludes the soname suffix, so libuct_cuda.so,
+# libuct_cuda.so.1, and libuct_cuda.so.1.0.0 are one module, not three.
 UCX_RUNTIME_LIBRARY_RE = re.compile(r"(?:^|/)(?P<name>lib(?:ucp|uct|ucs|ucm)\.so)(?:\.\d+)*$")
 UCX_TRANSPORT_MODULE_RE = re.compile(r"(?:^|.*/)ucx/(?P<name>lib[a-z0-9_]+\.so)(?:\.\d+)*$")
 HPCX_BUNDLE_DIR_RE = re.compile(r"^(?P<root>.*?hpcx[-_]v?(?P<version>\d+\.\d+(?:\.\d+)*)[^/]*)/")
@@ -609,6 +608,8 @@ def _stream_cuda_member(
     member: tarfile.TarInfo,
     allowance: int,
     destination: BinaryIO | None = None,
+    *,
+    scan_markers: bool = True,
 ) -> tuple[int, tuple[str, ...]]:
     """Stream bounded CUDA candidate bytes, optionally to a cuobjdump input file."""
     file_object = archive.extractfile(member)
@@ -624,11 +625,28 @@ def _stream_cuda_member(
             break
         if destination:
             destination.write(chunk)
-        targets.update(_cuda_targets_bytes(carry + chunk))
-        carry = (carry + chunk)[-64:]
+        if scan_markers:
+            targets.update(_cuda_targets_bytes(carry + chunk))
+            carry = (carry + chunk)[-64:]
         bytes_read += len(chunk)
         remaining -= len(chunk)
     return bytes_read, tuple(sorted(targets))
+
+
+def _marker_targets_from_path(path: Path) -> tuple[str, ...]:
+    """Recover byte-marker targets from candidate bytes already streamed to disk.
+
+    Reads the same chunks with the same 64-byte carry as the streaming scan, so a
+    marker spanning a chunk boundary is found either way and the fallback evidence
+    is identical to scanning inline.
+    """
+    targets: set[str] = set()
+    carry = b""
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            targets.update(_cuda_targets_bytes(carry + chunk))
+            carry = (carry + chunk)[-64:]
+    return tuple(sorted(targets))
 
 
 def scan_rootfs_tar(
@@ -835,6 +853,7 @@ def scan_rootfs_tar(
                                     member,
                                     member.size,
                                     temporary,
+                                    scan_markers=False,
                                 )
                         else:
                             read_size, marker_targets = _stream_cuda_member(
@@ -862,7 +881,16 @@ def scan_rootfs_tar(
                                 cuobjdump_targets_found += 1
                             else:
                                 cuobjdump_no_device_code += 1
-                        elif marker_targets:
+                        if (
+                            temporary_path
+                            and (artifact is None or not artifact.complete)
+                            and not marker_targets
+                        ):
+                            # The marker scan was skipped while streaming because cuobjdump
+                            # was expected to supersede it. It did not enumerate the file, so
+                            # recover the fallback evidence from the bytes already on disk.
+                            marker_targets = _marker_targets_from_path(temporary_path)
+                        if artifact is None and marker_targets:
                             diagnostic = None
                             if cuobjdump is None:
                                 diagnostic = (
@@ -1095,6 +1123,7 @@ class DockerImageClient:
     ) -> None:
         self.docker_binary = shutil.which("docker")
         self.command_timeout_seconds = command_timeout_seconds
+        self.cuobjdump_disabled = cuobjdump_mode.lower() == "off"
         self.cuobjdump = resolve_cuobjdump(
             cuobjdump_mode,
             cuobjdump_timeout_seconds,
@@ -1110,6 +1139,11 @@ class DockerImageClient:
                 "docker CLI was not found; install Docker and ensure `docker` is on PATH"
             )
         if require_cuobjdump and self.cuobjdump is None:
+            if self.cuobjdump_disabled:
+                raise ImageInspectionError(
+                    "a filesystem scan needs a CUDA artifact analyzer, but --cuobjdump off "
+                    "disabled it; drop --cuobjdump off, or pass --cuobjdump /path/to/cuobjdump"
+                )
             raise ImageInspectionError(
                 "cuobjdump was not found; install a recent NVIDIA CUDA Toolkit, add cuobjdump "
                 "to PATH, or pass --cuobjdump /path/to/cuobjdump"
@@ -1628,8 +1662,6 @@ def _cuda_compatibility_exceptions(
                     "reason": reason,
                     "reason_summary": _cuda_exception_reason_summary(reason),
                     "status_effect": "review-required",
-                    "has_compatible_sibling": False,
-                    "has_jit_fallback": False,
                 }
             )
     for artifact in sorted(rootfs.cuda_artifacts, key=lambda item: item.path):
@@ -1668,8 +1700,6 @@ def _cuda_compatibility_exceptions(
                         if classification == "vendor-library-supported-by-release"
                         else "review-required"
                     ),
-                    "has_compatible_sibling": False,
-                    "has_jit_fallback": False,
                 }
             )
     return exceptions
@@ -1686,17 +1716,158 @@ def _incomplete_reason_counts(rootfs: RootfsScan) -> dict[str, int]:
     return counts
 
 
+def _cuda_coverage_finding(
+    inspected_runtime_with_targets: tuple[CudaArtifactEvidence, ...],
+    rootfs: RootfsScan,
+    profile: HardwareProfile,
+    *,
+    analyzer_matches_image: bool,
+) -> Finding | None:
+    """Classify the best code path available in each inspected runtime unit.
+
+    Each artifact and each grouped dispatch catalog counts once. Returns None when
+    nothing was enumerated, or when the analyzer predates the image toolkit, whose
+    listings cannot then be trusted.
+    """
+    coverage_target_sets = [artifact.targets for artifact in inspected_runtime_with_targets]
+    coverage_target_sets.extend(catalog.verified_targets for catalog in rootfs.kernel_catalogs)
+    if not coverage_target_sets or not analyzer_matches_image:
+        return None
+    code_path_counts = {
+        "exact-architecture-cubin": 0,
+        "exact-family-cubin": 0,
+        "exact-base-cubin": 0,
+        "compatible-family-cubin": 0,
+        "compatible-base-cubin": 0,
+        "ptx-jit": 0,
+        "incompatible": 0,
+    }
+    code_path_targets = {code_path: set() for code_path in code_path_counts}
+    hardware = profile.compute_capability_number
+    for targets in coverage_target_sets:
+        best_code_path = best_cuda_code_path(targets, hardware)
+        code_path_counts[best_code_path] += 1
+        code_path_targets[best_code_path].update(
+            target
+            for target in targets
+            if classify_cuda_code_path(target, hardware) == best_code_path
+        )
+
+    def target_context(code_path: str) -> str | None:
+        targets = ", ".join(sorted(code_path_targets[code_path]))
+        return targets or None
+
+    coverage_details: list[FindingDetail] = []
+    if f"sm_{hardware}a" in profile.native_sm_targets:
+        coverage_details.append(
+            FindingDetail(
+                label="Architecture-specific cubin",
+                value=code_path_counts["exact-architecture-cubin"],
+                context=f"sm_{hardware}a",
+            )
+        )
+    if f"sm_{hardware}f" in profile.native_sm_targets:
+        coverage_details.append(
+            FindingDetail(
+                label="Family-specific cubin",
+                value=code_path_counts["exact-family-cubin"],
+                context=f"sm_{hardware}f",
+            )
+        )
+    coverage_details.extend(
+        (
+            FindingDetail(
+                label="Exact base cubin",
+                value=code_path_counts["exact-base-cubin"],
+                context=f"sm_{hardware}",
+            ),
+            FindingDetail(
+                label="Compatible older family cubin",
+                value=code_path_counts["compatible-family-cubin"],
+                context=target_context("compatible-family-cubin"),
+            ),
+            FindingDetail(
+                label="Compatible older base cubin",
+                value=code_path_counts["compatible-base-cubin"],
+                context=target_context("compatible-base-cubin"),
+            ),
+            FindingDetail(
+                label="PTX JIT fallback",
+                value=code_path_counts["ptx-jit"],
+                context=target_context("ptx-jit"),
+            ),
+            FindingDetail(
+                label="No compatible code",
+                value=code_path_counts["incompatible"],
+            ),
+        )
+    )
+    target_specialized = (
+        code_path_counts["exact-architecture-cubin"] + code_path_counts["exact-family-cubin"]
+    )
+    if target_specialized:
+        interpretation = (
+            f"{target_specialized} binary unit(s) contain target-specialized cubins for "
+            "this GPU. Binary units are files or grouped dispatch catalogs, not operations, "
+            "features, or distinct workload code paths."
+        )
+    elif code_path_counts["exact-base-cubin"]:
+        interpretation = (
+            "An exact base cubin is present, but no exact family- or architecture-specific "
+            "cubin was observed in the inspected runtime artifacts."
+        )
+    elif code_path_counts["compatible-family-cubin"] or code_path_counts["compatible-base-cubin"]:
+        interpretation = (
+            "The inspected compatible artifacts rely on cubins built for earlier targets; "
+            "compatibility does not establish target-specific optimization."
+        )
+    elif code_path_counts["ptx-jit"]:
+        interpretation = (
+            "The inspected compatible artifacts rely on PTX JIT; compatibility does not "
+            "establish target-specific optimization."
+        )
+    else:
+        interpretation = (
+            "No compatible embedded code was found in the inspected binary units; review "
+            "the grouped exceptions before hardware testing."
+        )
+    return Finding(
+        id="GPF-CUDA-017",
+        severity="info",
+        category="compatibility",
+        title="CUDA code-path optimization coverage",
+        evidence=(
+            f"Best available code path for each of {len(coverage_target_sets)} inspected "
+            f"binary unit(s) on sm_{hardware}; each file counts once and each grouped "
+            "dispatch catalog counts once. These counts do not represent operations, "
+            f"features, or distinct workload code paths. "
+            f"{interpretation}"
+        ),
+        remediation=(
+            "Use this breakdown to prioritize artifacts that the workload actually loads, "
+            "then benchmark representative operations on the target hardware; cubin "
+            "presence alone does not prove performance."
+        ),
+        details=tuple(coverage_details),
+    )
+
+
 def _cuda_artifact_findings(
     rootfs: RootfsScan,
     profile: HardwareProfile,
     image_cuda_versions: tuple[str, ...],
+    compatibility_exceptions: list[dict[str, object]],
     *,
     max_scan_bytes: int,
     max_cuobjdump_files: int | None,
     max_artifact_bytes: int,
     cuobjdump_timeout_seconds: int,
 ) -> tuple[Finding, ...]:
-    """Evaluate each successfully enumerated CUDA artifact independently for a target GPU."""
+    """Evaluate each successfully enumerated CUDA artifact independently for a target GPU.
+
+    ``compatibility_exceptions`` is the unresolved-unit inventory for this rootfs and
+    profile, as returned by :func:`_cuda_compatibility_exceptions`.
+    """
     findings: list[Finding] = []
     analyzer_mismatch = _cuobjdump_is_older(rootfs.cuobjdump_version, image_cuda_versions)
     if analyzer_mismatch:
@@ -1792,13 +1963,6 @@ def _cuda_artifact_findings(
     compatible_inspection_units = len(compatible_runtime) + len(compatible_catalogs)
     incompatible_inspection_units = len(incompatible_runtime) + len(incompatible_catalogs)
     total_inspection_units = compatible_inspection_units + incompatible_inspection_units
-    compatibility_exceptions = _cuda_compatibility_exceptions(
-        rootfs,
-        profile,
-        platform="",
-        analyzer_matches_image=not bool(analyzer_mismatch),
-        image_cuda_versions=image_cuda_versions,
-    )
     review_exceptions = [
         item for item in compatibility_exceptions if item["status_effect"] == "review-required"
     ]
@@ -2063,131 +2227,14 @@ def _cuda_artifact_findings(
                 details=incompatible_details,
             )
         )
-    runtime_with_targets = inspected_runtime_with_targets
-    coverage_target_sets = [artifact.targets for artifact in runtime_with_targets]
-    coverage_target_sets.extend(catalog.verified_targets for catalog in rootfs.kernel_catalogs)
-    if coverage_target_sets and not analyzer_mismatch:
-        code_path_counts = {
-            "exact-architecture-cubin": 0,
-            "exact-family-cubin": 0,
-            "exact-base-cubin": 0,
-            "compatible-family-cubin": 0,
-            "compatible-base-cubin": 0,
-            "ptx-jit": 0,
-            "incompatible": 0,
-        }
-        code_path_targets = {code_path: set() for code_path in code_path_counts}
-        hardware = profile.compute_capability_number
-        for targets in coverage_target_sets:
-            best_code_path = best_cuda_code_path(targets, hardware)
-            code_path_counts[best_code_path] += 1
-            code_path_targets[best_code_path].update(
-                target
-                for target in targets
-                if classify_cuda_code_path(target, hardware) == best_code_path
-            )
-
-        def target_context(code_path: str) -> str | None:
-            targets = ", ".join(sorted(code_path_targets[code_path]))
-            return targets or None
-
-        coverage_details: list[FindingDetail] = []
-        if f"sm_{hardware}a" in profile.native_sm_targets:
-            coverage_details.append(
-                FindingDetail(
-                    label="Architecture-specific cubin",
-                    value=code_path_counts["exact-architecture-cubin"],
-                    context=f"sm_{hardware}a",
-                )
-            )
-        if f"sm_{hardware}f" in profile.native_sm_targets:
-            coverage_details.append(
-                FindingDetail(
-                    label="Family-specific cubin",
-                    value=code_path_counts["exact-family-cubin"],
-                    context=f"sm_{hardware}f",
-                )
-            )
-        coverage_details.extend(
-            (
-                FindingDetail(
-                    label="Exact base cubin",
-                    value=code_path_counts["exact-base-cubin"],
-                    context=f"sm_{hardware}",
-                ),
-                FindingDetail(
-                    label="Compatible older family cubin",
-                    value=code_path_counts["compatible-family-cubin"],
-                    context=target_context("compatible-family-cubin"),
-                ),
-                FindingDetail(
-                    label="Compatible older base cubin",
-                    value=code_path_counts["compatible-base-cubin"],
-                    context=target_context("compatible-base-cubin"),
-                ),
-                FindingDetail(
-                    label="PTX JIT fallback",
-                    value=code_path_counts["ptx-jit"],
-                    context=target_context("ptx-jit"),
-                ),
-                FindingDetail(
-                    label="No compatible code",
-                    value=code_path_counts["incompatible"],
-                ),
-            )
-        )
-        target_specialized = (
-            code_path_counts["exact-architecture-cubin"] + code_path_counts["exact-family-cubin"]
-        )
-        if target_specialized:
-            interpretation = (
-                f"{target_specialized} binary unit(s) contain target-specialized cubins for "
-                "this GPU. Binary units are files or grouped dispatch catalogs, not operations, "
-                "features, or distinct workload code paths."
-            )
-        elif code_path_counts["exact-base-cubin"]:
-            interpretation = (
-                "An exact base cubin is present, but no exact family- or architecture-specific "
-                "cubin was observed in the inspected runtime artifacts."
-            )
-        elif (
-            code_path_counts["compatible-family-cubin"] or code_path_counts["compatible-base-cubin"]
-        ):
-            interpretation = (
-                "The inspected compatible artifacts rely on cubins built for earlier targets; "
-                "compatibility does not establish target-specific optimization."
-            )
-        elif code_path_counts["ptx-jit"]:
-            interpretation = (
-                "The inspected compatible artifacts rely on PTX JIT; compatibility does not "
-                "establish target-specific optimization."
-            )
-        else:
-            interpretation = (
-                "No compatible embedded code was found in the inspected binary units; review "
-                "the grouped exceptions before hardware testing."
-            )
-        findings.append(
-            Finding(
-                id="GPF-CUDA-017",
-                severity="info",
-                category="compatibility",
-                title="CUDA code-path optimization coverage",
-                evidence=(
-                    f"Best available code path for each of {len(coverage_target_sets)} inspected "
-                    f"binary unit(s) on sm_{hardware}; each file counts once and each grouped "
-                    "dispatch catalog counts once. These counts do not represent operations, "
-                    f"features, or distinct workload code paths. "
-                    f"{interpretation}"
-                ),
-                remediation=(
-                    "Use this breakdown to prioritize artifacts that the workload actually loads, "
-                    "then benchmark representative operations on the target hardware; cubin "
-                    "presence alone does not prove performance."
-                ),
-                details=tuple(coverage_details),
-            )
-        )
+    coverage_finding = _cuda_coverage_finding(
+        inspected_runtime_with_targets,
+        rootfs,
+        profile,
+        analyzer_matches_image=not analyzer_mismatch,
+    )
+    if coverage_finding is not None:
+        findings.append(coverage_finding)
     if incompatible_non_runtime:
         examples = "; ".join(
             f"{artifact.path} ({artifact.role}): {', '.join(artifact.targets)}"
@@ -2502,7 +2549,7 @@ def inspect_with_image(
         report = _append_global_finding(
             base_report,
             Finding(
-                id="GPF-IMAGE-007",
+                id="GPF-IMAGE-004",
                 severity="info",
                 category="evidence",
                 title="Image contents were not inspected",
@@ -2603,7 +2650,7 @@ def inspect_with_image(
         if selected and scan_mode in {"manifest", "pull"}:
             image_findings.append(
                 Finding(
-                    id="GPF-IMAGE-008",
+                    id="GPF-IMAGE-005",
                     severity="info",
                     category="evidence",
                     title="Image filesystem was not inspected",
@@ -2715,26 +2762,26 @@ def inspect_with_image(
                     f"{content.rootfs.metadata_bytes_scanned / (1024**2):.1f} MiB of metadata read"
                     f"{limit_note}"
                 )
+                platform_exceptions = _cuda_compatibility_exceptions(
+                    content.rootfs,
+                    profile,
+                    platform=content.platform,
+                    analyzer_matches_image=analyzer_matches_image,
+                    image_cuda_versions=content.cuda_versions,
+                )
                 image_findings.extend(
                     _cuda_artifact_findings(
                         content.rootfs,
                         profile,
                         content.cuda_versions,
+                        platform_exceptions,
                         max_scan_bytes=max_scan_bytes,
                         max_cuobjdump_files=max_cuobjdump_files,
                         max_artifact_bytes=max_artifact_bytes,
                         cuobjdump_timeout_seconds=cuobjdump_timeout_seconds,
                     )
                 )
-                cuda_compatibility_exceptions.extend(
-                    _cuda_compatibility_exceptions(
-                        content.rootfs,
-                        profile,
-                        platform=content.platform,
-                        analyzer_matches_image=analyzer_matches_image,
-                        image_cuda_versions=content.cuda_versions,
-                    )
-                )
+                cuda_compatibility_exceptions.extend(platform_exceptions)
                 rootfs_statistics[selected.platform] = {
                     "files_seen": content.rootfs.files_seen,
                     "candidate_bytes_scanned": content.rootfs.bytes_scanned,

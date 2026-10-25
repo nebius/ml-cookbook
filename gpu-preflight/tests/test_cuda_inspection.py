@@ -6,6 +6,7 @@ from pathlib import Path
 
 from gpu_preflight.cuda_inspection import (
     CuobjdumpTool,
+    analyzer_error_detail,
     classify_artifact_role,
     cuda_targets_from_listing,
     cuda_targets_from_text,
@@ -249,3 +250,82 @@ class CudaInspectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AnalyzerErrorDetailTests(unittest.TestCase):
+    """A failed cuobjdump run must report why, not the listing that preceded it."""
+
+    # Verbatim `cuobjdump --list-elf --list-ptx` output for HPC-X hcoll's
+    # hmca_gpu_cuda.so in nvcr.io/nvidia/pytorch:24.01-py3, analyzed with
+    # cuobjdump CUDA 13.4: a partial listing, then the failure.
+    PARTIAL_LISTING_THEN_FAILURE = (
+        "ELF file    1: gpu-preflight-4p3bwzt3.1.sm_50.cubin\n"
+        "PTX file    1: gpu-preflight-4p3bwzt3.1.sm_50.ptx\n"
+        "ELF file    2: gpu-preflight-4p3bwzt3.2.sm_52.cubin\n"
+        "ELF file    3: gpu-preflight-4p3bwzt3.3.sm_60.cubin\n"
+        "ELF file    4: gpu-preflight-4p3bwzt3.4.sm_61.cubin\n"
+        "PTX file    2: gpu-preflight-4p3bwzt3.2.sm_70.ptx\n"
+        "ELF file    5: gpu-preflight-4p3bwzt3.5.sm_70.cubin\n"
+        "ELF file    6: gpu-preflight-4p3bwzt3.6.sm_80.cubin\n"
+        "PTX file    3: gpu-preflight-4p3bwzt3.3.sm_80.ptx\n"
+        "cuobjdump fatal   : Invalid ELF in "
+        "'/opt/hpcx/hcoll/lib/hcoll/hmca_gpu_cuda.so'\n"
+    )
+
+    def test_the_failure_line_leads_the_diagnostic(self) -> None:
+        detail = analyzer_error_detail(self.PARTIAL_LISTING_THEN_FAILURE, 1)
+        self.assertTrue(
+            detail.startswith("cuobjdump fatal : Invalid ELF"),
+            f"diagnostic did not lead with the failure: {detail!r}",
+        )
+        # The temporary input file's name means nothing to a reader of the report.
+        self.assertNotIn("gpu-preflight-", detail)
+        self.assertNotIn("ELF file", detail)
+
+    def test_repeated_failure_lines_are_collapsed(self) -> None:
+        output = "cuobjdump fatal : Invalid ELF in 'x'\n" * 3
+        self.assertEqual(analyzer_error_detail(output, 1), "cuobjdump fatal : Invalid ELF in 'x'")
+
+    def test_output_without_a_failure_line_falls_back_to_the_tail(self) -> None:
+        self.assertEqual(analyzer_error_detail("only a listing", 3), "only a listing")
+
+    def test_empty_output_reports_the_exit_status(self) -> None:
+        self.assertEqual(analyzer_error_detail("", 3), "exit status 3")
+
+    def test_the_detail_stays_bounded(self) -> None:
+        self.assertLessEqual(len(analyzer_error_detail("error : " + "x" * 4000, 1)), 500)
+        self.assertLessEqual(len(analyzer_error_detail("y" * 4000, 1)), 500)
+
+    def test_the_diagnostic_is_identical_between_runs(self) -> None:
+        # cuobjdump names each embedded image after its input file, so its output
+        # carries the temporary file's random stem. A report that embeds it differs
+        # between two runs of the same image.
+        first = self.PARTIAL_LISTING_THEN_FAILURE
+        second = first.replace("4p3bwzt3", "d_dx8cjo")
+        self.assertNotEqual(first, second)
+        self.assertEqual(
+            analyzer_error_detail(first, 1),
+            analyzer_error_detail(second, 1),
+        )
+
+    def test_a_listing_without_a_failure_line_also_drops_the_stem(self) -> None:
+        listing = "ELF file 1: gpu-preflight-xr_fs4lg.1.sm_60.cubin"
+        detail = analyzer_error_detail(listing, 1)
+        self.assertNotIn("gpu-preflight-", detail)
+        self.assertIn("<artifact>", detail)
+
+    def test_a_truncated_listing_is_still_identical_between_runs(self) -> None:
+        # The fallback keeps only the tail of a long listing, and a stem can span
+        # that boundary, so scrubbing covers the whole output before the tail is cut.
+        def listing(stem: str) -> str:
+            return "\n".join(
+                f"ELF file {index}: gpu-preflight-{stem}.{index}.sm_{50 + index}.cubin"
+                for index in range(1, 40)
+            )
+
+        first = analyzer_error_detail(listing("8uo_5ru"), 1)
+        second = analyzer_error_detail(listing("_n1za4w"), 1)
+        self.assertEqual(len(first), 500)
+        self.assertEqual(first, second)
+        for fragment in ("preflight-", "8uo_5ru", "_n1za4w"):
+            self.assertNotIn(fragment, first)

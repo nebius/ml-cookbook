@@ -156,5 +156,65 @@ class ProfileFabricTests(unittest.TestCase):
                 load_profiles(path)
 
 
+class VersionFloorValidationTests(unittest.TestCase):
+    """Version floors are compared component-wise against versions found in an image.
+
+    A floor that is not dotted-numeric would raise deep inside a scan, so loading
+    must reject it and name the file and field.
+    """
+
+    def test_dotted_numeric_floors_are_accepted(self) -> None:
+        for field, value in (("minimum_cuda_version", "12.9"), ("minimum_nccl_version", "2.27.5")):
+            with self.subTest(field=field):
+                profile = _profile(MINIMAL_PROFILE + f'{field} = "{value}"\n')
+                self.assertEqual(getattr(profile, field), value)
+        for field, value in (("minimum_ucx_version", "1.18.0"), ("minimum_hpcx_version", "2.21.1")):
+            with self.subTest(field=field):
+                fabric = _fabric(MINIMAL_FABRIC + f'\n[validation]\n{field} = "{value}"\n')
+                self.assertEqual(getattr(fabric, field), value)
+
+    def test_absent_floors_stay_unset(self) -> None:
+        profile = _profile(MINIMAL_PROFILE)
+        self.assertIsNone(profile.minimum_cuda_version)
+        self.assertIsNone(profile.minimum_nccl_version)
+
+    MALFORMED = ("12", "latest", "v12.9", "12.x", "", "12.9.", "12..9")
+
+    def test_malformed_profile_floors_are_rejected_at_load(self) -> None:
+        for field in ("minimum_cuda_version", "minimum_nccl_version"):
+            for value in self.MALFORMED:
+                with self.subTest(field=field, value=value):
+                    document = MINIMAL_PROFILE + f'{field} = "{value}"\n'
+                    with self.assertRaisesRegex(ValueError, f"validation.{field}"):
+                        _profile(document)
+
+    def test_malformed_fabric_floors_are_rejected_at_load(self) -> None:
+        for field in ("minimum_ucx_version", "minimum_hpcx_version"):
+            for value in self.MALFORMED:
+                with self.subTest(field=field, value=value):
+                    document = MINIMAL_FABRIC + f'\n[validation]\n{field} = "{value}"\n'
+                    with self.assertRaisesRegex(ValueError, f"validation.{field}"):
+                        _fabric(document)
+
+    def test_a_malformed_floor_fails_the_whole_directory_load(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "bad.toml").write_text(MINIMAL_PROFILE + 'minimum_cuda_version = "12"\n')
+            with self.assertRaisesRegex(ValueError, "dotted numeric version"):
+                load_profiles(path)
+
+    def test_every_shipped_profile_and_fabric_floor_is_comparable(self) -> None:
+        from gpu_preflight.inspection import _version_tuple
+
+        for profile in load_profiles().values():
+            for value in (profile.minimum_cuda_version, profile.minimum_nccl_version):
+                if value is not None:
+                    self.assertIsInstance(_version_tuple(value), tuple)
+        for fabric in load_fabrics().values():
+            for value in (fabric.minimum_ucx_version, fabric.minimum_hpcx_version):
+                if value is not None:
+                    self.assertIsInstance(_version_tuple(value), tuple)
+
+
 if __name__ == "__main__":
     unittest.main()

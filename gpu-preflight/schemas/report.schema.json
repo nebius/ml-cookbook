@@ -97,9 +97,18 @@
       "properties": {
         "image_references": {"type": "array", "items": {"type": "string"}},
         "final_platform": {"type": ["string", "null"]},
-        "cuda_targets": {"type": "array", "items": {"type": "string"}},
-        "cuda_versions": {"type": "array", "items": {"type": "string"}},
-        "nccl_versions": {"type": "array", "items": {"type": "string"}},
+        "cuda_targets": {
+          "description": "CUDA targets known before the image was scanned, from the caller-supplied facts. Empty for a normal CLI run; see image_cuda_targets for what the scan found.",
+          "type": "array", "items": {"type": "string"}
+        },
+        "cuda_versions": {
+          "description": "CUDA versions known before the image was scanned, from the caller-supplied facts. Empty for a normal CLI run; see image_cuda_versions for what the scan found.",
+          "type": "array", "items": {"type": "string"}
+        },
+        "nccl_versions": {
+          "description": "NCCL versions known before the image was scanned, from the caller-supplied facts. Empty for a normal CLI run; see image_nccl_versions for what the scan found.",
+          "type": "array", "items": {"type": "string"}
+        },
         "ucx_versions": {"type": "array", "items": {"type": "string"}},
         "hpcx_versions": {"type": "array", "items": {"type": "string"}},
         "ucx_module_groups": {"type": "array", "items": {"$ref": "#/$defs/ucxModuleGroup"}},
@@ -114,11 +123,20 @@
         },
         "image_packages": {"type": "array", "items": {"type": "string"}},
         "installed_packages": {"type": "array", "items": {"type": "string"}},
-        "image_cuda_targets": {"type": "array", "items": {"type": "string"}},
+        "image_cuda_targets": {
+          "description": "CUDA targets found in the scanned image: its configuration, packages and inspected artifacts.",
+          "type": "array", "items": {"type": "string"}
+        },
         "verified_image_cuda_targets": {"type": "array", "items": {"type": "string"}},
         "unverified_image_cuda_target_strings": {"type": "array", "items": {"type": "string"}},
-        "image_cuda_versions": {"type": "array", "items": {"type": "string"}},
-        "image_nccl_versions": {"type": "array", "items": {"type": "string"}},
+        "image_cuda_versions": {
+          "description": "CUDA versions found in the scanned image: its configuration, packages and version files.",
+          "type": "array", "items": {"type": "string"}
+        },
+        "image_nccl_versions": {
+          "description": "NCCL versions found in the scanned image. observations.nccl_evidence attributes each one to the record that produced it.",
+          "type": "array", "items": {"type": "string"}
+        },
         "nccl_evidence": {"type": "array", "items": {"$ref": "#/$defs/ncclEvidence"}},
         "cuda_artifacts": {"type": "array", "items": {"$ref": "#/$defs/cudaArtifact"}},
         "cuda_compatibility_exceptions": {
@@ -310,9 +328,7 @@
         "classification",
         "reason",
         "reason_summary",
-        "status_effect",
-        "has_compatible_sibling",
-        "has_jit_fallback"
+        "status_effect"
       ],
       "properties": {
         "target": {"type": "string"},
@@ -343,9 +359,7 @@
           ]
         },
         "reason_summary": {"type": "string"},
-        "status_effect": {"enum": ["review-required", "informational"]},
-        "has_compatible_sibling": {"type": "boolean"},
-        "has_jit_fallback": {"type": "boolean"}
+        "status_effect": {"enum": ["review-required", "informational"]}
       }
     },
     "cudaCompatibilityExceptionGroup": {

@@ -33,6 +33,7 @@ from gpu_preflight.image import (
     _digest_reference,
     _docker_error,
     _exact_reference,
+    _marker_targets_from_path,
     _redact_sensitive_diagnostic,
     _toolkit_release,
     inspect_image_reference,
@@ -40,7 +41,8 @@ from gpu_preflight.image import (
     parse_manifest_output,
     scan_rootfs_tar,
 )
-from gpu_preflight.profiles import load_profiles
+from gpu_preflight.inspection import Finding
+from gpu_preflight.profiles import HardwareProfile, load_profiles
 from gpu_preflight.render import render_html, render_text
 
 
@@ -99,6 +101,34 @@ def rootfs_with(
     )
 
 
+def artifact_findings(
+    rootfs: RootfsScan,
+    profile: HardwareProfile,
+    image_cuda_versions: tuple[str, ...] = (),
+    *,
+    platform: str = "linux/amd64",
+    analyzer_matches_image: bool = True,
+    exceptions: list[dict[str, object]] | None = None,
+    **limits: object,
+) -> tuple[Finding, ...]:
+    """Build the exception inventory and the findings the way inspect_with_image does."""
+    if exceptions is None:
+        exceptions = _cuda_compatibility_exceptions(
+            rootfs,
+            profile,
+            platform=platform,
+            analyzer_matches_image=analyzer_matches_image,
+            image_cuda_versions=image_cuda_versions,
+        )
+    return _cuda_artifact_findings(
+        rootfs,
+        profile,
+        image_cuda_versions,
+        exceptions,
+        **limits,  # type: ignore[arg-type]
+    )
+
+
 class FakeImageClient:
     def __init__(
         self,
@@ -145,10 +175,22 @@ class ImageInspectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ImageInspectionError, "docker CLI was not found"):
             client.preflight(require_daemon=True, require_cuobjdump=True)
 
-    def test_preflight_requires_cuobjdump(self) -> None:
-        client = DockerImageClient(cuobjdump_mode="off")
+    def test_preflight_reports_a_missing_cuobjdump(self) -> None:
+        with (
+            patch("gpu_preflight.cuda_inspection.shutil.which", return_value=None),
+            patch("gpu_preflight.cuda_inspection.Path.is_file", return_value=False),
+        ):
+            client = DockerImageClient(cuobjdump_mode="auto")
         client.docker_binary = "/usr/bin/docker"
         with self.assertRaisesRegex(ImageInspectionError, "cuobjdump was not found"):
+            client.preflight(require_daemon=True, require_cuobjdump=True)
+
+    def test_preflight_distinguishes_a_disabled_cuobjdump(self) -> None:
+        # Telling someone who passed --cuobjdump off to install a CUDA Toolkit
+        # answers a question they did not ask.
+        client = DockerImageClient(cuobjdump_mode="off")
+        client.docker_binary = "/usr/bin/docker"
+        with self.assertRaisesRegex(ImageInspectionError, "--cuobjdump off disabled it"):
             client.preflight(require_daemon=True, require_cuobjdump=True)
 
     def test_preflight_requires_accessible_docker_daemon(self) -> None:
@@ -831,10 +873,11 @@ class ImageInspectionTests(unittest.TestCase):
             analyzer_matches_image=True,
         )
         self.assertEqual(exceptions, [])
-        findings = _cuda_artifact_findings(
+        findings = artifact_findings(
             rootfs,
             self.profiles["gb300"],
             ("13.4",),
+            exceptions=exceptions,
             max_scan_bytes=1024 * 1024,
             max_cuobjdump_files=None,
             max_artifact_bytes=1024 * 1024,
@@ -1029,8 +1072,6 @@ class ImageInspectionTests(unittest.TestCase):
             exception["classification"], "runtime-relevance-not-statically-established"
         )
         self.assertEqual(exception["status_effect"], "review-required")
-        self.assertFalse(exception["has_compatible_sibling"])
-        self.assertFalse(exception["has_jit_fallback"])
         group = report.observations["cuda_compatibility_exception_groups"][0]
         self.assertEqual(group["exception_count"], 1)
         self.assertEqual(group["file_count"], 1)
@@ -1288,7 +1329,7 @@ class ImageInspectionTests(unittest.TestCase):
             skipped_scan_budget=24,
             skipped_artifact_limit=1,
         )
-        high_coverage_findings = _cuda_artifact_findings(
+        high_coverage_findings = artifact_findings(
             high_coverage_rootfs,
             self.profiles["gb300"],
             ("13.4",),
@@ -1556,10 +1597,11 @@ class ImageInspectionTests(unittest.TestCase):
         self.assertEqual([item["status_effect"] for item in exceptions], ["informational"])
         findings = {
             finding.id: finding
-            for finding in _cuda_artifact_findings(
+            for finding in artifact_findings(
                 rootfs,
                 profile,
                 ("13.3", "13.3.0"),
+                exceptions=exceptions,
                 max_scan_bytes=1024,
                 max_cuobjdump_files=None,
                 max_artifact_bytes=1024,
@@ -1619,7 +1661,7 @@ class ImageInspectionTests(unittest.TestCase):
         )
         findings = {
             finding.id: finding
-            for finding in _cuda_artifact_findings(
+            for finding in artifact_findings(
                 rootfs,
                 self.profiles["h100"],
                 ("12.3",),
@@ -1670,7 +1712,7 @@ class ImageInspectionTests(unittest.TestCase):
         )
         findings = {
             finding.id: finding
-            for finding in _cuda_artifact_findings(
+            for finding in artifact_findings(
                 rootfs,
                 self.profiles["b300"],
                 ("12.3",),
@@ -1686,7 +1728,7 @@ class ImageInspectionTests(unittest.TestCase):
         self.assertNotIn("libtorch_cuda.so (", blocker.evidence)
         h100 = {
             finding.id
-            for finding in _cuda_artifact_findings(
+            for finding in artifact_findings(
                 rootfs,
                 self.profiles["h100"],
                 ("12.3",),
@@ -1697,6 +1739,98 @@ class ImageInspectionTests(unittest.TestCase):
             )
         }
         self.assertNotIn("GPF-CUDA-021", h100)
+
+
+class MarkerScanSkipTests(unittest.TestCase):
+    """The marker regex is skipped when cuobjdump will enumerate the same bytes."""
+
+    @staticmethod
+    def _cuobjdump(directory: str, body: str) -> str:
+        executable = Path(directory) / "cuobjdump"
+        executable.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "--version" ]; then '
+            "echo 'Cuda compilation tools, release 13.4, V13.4.92'; exit 0; fi\n"
+            f"{body}",
+            encoding="utf-8",
+        )
+        executable.chmod(0o755)
+        return str(executable)
+
+    @staticmethod
+    def _rootfs(data: bytes, name: str = "usr/lib/libtorch_cuda.so") -> io.BytesIO:
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w") as archive:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+        stream.seek(0)
+        return stream
+
+    def test_analyzer_listing_supersedes_byte_markers(self) -> None:
+        # The payload carries an sm_80 marker that cuobjdump does not list. A successful
+        # listing is the evidence, so the skipped marker scan must not leak sm_80 in.
+        with tempfile.TemporaryDirectory() as directory:
+            tool = resolve_cuobjdump(
+                self._cuobjdump(directory, "echo 'ELF file    1: kernel.1.sm_103.cubin'\n"),
+                timeout_seconds=5,
+            )
+            scan = scan_rootfs_tar(
+                self._rootfs(b"payload mentioning sm_80 in plain text"),
+                max_scan_bytes=1024 * 1024,
+                cuobjdump=tool,
+                max_cuobjdump_files=4,
+                max_artifact_bytes=1024 * 1024,
+            )
+
+        self.assertEqual(scan.cuobjdump_files_analyzed, 1)
+        self.assertEqual(scan.cuobjdump_incomplete, 0)
+        artifact = scan.cuda_artifacts[0]
+        self.assertEqual(artifact.method, "cuobjdump")
+        self.assertTrue(artifact.complete)
+        self.assertEqual(artifact.targets, ("sm_103",))
+        self.assertIn("sm_103", scan.cuda_targets)
+        self.assertNotIn("sm_80", scan.cuda_targets)
+
+    def test_failed_analyzer_recovers_markers_from_streamed_bytes(self) -> None:
+        # cuobjdump fails, so the marker evidence skipped during streaming has to be
+        # recovered from the temporary file rather than silently lost.
+        #
+        # fallback_mode defaults to "auto", which discovers a real cuobjdump 13.0 when
+        # the host has one. A host set up as the README prescribes has exactly that, and
+        # it would list this payload and recover the failure the test is asserting on.
+        with tempfile.TemporaryDirectory() as directory:
+            tool = resolve_cuobjdump(
+                self._cuobjdump(directory, "echo 'Invalid ELF' >&2\nexit 1\n"),
+                timeout_seconds=5,
+                fallback_mode="off",
+            )
+            scan = scan_rootfs_tar(
+                self._rootfs(b"opaque payload carrying sm_90a deep inside"),
+                max_scan_bytes=1024 * 1024,
+                cuobjdump=tool,
+                max_cuobjdump_files=4,
+                max_artifact_bytes=1024 * 1024,
+            )
+
+        self.assertEqual(scan.cuobjdump_incomplete, 1)
+        artifact = scan.cuda_artifacts[0]
+        self.assertEqual(artifact.method, "cuobjdump")
+        self.assertFalse(artifact.complete)
+        self.assertIn("sm_90a", scan.cuda_targets)
+
+    def test_marker_recovery_spans_chunk_boundaries(self) -> None:
+        # The recovery helper reads in 1 MiB chunks like the streaming scan, so it needs
+        # the same carry to find a marker straddling the boundary.
+        marker = b"sm_100"
+        for offset in (3, 0, -3):
+            with self.subTest(offset=offset):
+                split = 1024 * 1024 - len(marker) + offset
+                payload = b"\x00" * split + marker + b"\x00" * 64
+                with tempfile.TemporaryDirectory() as directory:
+                    candidate = Path(directory) / "payload.bin"
+                    candidate.write_bytes(payload)
+                    self.assertEqual(_marker_targets_from_path(candidate), ("sm_100",))
 
 
 if __name__ == "__main__":
