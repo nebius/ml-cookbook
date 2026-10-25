@@ -14,6 +14,9 @@ FAMILY_COMPATIBILITY = {
     100: {100, 103, 107},
     103: {103, 107},
     107: {107},
+    110: {110},
+    120: {120, 121},
+    121: {121},
 }
 CLASSIFICATION_RANK = {
     "incompatible": 0,

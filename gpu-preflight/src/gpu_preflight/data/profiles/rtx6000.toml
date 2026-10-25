@@ -1,0 +1,42 @@
+schema_version = 1
+id = "rtx6000"
+aliases = ["nvidia-rtx-pro-6000", "rtx-pro-6000", "gpu-rtx6000", "gpu-rtx6000-a"]
+display_name = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+maturity = "supported"
+notes = [
+  "RTX-class Blackwell uses SM120 and is a separate target from the SM100 datacenter parts; sm_100 cubins do not run here.",
+  "The Nebius presets pair this GPU with a BlueField-3 network adapter and list no InfiniBand fabric, so the profile declares no compute-fabric adapter and no UCX or HPC-X floor applies.",
+  "No NVIDIA release note states an NCCL platform-support baseline for compute capability 12.0, so none is recorded and NCCL versions are not checked against one.",
+]
+
+[hardware]
+cpu_architectures = ["amd64"]
+gpu_architecture = "blackwell-rtx"
+compute_capability = "12.0"
+native_sm_targets = ["sm_120", "sm_120f", "sm_120a"]
+nebius_platforms = ["gpu-rtx6000", "gpu-rtx6000-a"]
+
+[validation]
+minimum_cuda_version = "12.8"
+runtime_checks = [
+  "cuda-runtime",
+  "nccl-intra-node",
+  "framework-smoke",
+  "workload-smoke",
+]
+
+[[sources]]
+title = "NVIDIA CUDA GPU compute capability"
+url = "https://developer.nvidia.com/cuda/gpus"
+
+[[sources]]
+title = "NVIDIA CUDA 12.8 release notes (compiler support for SM_120)"
+url = "https://docs.nvidia.com/cuda/archive/12.8.0/cuda-toolkit-release-notes/"
+
+[[sources]]
+title = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+url = "https://www.nvidia.com/en-us/data-center/rtx-pro-6000-blackwell-server-edition/"
+
+[[sources]]
+title = "Nebius presets for GPU platforms"
+url = "https://docs.nebius.com/compute/virtual-machines/types#presets-for-gpu-platforms"

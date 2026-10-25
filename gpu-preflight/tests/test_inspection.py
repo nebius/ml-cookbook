@@ -40,7 +40,10 @@ class InspectionTests(unittest.TestCase):
         cls.profiles = load_profiles()
 
     def test_all_requested_profiles_are_packaged(self) -> None:
-        self.assertEqual(set(self.profiles), {"h100", "h200", "b200", "b300", "gb300", "vr"})
+        self.assertEqual(
+            set(self.profiles),
+            {"h100", "h200", "b200", "b300", "gb300", "rtx6000", "vr"},
+        )
 
     def test_artifact_coverage_is_numeric_and_potential_artifacts_require_review(self) -> None:
         coverage = Finding(
@@ -177,6 +180,9 @@ class InspectionTests(unittest.TestCase):
                 "b200": "2.25.1",
                 "b300": "2.27.7",
                 "gb300": "2.27.5",
+                # No NVIDIA release note states an NCCL baseline for compute
+                # capability 12.0, so RTX PRO 6000 records none.
+                "rtx6000": None,
                 "vr": "2.32.3",
             },
         )

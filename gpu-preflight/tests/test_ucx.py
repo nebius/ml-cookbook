@@ -294,10 +294,16 @@ class FindingTests(unittest.TestCase):
             target.evidence_limitations,
         )
 
-    def test_ucx_transport_is_a_required_hardware_check(self) -> None:
+    def test_ucx_transport_tracks_the_compute_fabric(self) -> None:
+        # A platform with an RDMA compute fabric needs the transport verified on
+        # hardware; one without a fabric, such as the RTX PRO 6000 presets, has
+        # nothing for that check to cover.
         for identifier, profile in load_profiles().items():
             with self.subTest(profile=identifier):
-                self.assertIn("ucx-transport", profile.runtime_checks)
+                self.assertEqual(
+                    "ucx-transport" in profile.runtime_checks,
+                    profile.compute_fabric is not None,
+                )
 
 
 if __name__ == "__main__":

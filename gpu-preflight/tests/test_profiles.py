@@ -5,6 +5,7 @@ import tomllib
 import unittest
 from pathlib import Path
 
+from gpu_preflight.compatibility import evaluate_cuda_target
 from gpu_preflight.profiles import (
     load_fabrics,
     load_profiles,
@@ -81,8 +82,28 @@ class FabricTableTests(unittest.TestCase):
                 "b300": "connectx-8",
                 "gb300": "connectx-8",
                 "vr": "connectx-9",
+                # The Nebius RTX PRO 6000 presets list no InfiniBand fabric, so
+                # the profile declares no compute adapter.
+                "rtx6000": None,
             },
         )
+
+
+class RtxProfileTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.profile = load_profiles()["rtx6000"]
+
+    def test_capability_is_sm120(self) -> None:
+        self.assertEqual(self.profile.compute_capability_number, 120)
+
+    def test_datacenter_blackwell_cubins_do_not_run_here(self) -> None:
+        # SM100 and SM120 are both "Blackwell" but are separate targets.
+        self.assertTrue(evaluate_cuda_target("sm_120", 120).compatible)
+        self.assertFalse(evaluate_cuda_target("sm_100", 120).compatible)
+
+    def test_family_target_covers_sm121(self) -> None:
+        self.assertTrue(evaluate_cuda_target("sm_120f", 121).compatible)
 
 
 class FabricParsingTests(unittest.TestCase):

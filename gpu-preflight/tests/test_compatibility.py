@@ -20,6 +20,15 @@ class CompatibilityTests(unittest.TestCase):
         self.assertTrue(result.compatible)
         self.assertEqual(result.classification, "family-compatible")
 
+    def test_sm120f_is_family_compatible_with_sm121(self) -> None:
+        result = evaluate_cuda_target("sm_120f", 121)
+        self.assertTrue(result.compatible)
+        self.assertEqual(result.classification, "family-compatible")
+
+    def test_sm121f_is_not_backward_compatible_with_sm120(self) -> None:
+        result = evaluate_cuda_target("sm_121f", 120)
+        self.assertFalse(result.compatible)
+
     def test_architecture_specific_target_is_exact_only(self) -> None:
         result = evaluate_cuda_target("sm_103a", 107)
         self.assertFalse(result.compatible)
