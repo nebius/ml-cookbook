@@ -15,6 +15,9 @@ compute_capability = "10.3"
 native_sm_targets = ["sm_103", "sm_103f", "sm_103a"]
 nebius_platforms = ["gpu-gb300"]
 
+[fabric]
+compute_adapter = "connectx-8"
+
 [validation]
 minimum_cuda_version = "12.9"
 minimum_nccl_version = "2.27.5"
@@ -24,6 +27,7 @@ runtime_checks = [
   "nccl-mnnvl",
   "nccl-infiniband",
   "gpu-direct-rdma",
+  "ucx-transport",
   "framework-smoke",
   "workload-smoke",
 ]

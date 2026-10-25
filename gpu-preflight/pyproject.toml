@@ -26,4 +26,4 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-gpu_preflight = ["data/profiles/*.toml"]
+gpu_preflight = ["data/profiles/*.toml", "data/fabrics/*.toml"]

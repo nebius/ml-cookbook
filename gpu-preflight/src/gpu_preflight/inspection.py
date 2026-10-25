@@ -6,11 +6,12 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from functools import lru_cache
 
 from gpu_preflight import __version__
 from gpu_preflight.compatibility import summarize_compatibility
 from gpu_preflight.facts import ImageFacts
-from gpu_preflight.profiles import HardwareProfile
+from gpu_preflight.profiles import FabricProfile, HardwareProfile, load_fabrics
 
 UNRESOLVED_FINDINGS = {
     "GPF-CPU-003",
@@ -21,6 +22,7 @@ UNRESOLVED_FINDINGS = {
     "GPF-CUDA-015",
     "GPF-CUDA-019",
     "GPF-NCCL-001",
+    "GPF-UCX-006",
 }
 PASSED_CHECK_FINDINGS = {
     "GPF-CPU-002",
@@ -30,6 +32,7 @@ PASSED_CHECK_FINDINGS = {
     "GPF-IMAGE-001",
     "GPF-IMAGE-003",
     "GPF-NCCL-002",
+    "GPF-UCX-005",
 }
 
 FINDING_DISPLAY_ORDER = {
@@ -48,6 +51,12 @@ FINDING_DISPLAY_ORDER = {
     "GPF-NCCL-001": 50,
     "GPF-NCCL-002": 50,
     "GPF-NCCL-003": 50,
+    "GPF-UCX-001": 55,
+    "GPF-UCX-002": 55,
+    "GPF-UCX-003": 55,
+    "GPF-UCX-004": 55,
+    "GPF-UCX-005": 55,
+    "GPF-UCX-006": 55,
     "GPF-CUDA-001": 60,
     "GPF-CUDA-002": 60,
     "GPF-CUDA-003": 60,
@@ -223,6 +232,221 @@ def _image_reference_findings(facts: ImageFacts) -> tuple[Finding, ...]:
                 ),
             )
         )
+    return tuple(findings)
+
+
+@lru_cache(maxsize=1)
+def _fabrics() -> dict[str, FabricProfile]:
+    return load_fabrics()
+
+
+def _ucx_installed(facts: ImageFacts) -> bool:
+    """Return whether the image carries any UCX or HPC-X installation signal."""
+    return bool(
+        facts.ucx_versions
+        or facts.hpcx_versions
+        or facts.ucx_module_groups
+        or {"ucx", "hpcx"} & set(facts.detected_packages)
+    )
+
+
+def _ucx_version_findings(
+    facts: ImageFacts,
+    profile: HardwareProfile,
+    fabric: FabricProfile,
+) -> tuple[Finding, ...]:
+    """Compare detected UCX and HPC-X releases against the adapter support floor."""
+    comparisons = (
+        ("UCX", facts.ucx_versions, fabric.minimum_ucx_version),
+        ("HPC-X", facts.hpcx_versions, fabric.minimum_hpcx_version),
+    )
+    evaluated = tuple(
+        (label, detected, floor) for label, detected, floor in comparisons if detected and floor
+    )
+    if not evaluated:
+        return ()
+
+    below = tuple(
+        (label, version, floor)
+        for label, detected, floor in evaluated
+        for version in detected
+        if _version_tuple(version) < _version_tuple(floor)
+    )
+    if below:
+        return (
+            Finding(
+                id="GPF-UCX-004",
+                severity="warning",
+                category="compatibility",
+                title="Packaged UCX or HPC-X predates adapter support",
+                evidence=(
+                    f"{profile.display_name} uses {fabric.display_name}. "
+                    + "; ".join(
+                        f"detected {label} {version}, which predates the "
+                        f"{label} {floor} support floor for this adapter"
+                        for label, version, floor in below
+                    )
+                    + ". Static inspection cannot determine which installation the "
+                    "workload loads."
+                ),
+                remediation=(
+                    "Upgrade to an HPC-X or UCX release that lists this adapter as supported, "
+                    "remove stale installations, and confirm the loaded transport on hardware "
+                    "with ucx_info -d."
+                ),
+                details=tuple(
+                    FindingDetail(label=label, value=version, context=f"floor {floor}")
+                    for label, version, floor in below
+                ),
+            ),
+        )
+    return (
+        Finding(
+            id="GPF-UCX-005",
+            severity="info",
+            category="compatibility",
+            title="UCX and HPC-X meet the adapter support floor",
+            evidence=(
+                f"{profile.display_name} uses {fabric.display_name}. "
+                + "; ".join(
+                    f"detected {label} {', '.join(detected)} against the {label} {floor} floor"
+                    for label, detected, floor in evaluated
+                )
+                + ". This does not establish fabric correctness or performance."
+            ),
+            remediation=(
+                "Run the required fabric tests on target hardware and confirm the transport "
+                "actually selected."
+            ),
+        ),
+    )
+
+
+def _ucx_findings(facts: ImageFacts, profile: HardwareProfile) -> tuple[Finding, ...]:
+    """Report on the UCX stack only when the image ships one.
+
+    UCX is optional: NCCL reaches InfiniBand through its own plugin, so an image
+    without UCX is ordinarily correct and produces no finding here. The exception
+    is a package whose own transport backend is UCX.
+    """
+    findings: list[Finding] = []
+    installed = _ucx_installed(facts)
+
+    if "nixl" in facts.detected_packages and not installed:
+        findings.append(
+            Finding(
+                id="GPF-UCX-003",
+                severity="warning",
+                category="compatibility",
+                title="NIXL is installed without a UCX runtime",
+                evidence=(
+                    "NIXL was detected, but no UCX runtime library, transport module, or "
+                    "package record was found in the image. UCX is NIXL's default transfer "
+                    "backend."
+                ),
+                remediation=(
+                    "Install UCX, through HPC-X or a distribution package, or confirm that "
+                    "NIXL is configured for a backend that does not require it."
+                ),
+            )
+        )
+
+    if not installed:
+        return tuple(findings)
+
+    detected_versions = [
+        *(f"UCX {version}" for version in facts.ucx_versions),
+        *(f"HPC-X {version}" for version in facts.hpcx_versions),
+    ]
+    inventory_details = tuple(
+        FindingDetail(
+            label=group.directory,
+            value=len(group.modules),
+            context="modules, CUDA transport present"
+            if group.has_cuda_transport
+            else "modules, no CUDA transport",
+        )
+        for group in facts.ucx_module_groups
+    )
+    if detected_versions:
+        findings.append(
+            Finding(
+                id="GPF-UCX-001",
+                severity="info",
+                category="evidence",
+                title="UCX stack inventory",
+                evidence=(
+                    f"Detected {', '.join(detected_versions)}. Transport module directories "
+                    f"found: {len(facts.ucx_module_groups)}."
+                ),
+                remediation=(
+                    "Confirm the loaded build on hardware with ucx_info -v, since several "
+                    "installations can coexist."
+                ),
+                details=inventory_details,
+            )
+        )
+    else:
+        findings.append(
+            Finding(
+                id="GPF-UCX-006",
+                severity="info",
+                category="evidence",
+                title="UCX release was not established",
+                evidence=(
+                    "A UCX installation is present, but no release was determined: a bare "
+                    "libucp soname identifies the ABI, not the UCX version, and no package "
+                    "record or HPC-X bundle directory supplied one. Transport module "
+                    f"directories found: {len(facts.ucx_module_groups)}."
+                ),
+                remediation=(
+                    "Record the UCX release in package metadata or keep the HPC-X bundle "
+                    "directory name, then confirm on hardware with ucx_info -v."
+                ),
+                details=inventory_details,
+            )
+        )
+
+    # Only a directory that already holds transport modules proves the build is
+    # modular. A UCX built with --enable-modules=no links CUDA support into
+    # libuct itself and legitimately ships no libuct_cuda object.
+    modular_without_cuda = tuple(
+        group
+        for group in facts.ucx_module_groups
+        if any(module.startswith("libuct_") for module in group.modules)
+        and not group.has_cuda_transport
+    )
+    if modular_without_cuda:
+        findings.append(
+            Finding(
+                id="GPF-UCX-002",
+                severity="warning",
+                category="compatibility",
+                title="UCX transport modules exclude CUDA",
+                evidence=(
+                    f"{len(modular_without_cuda)} modular UCX installation(s) ship transport "
+                    "modules but no CUDA transport. Such a build moves GPU buffers through "
+                    "host memory instead of using GPUDirect, which runs without error and "
+                    "passes connectivity tests."
+                ),
+                remediation=(
+                    "Install a UCX built with CUDA support, or the matching CUDA transport "
+                    "package, and confirm with ucx_info -d that cuda_copy and cuda_ipc are "
+                    "listed."
+                ),
+                details=tuple(
+                    FindingDetail(
+                        label=group.directory,
+                        value=", ".join(group.modules[:6]),
+                        context="transport modules found",
+                    )
+                    for group in modular_without_cuda
+                ),
+            )
+        )
+
+    if fabric := _fabrics().get(profile.compute_fabric or ""):
+        findings.extend(_ucx_version_findings(facts, profile, fabric))
     return tuple(findings)
 
 
@@ -518,6 +742,8 @@ def _target_findings(facts: ImageFacts, profile: HardwareProfile) -> tuple[Findi
                     )
                 )
 
+    findings.extend(_ucx_findings(facts, profile))
+
     findings.append(
         Finding(
             id="GPF-RUNTIME-001",
@@ -774,6 +1000,9 @@ def inspect(facts: ImageFacts, profiles: tuple[HardwareProfile, ...]) -> Inspect
             "cuda_targets": list(facts.cuda_targets),
             "cuda_versions": list(facts.cuda_versions),
             "nccl_versions": list(facts.nccl_versions),
+            "ucx_versions": list(facts.ucx_versions),
+            "hpcx_versions": list(facts.hpcx_versions),
+            "ucx_module_groups": [asdict(group) for group in facts.ucx_module_groups],
             "detected_packages": list(facts.detected_packages),
             "torch_cuda_arch_list": facts.environment.get("TORCH_CUDA_ARCH_LIST"),
             "static_analysis_limitations": list(STATIC_ANALYSIS_LIMITATIONS),

@@ -40,11 +40,27 @@ NCCL_PACKAGE_VERSION_RE = re.compile(
     re.IGNORECASE,
 )
 
+UCX_PACKAGE_VERSION_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:libucx\d*(?:-dev)?|openucx|ucx(?:-tools)?)"
+    r"\s*(?:==|=|[-_])\s*(?:\d+:)?v?(?P<version>\d+\.\d+(?:\.\d+)*)",
+    re.IGNORECASE,
+)
+HPCX_BUNDLE_RE = re.compile(
+    r"\bhpc[-_]?x[-_\s]v?(?P<version>\d+\.\d+(?:\.\d+)*)",
+    re.IGNORECASE,
+)
+HPCX_PACKAGE_VERSION_RE = re.compile(
+    r"(?<![A-Za-z0-9])hpcx(?:-[a-z]+)?"
+    r"\s*(?:==|=)\s*(?:\d+:)?v?(?P<version>\d+\.\d+(?:\.\d+)*)",
+    re.IGNORECASE,
+)
+
 PACKAGE_PATTERNS = {
     "cuda": re.compile(r"\bcuda(?:-toolkit)?\b|\bcu(?:12|13)\d\b", re.IGNORECASE),
     "deepep": re.compile(r"\bdeep[-_]?ep\b", re.IGNORECASE),
     "flashinfer": re.compile(r"\bflashinfer(?:-python)?\b", re.IGNORECASE),
     "gdrcopy": re.compile(r"\bgdrcopy\b|\blibgdrapi\b", re.IGNORECASE),
+    "hpcx": re.compile(r"\bhpcx\b|\bhpc-x\b", re.IGNORECASE),
     "hybridep": re.compile(r"\bhybrid[-_]?ep\b", re.IGNORECASE),
     "jax": re.compile(r"\bjax(?:lib)?\b", re.IGNORECASE),
     "megatron-lm": re.compile(r"\bmegatron[-_]?lm\b", re.IGNORECASE),
@@ -55,9 +71,27 @@ PACKAGE_PATTERNS = {
     "pytorch": re.compile(r"\bpytorch\b|\btorch(?:==|~=|>=|<=|\[|\s)", re.IGNORECASE),
     "sglang": re.compile(r"\bsglang\b", re.IGNORECASE),
     "transformer-engine": re.compile(r"\btransformer[-_]?engine\b", re.IGNORECASE),
+    "ucx": re.compile(r"\bucx\b|\blibucx\d*\b|\bopenucx\b", re.IGNORECASE),
     "vllm": re.compile(r"\bvllm\b", re.IGNORECASE),
     "xla": re.compile(r"\bxla\b", re.IGNORECASE),
 }
+
+
+@dataclass(frozen=True)
+class UcxModuleGroup:
+    """One UCX transport-module directory and the modules installed in it.
+
+    UCX can be built with its transports linked into ``libuct`` instead of loaded
+    as modules, so an absent CUDA module only means something when the directory
+    proves the build is modular.
+    """
+
+    directory: str
+    modules: tuple[str, ...]
+
+    @property
+    def has_cuda_transport(self) -> bool:
+        return any(module.startswith("libuct_") and "cuda" in module for module in self.modules)
 
 
 @dataclass(frozen=True)
@@ -70,6 +104,9 @@ class ImageFacts:
     nccl_versions: tuple[str, ...]
     detected_packages: tuple[str, ...]
     environment: dict[str, str]
+    ucx_versions: tuple[str, ...] = ()
+    hpcx_versions: tuple[str, ...] = ()
+    ucx_module_groups: tuple[UcxModuleGroup, ...] = ()
 
     @property
     def image_references(self) -> tuple[str, ...]:
@@ -106,6 +143,36 @@ def detect_cuda_versions(text: str, environment: dict[str, str] | None = None) -
     for name, value in (environment or {}).items():
         if name.upper() == "CUDA_VERSION" and (match := re.search(r"\d+\.\d+(?:\.\d+)*", value)):
             versions.add(match.group())
+    return versions
+
+
+def detect_ucx_versions(text: str, environment: dict[str, str] | None = None) -> set[str]:
+    """Detect UCX releases from package records and explicit environment values.
+
+    A bare ``libucp.so.0`` soname is deliberately not a signal: it identifies the
+    ABI, not the UCX release, and reporting it as a version would invent evidence.
+    """
+    versions = {match.group("version") for match in UCX_PACKAGE_VERSION_RE.finditer(text)}
+    for name, value in (environment or {}).items():
+        if name.upper() in {"UCX_VERSION", "OPENUCX_VERSION"} and (
+            match := re.search(r"(?:\d+:)?v?(\d+\.\d+(?:\.\d+)*)", value)
+        ):
+            versions.add(match.group(1))
+    return versions
+
+
+def detect_hpcx_versions(text: str, environment: dict[str, str] | None = None) -> set[str]:
+    """Detect HPC-X releases from bundle directory names, packages, and environment."""
+    versions = {match.group("version") for match in HPCX_BUNDLE_RE.finditer(text)}
+    versions.update(match.group("version") for match in HPCX_PACKAGE_VERSION_RE.finditer(text))
+    for name, value in (environment or {}).items():
+        if name.upper() not in {"HPCX_VERSION", "HPCX_DIR", "HPCX_HOME"}:
+            continue
+        versions.update(match.group("version") for match in HPCX_BUNDLE_RE.finditer(value))
+        if name.upper() == "HPCX_VERSION" and (
+            match := re.search(r"(?:\d+:)?v?(\d+\.\d+(?:\.\d+)*)", value)
+        ):
+            versions.add(match.group(1))
     return versions
 
 

@@ -16,6 +16,9 @@ compute_capability = "10.7"
 native_sm_targets = ["sm_107", "sm_107f", "sm_107a"]
 nebius_platforms = ["announced-vr-nvl72"]
 
+[fabric]
+compute_adapter = "connectx-9"
+
 [validation]
 minimum_cuda_version = "13.4"
 minimum_nccl_version = "2.32.3"
@@ -25,6 +28,7 @@ runtime_checks = [
   "rack-fabric",
   "scaleout-network",
   "gpu-direct-rdma",
+  "ucx-transport",
   "framework-smoke",
   "workload-smoke",
 ]

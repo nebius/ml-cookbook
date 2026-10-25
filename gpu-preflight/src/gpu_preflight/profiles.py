@@ -19,6 +19,25 @@ class Source:
 
 
 @dataclass(frozen=True)
+class FabricProfile:
+    """Version floors and provenance for one compute-fabric network adapter.
+
+    Floors live here rather than on a hardware profile because adapter support is
+    a property of the NIC generation: one citation covers every GPU platform that
+    ships the same adapter.
+    """
+
+    schema_version: int
+    id: str
+    display_name: str
+    generation: int
+    minimum_ucx_version: str | None
+    minimum_hpcx_version: str | None
+    notes: tuple[str, ...]
+    sources: tuple[Source, ...]
+
+
+@dataclass(frozen=True)
 class HardwareProfile:
     schema_version: int
     id: str
@@ -30,6 +49,7 @@ class HardwareProfile:
     compute_capability: str
     native_sm_targets: tuple[str, ...]
     nebius_platforms: tuple[str, ...]
+    compute_fabric: str | None
     minimum_cuda_version: str | None
     minimum_nccl_version: str | None
     runtime_checks: tuple[str, ...]
@@ -73,17 +93,12 @@ def _optional_string(value: object, field: str, path: str) -> str | None:
     return _string(value, field, path)
 
 
-def parse_profile(document: dict[str, object], path: str) -> HardwareProfile:
-    if document.get("schema_version") != 1:
-        raise ValueError(f"{path}: schema_version must be 1")
+def _optional_lower(value: object, field: str, path: str) -> str | None:
+    lowered = _optional_string(value, field, path)
+    return lowered.lower() if lowered else None
 
-    hardware = _required_table(document, "hardware", path)
-    validation = _required_table(document, "validation", path)
-    maturity = _string(document.get("maturity"), "maturity", path)
-    if maturity not in SUPPORTED_MATURITY:
-        supported = ", ".join(sorted(SUPPORTED_MATURITY))
-        raise ValueError(f"{path}: maturity must be one of {supported}")
 
+def _sources(document: dict[str, object], path: str) -> tuple[Source, ...]:
     source_documents = document.get("sources", [])
     if not isinstance(source_documents, list):
         raise ValueError(f"{path}: sources must be an array of tables")
@@ -97,6 +112,53 @@ def parse_profile(document: dict[str, object], path: str) -> HardwareProfile:
     )
     if len(sources) != len(source_documents):
         raise ValueError(f"{path}: every source must be a table")
+    return sources
+
+
+def _optional_table(document: dict[str, object], name: str, path: str) -> dict[str, object]:
+    value = document.get(name, {})
+    if not isinstance(value, dict):
+        raise ValueError(f"{path}: {name} must be a table")
+    return value
+
+
+def parse_fabric(document: dict[str, object], path: str) -> FabricProfile:
+    if document.get("schema_version") != 1:
+        raise ValueError(f"{path}: schema_version must be 1")
+
+    validation = _optional_table(document, "validation", path)
+    generation = document.get("generation")
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+        raise ValueError(f"{path}: generation must be a positive integer")
+
+    return FabricProfile(
+        schema_version=1,
+        id=_string(document.get("id"), "id", path).lower(),
+        display_name=_string(document.get("display_name"), "display_name", path),
+        generation=generation,
+        minimum_ucx_version=_optional_string(
+            validation.get("minimum_ucx_version"), "validation.minimum_ucx_version", path
+        ),
+        minimum_hpcx_version=_optional_string(
+            validation.get("minimum_hpcx_version"), "validation.minimum_hpcx_version", path
+        ),
+        notes=_strings(document.get("notes", []), "notes", path),
+        sources=_sources(document, path),
+    )
+
+
+def parse_profile(document: dict[str, object], path: str) -> HardwareProfile:
+    if document.get("schema_version") != 1:
+        raise ValueError(f"{path}: schema_version must be 1")
+
+    hardware = _required_table(document, "hardware", path)
+    validation = _required_table(document, "validation", path)
+    maturity = _string(document.get("maturity"), "maturity", path)
+    if maturity not in SUPPORTED_MATURITY:
+        supported = ", ".join(sorted(SUPPORTED_MATURITY))
+        raise ValueError(f"{path}: maturity must be one of {supported}")
+
+    sources = _sources(document, path)
 
     profile = HardwareProfile(
         schema_version=1,
@@ -120,6 +182,11 @@ def parse_profile(document: dict[str, object], path: str) -> HardwareProfile:
         ),
         nebius_platforms=_strings(
             hardware.get("nebius_platforms"), "hardware.nebius_platforms", path
+        ),
+        compute_fabric=_optional_lower(
+            _optional_table(document, "fabric", path).get("compute_adapter"),
+            "fabric.compute_adapter",
+            path,
         ),
         minimum_cuda_version=_optional_string(
             validation.get("minimum_cuda_version"),
@@ -147,6 +214,20 @@ def _load_toml_path(path: Path) -> HardwareProfile:
         return parse_profile(tomllib.load(handle), str(path))
 
 
+def load_fabrics() -> dict[str, FabricProfile]:
+    loaded: dict[str, FabricProfile] = {}
+    fabric_files = resources.files("gpu_preflight.data.fabrics")
+    for resource in sorted(fabric_files.iterdir(), key=lambda item: item.name):
+        if not resource.name.endswith(".toml"):
+            continue
+        with resource.open("rb") as handle:
+            fabric = parse_fabric(tomllib.load(handle), resource.name)
+        if fabric.id in loaded:
+            raise ValueError(f"{resource.name}: duplicate fabric id {fabric.id!r}")
+        loaded[fabric.id] = fabric
+    return loaded
+
+
 def load_profiles(extra_directory: Path | None = None) -> dict[str, HardwareProfile]:
     loaded: dict[str, HardwareProfile] = {}
     profile_files = resources.files("gpu_preflight.data.profiles")
@@ -163,6 +244,15 @@ def load_profiles(extra_directory: Path | None = None) -> dict[str, HardwareProf
             if profile.id in loaded:
                 raise ValueError(f"{path}: duplicate profile id {profile.id!r}")
             loaded[profile.id] = profile
+
+    fabrics = load_fabrics()
+    for profile in loaded.values():
+        if profile.compute_fabric and profile.compute_fabric not in fabrics:
+            choices = ", ".join(sorted(fabrics))
+            raise ValueError(
+                f"profile {profile.id!r} declares unknown compute fabric "
+                f"{profile.compute_fabric!r}; available adapters: {choices}"
+            )
 
     aliases: dict[str, str] = {}
     for profile in loaded.values():

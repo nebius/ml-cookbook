@@ -39,6 +39,13 @@
         "nebius_platforms": {"type": "array", "items": {"type": "string"}}
       }
     },
+    "fabric": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "compute_adapter": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"}
+      }
+    },
     "validation": {
       "type": "object",
       "additionalProperties": false,

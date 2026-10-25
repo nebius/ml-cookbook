@@ -302,7 +302,8 @@ def render_profiles_text(profiles: tuple[HardwareProfile, ...]) -> str:
         lines.append(
             f"           CPU: {', '.join(profile.cpu_architectures)}; "
             f"CUDA >= {profile.minimum_cuda_version or 'unspecified'}; "
-            f"NCCL >= {profile.minimum_nccl_version or 'unspecified'}; aliases: {aliases}"
+            f"NCCL >= {profile.minimum_nccl_version or 'unspecified'}; "
+            f"fabric: {profile.compute_fabric or 'unspecified'}; aliases: {aliases}"
         )
     return "\n".join(lines) + "\n"
 

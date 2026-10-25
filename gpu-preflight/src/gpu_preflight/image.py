@@ -34,10 +34,13 @@ from gpu_preflight.cuda_inspection import (
 )
 from gpu_preflight.facts import (
     ImageFacts,
+    UcxModuleGroup,
     detect_cuda_targets,
     detect_cuda_versions,
+    detect_hpcx_versions,
     detect_nccl_versions,
     detect_packages,
+    detect_ucx_versions,
 )
 from gpu_preflight.inspection import (
     Finding,
@@ -127,6 +130,135 @@ class NcclVersionEvidence:
     path: str | None = None
 
 
+@dataclass(frozen=True)
+class UcxEvidence:
+    """A UCX or HPC-X installation signal and the image record that produced it."""
+
+    kind: str
+    name: str
+    source: str
+    path: str | None = None
+    version: str | None = None
+
+
+# UCX installs its core libraries as libucp/libuct/libucs/libucm and, in a modular
+# build, its transports as separate objects in a directory named ucx. Neither name
+# carries a CUDA marker, so the main CUDA candidate gate never sees them.
+# The soname suffix is excluded from the captured name so libuct_cuda.so,
+# libuct_cuda.so.1, and libuct_cuda.so.1.0.0 collapse to one module rather than
+# tripling every module count.
+UCX_RUNTIME_LIBRARY_RE = re.compile(r"(?:^|/)(?P<name>lib(?:ucp|uct|ucs|ucm)\.so)(?:\.\d+)*$")
+UCX_TRANSPORT_MODULE_RE = re.compile(r"(?:^|.*/)ucx/(?P<name>lib[a-z0-9_]+\.so)(?:\.\d+)*$")
+HPCX_BUNDLE_DIR_RE = re.compile(r"^(?P<root>.*?hpcx[-_]v?(?P<version>\d+\.\d+(?:\.\d+)*)[^/]*)/")
+
+
+def _ucx_path_evidence(path: str) -> set[UcxEvidence]:
+    """Return UCX evidence implied by one image path, without reading the file."""
+    lowered = path.lower()
+    if not ("ucx" in lowered or "hpcx" in lowered or "libuc" in lowered):
+        return set()
+    evidence: set[UcxEvidence] = set()
+    if bundle := HPCX_BUNDLE_DIR_RE.match(path.lstrip("/")):
+        root = bundle.group("root")
+        evidence.add(
+            UcxEvidence(
+                kind="bundle",
+                name=PurePosixPath(root).name,
+                source="filesystem",
+                path=f"/{root}",
+                version=bundle.group("version"),
+            )
+        )
+    if module := UCX_TRANSPORT_MODULE_RE.search(path):
+        evidence.add(
+            UcxEvidence(
+                kind="transport-module",
+                name=module.group("name"),
+                source="filesystem",
+                path=f"/{path.lstrip('/')}",
+            )
+        )
+    elif runtime := UCX_RUNTIME_LIBRARY_RE.search(path):
+        evidence.add(
+            UcxEvidence(
+                kind="runtime-library",
+                name=runtime.group("name"),
+                source="filesystem",
+                path=f"/{path.lstrip('/')}",
+            )
+        )
+    return evidence
+
+
+def _ucx_evidence_sort_key(item: UcxEvidence) -> tuple[str, str, str, str]:
+    return (item.kind, item.name, item.source, item.path or "")
+
+
+def ucx_module_groups(evidence: tuple[UcxEvidence, ...]) -> tuple[UcxModuleGroup, ...]:
+    """Group transport modules by the directory that holds them."""
+    directories: dict[str, set[str]] = {}
+    for item in evidence:
+        if item.kind != "transport-module" or not item.path:
+            continue
+        directories.setdefault(str(PurePosixPath(item.path).parent), set()).add(item.name)
+    return tuple(
+        UcxModuleGroup(directory=directory, modules=tuple(sorted(modules)))
+        for directory, modules in sorted(directories.items())
+    )
+
+
+def ucx_versions(evidence: tuple[UcxEvidence, ...]) -> tuple[str, ...]:
+    """Return UCX releases, which only package and environment records establish."""
+    return tuple(
+        sorted(
+            {
+                item.version
+                for item in evidence
+                if item.version and item.kind == "package" and "hpcx" not in item.name.lower()
+            },
+            key=_version_sort_key,
+        )
+    )
+
+
+def hpcx_versions(evidence: tuple[UcxEvidence, ...]) -> tuple[str, ...]:
+    """Return HPC-X releases from bundle directory names and package records."""
+    return tuple(
+        sorted(
+            {
+                item.version
+                for item in evidence
+                if item.version and (item.kind == "bundle" or "hpcx" in item.name.lower())
+            },
+            key=_version_sort_key,
+        )
+    )
+
+
+def _ucx_package_evidence(package: str, *, source: str, path: str) -> set[UcxEvidence]:
+    """Return UCX and HPC-X evidence for one normalized package inventory record."""
+    name = package.partition("==")[0]
+    return {
+        UcxEvidence(kind="package", name=name, source=source, path=path, version=version)
+        for version in (*detect_ucx_versions(package), *detect_hpcx_versions(package))
+    }
+
+
+def _ucx_config_evidence(environment: dict[str, str]) -> tuple[UcxEvidence, ...]:
+    """Attribute UCX and HPC-X versions to explicit image-config environment values."""
+    evidence: set[UcxEvidence] = set()
+    for name, value in environment.items():
+        versions = {
+            *detect_ucx_versions(f"{name}={value}", {name: value}),
+            *detect_hpcx_versions(f"{name}={value}", {name: value}),
+        }
+        for version in versions:
+            evidence.add(
+                UcxEvidence(kind="package", name=name, source="image-config", version=version)
+            )
+    return tuple(evidence)
+
+
 @dataclass
 class _KernelCatalogAccumulator:
     kind: str = "precompiled-cubin"
@@ -172,6 +304,7 @@ class RootfsScan:
     dispatch_module_members: int = 0
     dispatch_module_groups: int = 0
     nccl_evidence: tuple[NcclVersionEvidence, ...] = ()
+    ucx_evidence: tuple[UcxEvidence, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -189,6 +322,7 @@ class PulledImageFacts:
     command: tuple[str, ...]
     rootfs: RootfsScan | None = None
     nccl_evidence: tuple[NcclVersionEvidence, ...] = ()
+    ucx_evidence: tuple[UcxEvidence, ...] = ()
 
 
 def _platform_name(os_name: str | None, architecture: str | None) -> str | None:
@@ -513,6 +647,7 @@ def scan_rootfs_tar(
     cuda_versions: set[str] = set()
     nccl_versions: set[str] = set()
     nccl_evidence: set[NcclVersionEvidence] = set()
+    ucx_evidence: set[UcxEvidence] = set()
     files_seen = 0
     bytes_scanned = 0
     metadata_bytes_scanned = 0
@@ -555,6 +690,7 @@ def scan_rootfs_tar(
                 lower_name = name.lower()
                 known_packages.update(detect_packages(name))
                 cuda_targets.update(detect_cuda_targets(name))
+                ucx_evidence.update(_ucx_path_evidence(name))
 
                 basename = PurePosixPath(name).name
                 is_python_metadata = basename in PACKAGE_METADATA_NAMES and (
@@ -568,6 +704,10 @@ def scan_rootfs_tar(
                     "usr/local/cuda/version.json",
                     "usr/local/cuda/version.txt",
                 }
+                # HPC-X records its release in a VERSION file at the bundle root.
+                # NGC images install the bundle at an unversioned /opt/hpcx, so this
+                # file is often the only on-disk source of the release.
+                is_hpcx_version_file = lower_name.endswith("hpcx/version")
                 is_nccl_header = basename.lower() == "nccl.h" and any(
                     marker in lower_name for marker in ("/include/", "usr/include/", "opt/nccl/")
                 )
@@ -594,6 +734,7 @@ def scan_rootfs_tar(
                     or is_conda_metadata
                     or is_cuda_candidate
                     or is_cuda_version_file
+                    or is_hpcx_version_file
                     or is_nccl_header
                 ):
                     continue
@@ -782,6 +923,17 @@ def scan_rootfs_tar(
                 known_packages.update(detect_packages(decoded))
                 if is_cuda_version_file:
                     cuda_versions.update(_cuda_version_file(data))
+                if is_hpcx_version_file:
+                    ucx_evidence.update(
+                        UcxEvidence(
+                            kind="bundle",
+                            name="HPC-X VERSION",
+                            source="filesystem",
+                            path=f"/{name}",
+                            version=version,
+                        )
+                        for version in detect_hpcx_versions(decoded)
+                    )
                 if is_nccl_header:
                     header_versions = _nccl_header_version(data)
                     nccl_versions.update(header_versions)
@@ -825,6 +977,13 @@ def scan_rootfs_tar(
                     for package in new_inventory:
                         nccl_evidence.update(
                             _nccl_package_evidence(
+                                package,
+                                source=inventory_source,
+                                path=f"/{name}",
+                            )
+                        )
+                        ucx_evidence.update(
+                            _ucx_package_evidence(
                                 package,
                                 source=inventory_source,
                                 path=f"/{name}",
@@ -917,6 +1076,7 @@ def scan_rootfs_tar(
                 ),
             )
         ),
+        ucx_evidence=tuple(sorted(ucx_evidence, key=_ucx_evidence_sort_key)),
     )
 
 
@@ -1041,6 +1201,7 @@ class DockerImageClient:
             entrypoint=_string_tuple(config.get("Entrypoint")),
             command=_string_tuple(config.get("Cmd")),
             nccl_evidence=_nccl_config_evidence(environment, detected_nccl_versions),
+            ucx_evidence=_ucx_config_evidence(environment),
         )
 
     def scan_filesystem(
@@ -1148,6 +1309,12 @@ class DockerImageClient:
                         item.name,
                         item.path or "",
                     ),
+                )
+            ),
+            ucx_evidence=tuple(
+                sorted(
+                    {*config.ucx_evidence, *rootfs.ucx_evidence},
+                    key=_ucx_evidence_sort_key,
                 )
             ),
         )
@@ -2402,6 +2569,8 @@ def inspect_with_image(
     image_cuda_versions: set[str] = set()
     image_nccl_versions: set[str] = set()
     nccl_evidence_observations: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
+    ucx_evidence_observations: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
+    image_ucx_evidence: set[UcxEvidence] = set()
     cuda_artifacts: list[dict[str, object]] = []
     cuda_compatibility_exceptions: list[dict[str, object]] = []
     skipped_cuda_candidates: list[dict[str, object]] = []
@@ -2526,6 +2695,9 @@ def inspect_with_image(
                 **facts.environment,
                 **(content.environment if content else {}),
             },
+            ucx_versions=ucx_versions(content.ucx_evidence) if content else (),
+            hpcx_versions=hpcx_versions(content.ucx_evidence) if content else (),
+            ucx_module_groups=ucx_module_groups(content.ucx_evidence) if content else (),
         )
         target_report = inspect(target_facts, (profile,)).targets[0]
         if selected and content:
@@ -2683,6 +2855,19 @@ def inspect_with_image(
                     "platform": content.platform,
                     **asdict(evidence),
                 }
+            image_ucx_evidence.update(content.ucx_evidence)
+            for ucx_item in content.ucx_evidence:
+                ucx_key = (
+                    content.platform,
+                    ucx_item.kind,
+                    ucx_item.name,
+                    ucx_item.source,
+                    ucx_item.path or "",
+                )
+                ucx_evidence_observations[ucx_key] = {
+                    "platform": content.platform,
+                    **asdict(ucx_item),
+                }
             capabilities["image_config_inspected"] = True
         findings = (*image_findings, *target_report.findings)
         artifact_counts: tuple[int, int] | None = None
@@ -2738,6 +2923,14 @@ def inspect_with_image(
                 nccl_evidence_observations,
                 key=lambda item: (_version_sort_key(item[1]), item[0], *item[2:]),
             )
+        ],
+        "ucx_versions": list(ucx_versions(tuple(image_ucx_evidence))),
+        "hpcx_versions": list(hpcx_versions(tuple(image_ucx_evidence))),
+        "ucx_module_groups": [
+            asdict(group) for group in ucx_module_groups(tuple(image_ucx_evidence))
+        ],
+        "ucx_evidence": [
+            ucx_evidence_observations[key] for key in sorted(ucx_evidence_observations)
         ],
         "cuda_artifacts": cuda_artifacts,
         "cuda_compatibility_exceptions": sorted_cuda_compatibility_exceptions,

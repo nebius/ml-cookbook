@@ -15,6 +15,9 @@ compute_capability = "9.0"
 native_sm_targets = ["sm_90", "sm_90a"]
 nebius_platforms = ["gpu-h200-sxm"]
 
+[fabric]
+compute_adapter = "connectx-7"
+
 [validation]
 minimum_cuda_version = "11.8"
 minimum_nccl_version = "2.22.3"
@@ -22,6 +25,7 @@ runtime_checks = [
   "cuda-runtime",
   "nccl-intra-node",
   "nccl-infiniband",
+  "ucx-transport",
   "framework-smoke",
   "workload-smoke",
 ]

@@ -100,6 +100,10 @@
         "cuda_targets": {"type": "array", "items": {"type": "string"}},
         "cuda_versions": {"type": "array", "items": {"type": "string"}},
         "nccl_versions": {"type": "array", "items": {"type": "string"}},
+        "ucx_versions": {"type": "array", "items": {"type": "string"}},
+        "hpcx_versions": {"type": "array", "items": {"type": "string"}},
+        "ucx_module_groups": {"type": "array", "items": {"$ref": "#/$defs/ucxModuleGroup"}},
+        "ucx_evidence": {"type": "array", "items": {"$ref": "#/$defs/ucxEvidence"}},
         "detected_packages": {"type": "array", "items": {"type": "string"}},
         "torch_cuda_arch_list": {"type": ["string", "null"]},
         "image_scan_mode": {"enum": ["manifest", "pull", "filesystem"]},
@@ -145,6 +149,28 @@
           "type": "object",
           "additionalProperties": {"$ref": "#/$defs/cudaTargetSummary"}
         }
+      }
+    },
+    "ucxModuleGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["directory", "modules"],
+      "properties": {
+        "directory": {"type": "string"},
+        "modules": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "ucxEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "kind", "name", "source"],
+      "properties": {
+        "platform": {"type": "string"},
+        "kind": {"enum": ["bundle", "package", "runtime-library", "transport-module"]},
+        "name": {"type": "string"},
+        "source": {"type": "string"},
+        "path": {"type": ["string", "null"]},
+        "version": {"type": ["string", "null"]}
       }
     },
     "cudaTargetSummary": {
