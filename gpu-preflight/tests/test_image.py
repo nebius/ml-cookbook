@@ -1678,6 +1678,63 @@ class ImageInspectionTests(unittest.TestCase):
         )
         self.assertIn("artifact-limit", core.details[0].context or "")
 
+    def test_core_library_analyzer_error_points_at_the_analyzer_not_a_size_limit(self) -> None:
+        rootfs = rootfs_with(
+            artifacts=(
+                CudaArtifactEvidence(
+                    path="/usr/lib/x86_64-linux-gnu/libnccl.so.2.26.3",
+                    size_bytes=256 * 1024 * 1024,
+                    targets=(),
+                    method="cuobjdump",
+                    complete=False,
+                    role="runtime",
+                    diagnostic="cuobjdump fatal : Invalid ELF",
+                    incomplete_reason="analyzer error",
+                ),
+            )
+        )
+        findings = {
+            finding.id: finding
+            for finding in artifact_findings(
+                rootfs,
+                self.profiles["b300"],
+                ("12.9",),
+                max_scan_bytes=1024,
+                max_cuobjdump_files=None,
+                max_artifact_bytes=2048 * 1024 * 1024,
+                cuobjdump_timeout_seconds=30,
+            )
+        }
+        core = findings["GPF-CUDA-019"]
+        self.assertEqual(core.severity, "warning")
+        self.assertIn("--cuobjdump-fallback", core.remediation)
+        self.assertNotIn("--max-artifact-mb", core.remediation)
+
+    def test_core_library_skipped_for_size_still_points_at_the_size_limit(self) -> None:
+        rootfs = rootfs_with(
+            skipped=(
+                SkippedCudaCandidate(
+                    path="/usr/local/lib/python3.10/dist-packages/torch/lib/libtorch_cuda.so",
+                    size_bytes=1400 * 1024 * 1024,
+                    reason="artifact-limit",
+                ),
+            )
+        )
+        findings = {
+            finding.id: finding
+            for finding in artifact_findings(
+                rootfs,
+                self.profiles["h100"],
+                ("12.3",),
+                max_scan_bytes=1024,
+                max_cuobjdump_files=None,
+                max_artifact_bytes=768 * 1024 * 1024,
+                cuobjdump_timeout_seconds=30,
+            )
+        }
+        self.assertIn("--max-artifact-mb", findings["GPF-CUDA-019"].remediation)
+        self.assertNotIn("--cuobjdump-fallback", findings["GPF-CUDA-019"].remediation)
+
     def test_shared_platform_is_reported_for_multi_target_runs(self) -> None:
         report = inspect_with_image(
             image_facts(),

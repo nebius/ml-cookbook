@@ -306,19 +306,19 @@ class CliTests(unittest.TestCase):
             self.report(platform="linux/amd64"),
             fail_on="never",
         )
-        self.assertEqual(warning_exit, 2)
+        self.assertEqual(warning_exit, 0)
         self.assertEqual(blocker_exit, 2)
         self.assertEqual(advisory_exit, 0)
 
-    def test_default_threshold_fails_on_warning(self) -> None:
+    def _exit_code_for(self, report, extra: list[str] | None = None) -> int:
         stdout = io.StringIO()
         stderr = io.StringIO()
         with (
-            patch("gpu_preflight.cli.inspect_image_reference", return_value=self.report()),
+            patch("gpu_preflight.cli.inspect_image_reference", return_value=report),
             redirect_stdout(stdout),
             redirect_stderr(stderr),
         ):
-            exit_code = main(
+            return main(
                 [
                     "inspect",
                     "registry.example/pytorch:1",
@@ -326,9 +326,27 @@ class CliTests(unittest.TestCase):
                     "gb300",
                     "--format",
                     "json",
+                    *(extra or []),
                 ]
             )
-        self.assertEqual(exit_code, 2)
+
+    def test_default_threshold_ignores_reproducibility_alone(self) -> None:
+        # An unpinned tag is a property of the reference, not of the image, and it is present on
+        # nearly every real scan. Letting it set the exit code on its own would leave that code
+        # saying nothing about the image.
+        report = self.report()
+        self.assertEqual(
+            {
+                finding.severity
+                for finding in report.global_findings
+                if finding.category == "reproducibility"
+            },
+            {"warning"},
+        )
+        self.assertEqual(self._exit_code_for(report), 0)
+
+    def test_default_threshold_fails_on_compatibility_blocker(self) -> None:
+        self.assertEqual(self._exit_code_for(self.report(platform="linux/amd64")), 2)
 
     def test_html_output_parameter_writes_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

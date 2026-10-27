@@ -78,6 +78,51 @@ class InspectionTests(unittest.TestCase):
         self.assertEqual(compatibility_status_for(findings), "REVIEW_REQUIRED")
         self.assertEqual(artifact_inspection_coverage_percent_for(findings), 19.0)
 
+    def test_uninspected_core_library_outranks_a_compatibility_warning(self) -> None:
+        # A warning-level label reads as "fix these and ship". When a library every GPU job loads
+        # was never read, the listed findings describe only the artifacts that could be read, so
+        # the assessment is unsupported rather than merely actionable.
+        core_gap = Finding(
+            id="GPF-CUDA-019",
+            severity="warning",
+            category="evidence",
+            title="Core framework libraries were not inspected",
+            evidence="libnccl has no cuobjdump target listing.",
+            remediation="Repeat the scan with a matching analyzer.",
+        )
+        nccl_warning = Finding(
+            id="GPF-NCCL-003",
+            severity="warning",
+            category="compatibility",
+            title="Packaged NCCL version predates target support",
+            evidence="Detected NCCL 2.15.5.",
+            remediation="Upgrade NCCL.",
+        )
+        self.assertEqual(
+            compatibility_status_for((core_gap, nccl_warning)),
+            "INSUFFICIENT_EVIDENCE",
+        )
+        self.assertEqual(compatibility_status_for((nccl_warning,)), "ACTION_REQUIRED")
+
+    def test_confirmed_blocker_outranks_an_uninspected_core_library(self) -> None:
+        core_gap = Finding(
+            id="GPF-CUDA-019",
+            severity="warning",
+            category="evidence",
+            title="Core framework libraries were not inspected",
+            evidence="libnccl has no cuobjdump target listing.",
+            remediation="Repeat the scan with a matching analyzer.",
+        )
+        blocker = Finding(
+            id="GPF-CUDA-021",
+            severity="blocker",
+            category="compatibility",
+            title="A library every GPU job loads has no code for this GPU",
+            evidence="No target runs on sm_103.",
+            remediation="Rebuild for the target.",
+        )
+        self.assertEqual(compatibility_status_for((core_gap, blocker)), "INCOMPATIBLE")
+
     def test_role_excluded_marker_strings_are_not_an_executive_limitation(self) -> None:
         finding = Finding(
             id="GPF-CUDA-012",

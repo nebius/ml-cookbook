@@ -1,6 +1,6 @@
 # Nebius GPU Preflight
 
-GPU Preflight statically inspects a customer-owned container image for readiness on Nebius NVIDIA H100, H200, B200, B300, GB300, and VR hardware. It resolves and pulls the selected platform, inventories the image configuration and merged filesystem, and inspects CUDA artifacts without starting the image. GPU Preflight accepts built image references and performs validation including installed packages, copied files, native-library architecture, and embedded CUDA targets.
+GPU Preflight statically inspects a customer-owned container image for readiness on Nebius NVIDIA H100, H200, B200, B300, GB300, RTX PRO 6000, and Vera Rubin hardware. It resolves and pulls the selected platform, inventories the image configuration and merged filesystem, and inspects CUDA artifacts without starting the image. GPU Preflight accepts built image references and performs validation including installed packages, copied files, native-library architecture, and embedded CUDA targets.
 
 This is a preflight assessment, not hardware certification. CUDA execution, collective correctness, NVLink or MNNVL use, InfiniBand and GPUDirect RDMA selection, distributed behavior, correctness, and performance still require tests on the target hardware.
 
@@ -60,7 +60,7 @@ GPU Preflight does not require a GPU, NVIDIA driver, CUDA runtime, QEMU, or acce
 
 - image platforms, immutable platform digests, and compressed size
 - CPU architecture compatibility for the selected hardware
-- H100/H200 `sm_90`, B200 `sm_100`, B300/GB300 `sm_103`, and VR `sm_107`
+- H100/H200 `sm_90`, B200 `sm_100`, B300/GB300 `sm_103`, RTX PRO 6000 `sm_120`, and VR `sm_107`
 - CUDA baseline, family (`f`), architecture-specific (`a`), cubin, and retained-PTX compatibility
 - installed CUDA version against the hardware profile's compiler-support baseline
 - installed NCCL versions against target-specific minimum platform-support baselines

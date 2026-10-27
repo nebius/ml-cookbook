@@ -23,6 +23,14 @@ UNRESOLVED_FINDINGS = {
     "GPF-NCCL-001",
     "GPF-UCX-006",
 }
+# Evidence gaps that leave the assessment unsupported whatever else was found. A library every
+# GPU job loads carries the compatibility answer for the image, so when one of them has no target
+# listing the other findings cannot be the headline: the unread artifact may hold a blocker that
+# the readable ones do not show, and reporting a warning-level label in that state reads as "fix
+# these and ship". Only a confirmed blocker outranks this.
+ASSESSMENT_INVALIDATING_FINDINGS = {
+    "GPF-CUDA-019",
+}
 PASSED_CHECK_FINDINGS = {
     "GPF-CPU-002",
     "GPF-CUDA-003",
@@ -775,6 +783,8 @@ def compatibility_status_for(findings: tuple[Finding, ...]) -> str:
         for finding in findings
     ):
         return "INCOMPATIBLE"
+    if any(finding.id in ASSESSMENT_INVALIDATING_FINDINGS for finding in findings):
+        return "INSUFFICIENT_EVIDENCE"
     compatibility_warnings = tuple(
         finding
         for finding in findings
@@ -1023,8 +1033,12 @@ def inspect(facts: ImageFacts, profiles: tuple[HardwareProfile, ...]) -> Inspect
 
 def has_threshold(report: InspectionReport, threshold: str) -> bool:
     findings = [
-        *report.global_findings,
-        *(finding for target in report.targets for finding in target.findings),
+        finding
+        for finding in (
+            *report.global_findings,
+            *(finding for target in report.targets for finding in target.findings),
+        )
+        if finding.category != "reproducibility"
     ]
     if threshold == "never":
         return False

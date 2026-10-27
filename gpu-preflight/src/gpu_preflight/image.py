@@ -1363,6 +1363,11 @@ def _major_minor(value: str) -> tuple[int, int] | None:
     return (int(match.group(1)), int(match.group(2))) if match else None
 
 
+def _as_sentence(remedy: str) -> str:
+    """Capitalize a remedy fragment and close it with the step every remedy shares."""
+    return remedy[:1].upper() + remedy[1:] + ", then repeat the scan."
+
+
 def _cuobjdump_is_older(
     cuobjdump_version: str | None,
     image_cuda_versions: tuple[str, ...],
@@ -2031,7 +2036,7 @@ def _cuda_artifact_findings(
             )
         )
     uninspected_core = [
-        (candidate.path, candidate.size_bytes, f"not inspected: {candidate.reason}")
+        (candidate.path, candidate.size_bytes, f"not inspected: {candidate.reason}", "skipped")
         for candidate in rootfs.skipped_cuda_candidates
         if is_core_framework_library(candidate.path)
     ] + [
@@ -2039,6 +2044,7 @@ def _cuda_artifact_findings(
             artifact.path,
             artifact.size_bytes,
             f"incomplete: {artifact.diagnostic or artifact.incomplete_reason or 'analyzer error'}",
+            "analyzer",
         )
         for artifact in rootfs.cuda_artifacts
         if artifact.method == "cuobjdump"
@@ -2046,20 +2052,35 @@ def _cuda_artifact_findings(
         and is_core_framework_library(artifact.path)
     ]
     if uninspected_core:
+        # The remedy differs by cause, and naming the wrong one sends the reader to a limit that
+        # was never reached: a scan limit is raised, while an analyzer error needs a different
+        # analyzer.
+        kinds = {kind for *_, kind in uninspected_core}
+        remedies: list[str] = []
+        if "skipped" in kinds:
+            remedies.append("raise --max-artifact-mb above the largest listed size")
+        if "analyzer" in kinds:
+            remedies.append(
+                "resolve the named analyzer error with an analyzer that matches the image's "
+                "CUDA release (--cuobjdump / --cuobjdump-fallback)"
+            )
         findings.append(
             Finding(
                 id="GPF-CUDA-019",
-                severity="info",
+                severity="warning",
                 category="evidence",
                 title="Core framework libraries were not inspected",
                 evidence=(
                     f"{len(uninspected_core)} framework library file(s) that GPU jobs normally "
                     "load (PyTorch CUDA, NCCL, FlashAttention, Transformer Engine) have no "
-                    "cuobjdump target listing, so the image cannot be assessed as ready."
+                    "cuobjdump target listing, so the image cannot be assessed as ready. The "
+                    "compatibility result is reported as unsupported evidence rather than as a "
+                    "finding about the artifacts that were readable."
                 ),
                 remediation=(
-                    "Raise --max-artifact-mb above the largest listed size or resolve the named "
-                    "analyzer error, then repeat the scan."
+                    _as_sentence(
+                        " or ".join(remedies) if remedies else "resolve the listed evidence gap"
+                    )
                 ),
                 details=tuple(
                     FindingDetail(
@@ -2067,7 +2088,7 @@ def _cuda_artifact_findings(
                         value=f"{size / (1024**2):.0f} MiB",
                         context=reason,
                     )
-                    for path, size, reason in uninspected_core[:8]
+                    for path, size, reason, _ in uninspected_core[:8]
                 ),
             )
         )
