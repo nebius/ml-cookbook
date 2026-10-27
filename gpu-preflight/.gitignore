@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+gpu-preflight-reports/
+report.txt
+report.json
+report.html

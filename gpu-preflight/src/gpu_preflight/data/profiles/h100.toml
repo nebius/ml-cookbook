@@ -1,0 +1,40 @@
+schema_version = 1
+id = "h100"
+aliases = ["nvidia-h100", "gpu-h100-sxm"]
+display_name = "NVIDIA H100"
+maturity = "supported"
+notes = ["H100 and H200 share compute capability 9.0 but remain separate evidence targets."]
+
+[hardware]
+cpu_architectures = ["amd64"]
+gpu_architecture = "hopper"
+compute_capability = "9.0"
+native_sm_targets = ["sm_90", "sm_90a"]
+nebius_platforms = ["gpu-h100-sxm"]
+
+[fabric]
+compute_adapter = "connectx-7"
+
+[validation]
+minimum_cuda_version = "11.8"
+minimum_nccl_version = "2.15.1"
+runtime_checks = [
+  "cuda-runtime",
+  "nccl-intra-node",
+  "nccl-infiniband",
+  "ucx-transport",
+  "framework-smoke",
+  "workload-smoke",
+]
+
+[[sources]]
+title = "NVIDIA CUDA GPU compute capability"
+url = "https://developer.nvidia.com/cuda/gpus"
+
+[[sources]]
+title = "NVIDIA CUDA 11.8 release notes"
+url = "https://docs.nvidia.com/cuda/archive/11.8.0/cuda-toolkit-release-notes/"
+
+[[sources]]
+title = "NVIDIA NCCL 2.15.1 release notes (H100 support)"
+url = "https://docs.nvidia.com/deeplearning/nccl/archives/nccl_2203/release-notes/rel_2-15-1.html"

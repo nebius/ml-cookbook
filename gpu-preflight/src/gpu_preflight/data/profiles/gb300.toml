@@ -1,0 +1,45 @@
+schema_version = 1
+id = "gb300"
+aliases = ["nvidia-gb300", "gpu-gb300", "gb300-nvl72"]
+display_name = "NVIDIA GB300 NVL72"
+maturity = "supported"
+notes = [
+  "GB300 shares SM103 with B300 but requires an ARM64 image.",
+  "Rack-scale and scale-out transport behavior must be validated independently.",
+]
+
+[hardware]
+cpu_architectures = ["arm64"]
+gpu_architecture = "grace-blackwell-ultra"
+compute_capability = "10.3"
+native_sm_targets = ["sm_103", "sm_103f", "sm_103a"]
+nebius_platforms = ["gpu-gb300"]
+
+[fabric]
+compute_adapter = "connectx-8"
+
+[validation]
+minimum_cuda_version = "12.9"
+minimum_nccl_version = "2.27.5"
+runtime_checks = [
+  "arm64-image",
+  "cuda-runtime",
+  "nccl-mnnvl",
+  "nccl-infiniband",
+  "gpu-direct-rdma",
+  "ucx-transport",
+  "framework-smoke",
+  "workload-smoke",
+]
+
+[[sources]]
+title = "NVIDIA CUDA GPU compute capability"
+url = "https://developer.nvidia.com/cuda/gpus"
+
+[[sources]]
+title = "NVIDIA CUDA 12.9 release notes"
+url = "https://docs.nvidia.com/cuda/archive/12.9.0/cuda-toolkit-release-notes/"
+
+[[sources]]
+title = "NVIDIA DGX GB300 NCCL support floor"
+url = "https://docs.nvidia.com/dgx/dgxgb300nvl72-release-notes/dgxgb300nvl72-release-notes.pdf"

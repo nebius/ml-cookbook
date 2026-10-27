@@ -1,0 +1,17 @@
+schema_version = 1
+id = "connectx-9"
+display_name = "NVIDIA ConnectX-9"
+generation = 9
+notes = [
+  "NVIDIA documents ConnectX-9 SuperNICs as part of the Rubin NVL72 platform.",
+  "Nebius platform details are not yet published; treat this adapter as provisional.",
+  "No HPC-X release has announced ConnectX-9 support, so no UCX or HPC-X floor is recorded.",
+]
+
+[validation]
+# minimum_ucx_version and minimum_hpcx_version are deliberately unset: no NVIDIA
+# document states a UCX or HPC-X floor for this adapter
+
+[[sources]]
+title = "NVIDIA Rubin platform (ConnectX-9 SuperNIC)"
+url = "https://www.nvidia.com/en-us/data-center/technologies/rubin/"

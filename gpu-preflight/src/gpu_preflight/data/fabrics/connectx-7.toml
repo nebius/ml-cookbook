@@ -1,0 +1,21 @@
+schema_version = 1
+id = "connectx-7"
+display_name = "NVIDIA ConnectX-7"
+generation = 7
+notes = [
+  "Nebius pairs ConnectX-7 with the H100, H200, and B200 platforms at 400 Gbps per host.",
+  "HPC-X 2.11 is the first release whose change log adds ConnectX-7 adapter support.",
+  "The UCX floor is the version bundled with that HPC-X release, not a UCX minimum NVIDIA states separately.",
+]
+
+[validation]
+minimum_ucx_version = "1.13"
+minimum_hpcx_version = "2.11"
+
+[[sources]]
+title = "Nebius presets for GPU platforms"
+url = "https://docs.nebius.com/compute/virtual-machines/types#presets-for-gpu-platforms"
+
+[[sources]]
+title = "NVIDIA HPC-X release notes change log history (2.11 adds ConnectX-7, UCX 1.13)"
+url = "https://networking-docs.nvidia.com/hpcxum/223/release+notes+change+log+history"
