@@ -4,13 +4,20 @@ Run a Franka Panda pick-and-place simulation on a Nebius Compute GPU VM.
 Start with one case, then submit four independent [SkyPilot managed jobs](https://docs.skypilot.ai/en/latest/examples/managed-jobs.html).
 Each job runs the committed Docker image, writes its measured result to Nebius Object Storage, and releases its worker VM when finished.
 
-```text
-sweep.json → launch.py → four SkyPilot managed jobs → Object Storage
-                          one L40S VM per job          result.json + COMPLETE
-```
+![Four measured Franka pick-and-place trajectories replayed side by side in Rerun](images/rerun-sweep.webp)
+
+*Four cases approaching their placement targets at 5.8 seconds of simulated time. Blue cubes and cyan paths show measured motion; green marks pickup and yellow marks the target. This recording comes from the original Serverless recipe, not a SkyPilot cloud run.*
 
 This is a self-contained adaptation of the [Serverless Isaac Sim recipe](https://github.com/nebius/serverless-ai-cookbook/tree/354ad615ed8d4e07532125bb82add11fed5992f8/robotics/isaac-pick-place-sweep).
 The simulation and result fields are the same; SkyPilot provisions and manages the VMs.
+
+**Jump to** [Setup](#1-connect-skypilot) · [One case](#4-run-one-case-and-inspect-its-result) · [Four-job sweep](#5-submit-the-four-job-sweep) · [Motion replay](#optional-motion-replay-with-rerun)
+
+## How the sweep works
+
+![Workflow from sweep.json through launch.py and four independent Nebius Compute simulation jobs to per-case Object Storage results](images/workflow.svg)
+
+Your grid defines the cases. SkyPilot manages a worker for each job, and each simulation publishes to its own S3 prefix. Inspect the results before adjusting the next grid.
 
 ## Before you start
 
@@ -140,6 +147,10 @@ The two arrays in `sweep.json` form a Cartesian grid:
 {"pick_x": [0.4, 0.42], "place_y": [0.2, 0.22]}
 ```
 
+![A two-by-two grid mapping pickup X values 0.40 and 0.42 and placement Y values 0.20 and 0.22 to cases 000 through 003; --single selects case-000](images/sweep-grid.svg)
+
+`--single` selects the upper-left cell. The full sweep submits all four cells as independent jobs; the case numbers show submission order, not execution dependencies.
+
 ```bash
 python launch.py --image "$IMAGE" --bucket "$S3_BUCKET" --region "$REGION" --dry-run
 python launch.py --image "$IMAGE" --bucket "$S3_BUCKET" --region "$REGION"
@@ -175,6 +186,10 @@ rerun results/pick-place.rrd
 ```
 
 Scrub the `simulation` timeline to compare cases. This displays a simplified arm joining the measured link origins, the moving cube, its path, and its target. It is a pose replay, not a rendered Isaac camera view. Rerun is not installed in the cloud image.
+
+![The same four recorded cases after placement, with each cube close to its yellow target](images/rerun-placed.webp)
+
+*The original Serverless recordings at 10.133 seconds, after placement. Use each case's `result.json` for its measured errors and success flag. See [image provenance](images/README.md) for the source of both screenshots.*
 
 ## Customize and clean up
 

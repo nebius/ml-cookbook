@@ -1,0 +1,39 @@
+<svg role="img" aria-labelledby="title description" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 580" font-family="Arial">
+<title id="title">Four independent sweep cases</title>
+<desc id="description">Rows are pickup X values 0.40 and 0.42 metres. Columns are placement Y values 0.20 and 0.22 metres. Cases are numbered 000, 001, 002, and 003 in nested-loop submission order. There are no dependencies between the jobs.</desc>
+<defs>
+<marker id="arwN" markerWidth="12" markerHeight="12" refX="9" refY="3.5" orient="auto">
+<path d="M0,0 L9,3.5 L0,7 Z" fill="#12263A"/>
+</marker>
+<marker id="arwG" markerWidth="12" markerHeight="12" refX="9" refY="3.5" orient="auto">
+<path d="M0,0 L9,3.5 L0,7 Z" fill="#A6CE3A"/>
+</marker>
+</defs>
+<rect width="1440" height="580" fill="#FFFFFF"/>
+<rect x="55" y="34" width="11" height="46" fill="#A6CE3A"/>
+<text x="82" y="70" font-family="Georgia,serif" font-size="40" font-weight="bold" fill="#12263A">2 × 2 parameter sweep</text>
+<text x="84" y="108" font-family="Arial" font-size="20" fill="#56657A">Each cell is an independent job; cases can run concurrently.</text>
+<text x="400" y="168" font-family="Arial" font-size="24" fill="#243541" font-weight="bold">Placement Y = 0.20 m</text>
+<text x="900" y="168" font-family="Arial" font-size="24" fill="#243541" font-weight="bold">Placement Y = 0.22 m</text>
+<text x="60" y="275" font-family="Arial" font-size="22" fill="#243541" font-weight="bold">Pickup X</text>
+<text x="60" y="307" font-family="Arial" font-size="26" fill="#243541" font-weight="bold">0.40 m</text>
+<text x="60" y="445" font-family="Arial" font-size="22" fill="#243541" font-weight="bold">Pickup X</text>
+<text x="60" y="477" font-family="Arial" font-size="26" fill="#243541" font-weight="bold">0.42 m</text>
+<rect x="315" y="205" width="440" height="130" rx="14" fill="#D7E3F2" stroke="#9DB8D6" stroke-width="2.6"/>
+<text x="535.0" y="252.0" text-anchor="middle" font-family="Arial" font-size="21" font-weight="bold" fill="#12263A">case-000</text>
+<text x="535.0" y="277.0" text-anchor="middle" font-family="Arial" font-size="16" fill="#12263A">1 L40S VM · 1 result prefix</text>
+<text x="535.0" y="302.0" text-anchor="middle" font-family="Arial" font-size="16" fill="#12263A">--single selects this case</text>
+<rect x="815" y="205" width="440" height="130" rx="14" fill="#D7E3F2" stroke="#9DB8D6" stroke-width="2.6"/>
+<text x="1035.0" y="252.0" text-anchor="middle" font-family="Arial" font-size="21" font-weight="bold" fill="#12263A">case-001</text>
+<text x="1035.0" y="277.0" text-anchor="middle" font-family="Arial" font-size="16" fill="#12263A">1 L40S VM · 1 result prefix</text>
+<text x="1035.0" y="302.0" text-anchor="middle" font-family="Arial" font-size="16" fill="#12263A">Separate managed job</text>
+<rect x="315" y="375" width="440" height="130" rx="14" fill="#D7E3F2" stroke="#9DB8D6" stroke-width="2.6"/>
+<text x="535.0" y="422.0" text-anchor="middle" font-family="Arial" font-size="21" font-weight="bold" fill="#12263A">case-002</text>
+<text x="535.0" y="447.0" text-anchor="middle" font-family="Arial" font-size="16" fill="#12263A">1 L40S VM · 1 result prefix</text>
+<text x="535.0" y="472.0" text-anchor="middle" font-family="Arial" font-size="16" fill="#12263A">Separate managed job</text>
+<rect x="815" y="375" width="440" height="130" rx="14" fill="#D7E3F2" stroke="#9DB8D6" stroke-width="2.6"/>
+<text x="1035.0" y="422.0" text-anchor="middle" font-family="Arial" font-size="21" font-weight="bold" fill="#12263A">case-003</text>
+<text x="1035.0" y="447.0" text-anchor="middle" font-family="Arial" font-size="16" fill="#12263A">1 L40S VM · 1 result prefix</text>
+<text x="1035.0" y="472.0" text-anchor="middle" font-family="Arial" font-size="16" fill="#12263A">Separate managed job</text>
+<text x="315" y="547" font-family="Arial" font-size="23" fill="#243541" font-weight="bold">4 cases × (result.json + COMPLETE) = 8 objects after publication</text>
+</svg>
