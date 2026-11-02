@@ -1,0 +1,30 @@
+name: Isaac Sim SkyPilot recipe
+
+on:
+  pull_request:
+    paths:
+      - 'skypilot/isaac-pick-place-sweep/**'
+      - '.github/workflows/isaac-pick-place-skypilot.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'skypilot/isaac-pick-place-sweep/**'
+      - '.github/workflows/isaac-pick-place-skypilot.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13.13'
+          cache: pip
+          cache-dependency-path: skypilot/isaac-pick-place-sweep/requirements.txt
+      - run: pip install -r requirements.txt
+        working-directory: skypilot/isaac-pick-place-sweep
+      - run: python -m unittest discover -s tests -v
+        working-directory: skypilot/isaac-pick-place-sweep
