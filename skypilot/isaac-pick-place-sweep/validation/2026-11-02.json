@@ -1,0 +1,302 @@
+{
+  "verified_at_utc": "2026-11-02T21:34:24.081438+00:00",
+  "workload": "Isaac Sim 6.1.0 Franka Panda pick and place",
+  "controller": {
+    "location": "local macOS arm64",
+    "skypilot_version": "0.14.2",
+    "python_version": "3.13.14",
+    "grpcio_version_single": "1.85.1",
+    "grpcio_version_successful_sweep": "1.83.0",
+    "nebius_managed_api_server_tested": false,
+    "job_id_scope": "Managed job IDs are local to the isolated test API server; identify durable artifacts by run ID."
+  },
+  "worker": {
+    "cloud": "Nebius Compute",
+    "region": "eu-north1",
+    "platform": "gpu-l40s-a",
+    "preset": "1gpu-8vcpu-32gb",
+    "gpu": "NVIDIA L40S",
+    "nvidia_driver": "610.57.04",
+    "boot_disk_gib": 150,
+    "boot_image_id": "computeimage-e00z45axwdzgve5e2d"
+  },
+  "container_image_digest": "sha256:d2038691649b74ddcb165f2feb1aed4a959ff02488cf715ebb0c3892a7fe857d",
+  "nvidia_base_image_digest": "sha256:af1d2b4e75d553bfa27beb5a401198654aa8d607f3b7a6749196e9ce253def20",
+  "runtime_file_sha256": {
+    "Dockerfile": "b2cf06428cc537d2a8daa78d76e82f5573a88c0d3c96330cad0913979859c6c9",
+    "run.py": "604446e85224356908d7da473deed328ff9bedc53448a265b29fa7ae143364e7",
+    "launch.py": "9e0e05d29821d3bbd5bb7913d126ab241378c42fe95adb930ec91141b23b0a0e",
+    "task.yaml": "7834df49f75efe88ce6701b1a3f922dfb3d83ad18aa1a9758e8707fb9710ec04",
+    "sweep.json": "773a9174e8ecd94195e078de8bc76bda552e93a26641fbce06e1921c036fae8b",
+    "requirements.txt": "27257840ffe085bc14d3ae3b75d713c32e5a72379f8e34727d37ebb0c4ab60d4",
+    "visualize.py": "c2c4cc26d79cb06b92736639b244a34162e67469ea8b6b2495c2aba36679c29c"
+  },
+  "runs": {
+    "single": {
+      "checked_at": "2026-11-02T21:15:16.925195+00:00",
+      "run_id": "20261102T204748Z-97438af6",
+      "cases": [
+        {
+          "case_id": "case-000",
+          "managed_job_id": 1,
+          "status": "SUCCEEDED",
+          "params": {
+            "pick_x": 0.4,
+            "place_y": 0.2
+          },
+          "success": true,
+          "controller_done": true,
+          "xy_error_m": 0.011722217603705377,
+          "z_error_m": 1.1146068571582513e-08,
+          "steps": 578,
+          "artifacts": [
+            {
+              "name": "COMPLETE",
+              "bytes": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "last_modified": "2026-11-02T21:02:51.993000+00:00"
+            },
+            {
+              "name": "result.json",
+              "bytes": 515,
+              "sha256": "ab369c24d68eacbf2994341f466dda50891d3415c381c6f14525f4824cb2bfc1",
+              "last_modified": "2026-11-02T21:02:51.982000+00:00"
+            }
+          ],
+          "submitted_at": "2026-11-02T20:47:55.948111+00:00",
+          "finished_at": "2026-11-02T21:02:53.628325+00:00",
+          "total_duration_s": 897.6802134513855,
+          "job_duration_s": 756.9177937507629,
+          "recovery_count": 0
+        }
+      ]
+    },
+    "sweep": {
+      "checked_at": "2026-11-02T21:29:55.381545+00:00",
+      "run_id": "20261102T211117Z-30aedde3",
+      "cases": [
+        {
+          "case_id": "case-000",
+          "managed_job_id": 6,
+          "status": "SUCCEEDED",
+          "params": {
+            "pick_x": 0.4,
+            "place_y": 0.2
+          },
+          "success": true,
+          "controller_done": true,
+          "xy_error_m": 0.011722217603705377,
+          "z_error_m": 1.1146068571582513e-08,
+          "steps": 578,
+          "artifacts": [
+            {
+              "name": "COMPLETE",
+              "bytes": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "last_modified": "2026-11-02T21:29:17.131000+00:00"
+            },
+            {
+              "name": "result.json",
+              "bytes": 515,
+              "sha256": "bac763e392ba8dfbbe5b56c61d88fdc5249036531ed7a0fa668916a4361ea712",
+              "last_modified": "2026-11-02T21:29:17.122000+00:00"
+            },
+            {
+              "name": "trajectory.json",
+              "bytes": 96256,
+              "sha256": "e81bb4b76eeb2602b814b136e59896361dcee63ef17fe9db9e89f2dabcd0906f",
+              "last_modified": "2026-11-02T21:29:17.108000+00:00"
+            }
+          ],
+          "recorded_frames": 98,
+          "simulation_duration_s": 10.133333333333333,
+          "final_trace_pose_matches_result": true,
+          "submitted_at": "2026-11-02T21:11:22.814244+00:00",
+          "finished_at": "2026-11-02T21:29:18.646175+00:00",
+          "total_duration_s": 1075.8319308757782,
+          "job_duration_s": 745.1384618282318,
+          "recovery_count": 0
+        },
+        {
+          "case_id": "case-001",
+          "managed_job_id": 7,
+          "status": "SUCCEEDED",
+          "params": {
+            "pick_x": 0.4,
+            "place_y": 0.22
+          },
+          "success": true,
+          "controller_done": true,
+          "xy_error_m": 0.012348379167620457,
+          "z_error_m": 2.7909874914661126e-08,
+          "steps": 576,
+          "artifacts": [
+            {
+              "name": "COMPLETE",
+              "bytes": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "last_modified": "2026-11-02T21:27:29.813000+00:00"
+            },
+            {
+              "name": "result.json",
+              "bytes": 516,
+              "sha256": "38f5b78be8c31327c5eb2bb96f1c029b0b453b1c2bc96753811d176b3b17ab57",
+              "last_modified": "2026-11-02T21:27:29.801000+00:00"
+            },
+            {
+              "name": "trajectory.json",
+              "bytes": 96184,
+              "sha256": "0d79bec2286e4787609d3030ecd645690d7a7b6fdb86863541d0d16e2060d0fe",
+              "last_modified": "2026-11-02T21:27:29.787000+00:00"
+            }
+          ],
+          "recorded_frames": 98,
+          "simulation_duration_s": 10.1,
+          "final_trace_pose_matches_result": true,
+          "submitted_at": "2026-11-02T21:11:32.842935+00:00",
+          "finished_at": "2026-11-02T21:27:31.309501+00:00",
+          "total_duration_s": 958.4665660858154,
+          "job_duration_s": 745.9848022460938,
+          "recovery_count": 0
+        },
+        {
+          "case_id": "case-002",
+          "managed_job_id": 8,
+          "status": "SUCCEEDED",
+          "params": {
+            "pick_x": 0.42,
+            "place_y": 0.2
+          },
+          "success": true,
+          "controller_done": true,
+          "xy_error_m": 0.0125602404735082,
+          "z_error_m": 2.0459294317737298e-08,
+          "steps": 577,
+          "artifacts": [
+            {
+              "name": "COMPLETE",
+              "bytes": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "last_modified": "2026-11-02T21:28:44.399000+00:00"
+            },
+            {
+              "name": "result.json",
+              "bytes": 515,
+              "sha256": "4255e29098514b75cd45a33f006bd2ece2ccccc6e897f89d1d61a513a22c9631",
+              "last_modified": "2026-11-02T21:28:44.389000+00:00"
+            },
+            {
+              "name": "trajectory.json",
+              "bytes": 96340,
+              "sha256": "5029110ade5eeb882318308dc3794a884cffa710b1c4217819e1cee07e771183",
+              "last_modified": "2026-11-02T21:28:44.375000+00:00"
+            }
+          ],
+          "recorded_frames": 98,
+          "simulation_duration_s": 10.116666666666667,
+          "final_trace_pose_matches_result": true,
+          "submitted_at": "2026-11-02T21:11:32.856818+00:00",
+          "finished_at": "2026-11-02T21:28:46.050363+00:00",
+          "total_duration_s": 1033.1935451030731,
+          "job_duration_s": 742.1476273536682,
+          "recovery_count": 0
+        },
+        {
+          "case_id": "case-003",
+          "managed_job_id": 9,
+          "status": "SUCCEEDED",
+          "params": {
+            "pick_x": 0.42,
+            "place_y": 0.22
+          },
+          "success": true,
+          "controller_done": true,
+          "xy_error_m": 0.012711444383140806,
+          "z_error_m": 6.335973739765577e-08,
+          "steps": 576,
+          "artifacts": [
+            {
+              "name": "COMPLETE",
+              "bytes": 0,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "last_modified": "2026-11-02T21:27:08.353000+00:00"
+            },
+            {
+              "name": "result.json",
+              "bytes": 516,
+              "sha256": "642c9a31cf4e74f55d45c97e64fa0d629f244f796dc36fc1c5b3113103bd57c6",
+              "last_modified": "2026-11-02T21:27:08.343000+00:00"
+            },
+            {
+              "name": "trajectory.json",
+              "bytes": 96264,
+              "sha256": "ebd7d1e311677fef84e4dd20a95ded70ef4cd5712d22178c60feec6d62928c05",
+              "last_modified": "2026-11-02T21:27:08.327000+00:00"
+            }
+          ],
+          "recorded_frames": 98,
+          "simulation_duration_s": 10.1,
+          "final_trace_pose_matches_result": true,
+          "submitted_at": "2026-11-02T21:11:32.857658+00:00",
+          "finished_at": "2026-11-02T21:27:09.995016+00:00",
+          "total_duration_s": 937.1373579502106,
+          "job_duration_s": 749.0595915317535,
+          "recovery_count": 0
+        }
+      ]
+    }
+  },
+  "checks": {
+    "successful_simulation_jobs": 5,
+    "independently_downloaded_s3_objects": 14,
+    "completion_markers": 5,
+    "finite_result_errors": true,
+    "trajectory_timestamps_strictly_increasing": true,
+    "cube_quaternions_normalized": true,
+    "recorded_final_poses_match_results": true,
+    "artifact_upload_timestamps_in_order": true,
+    "rerun_rrd_verified": true,
+    "focused_unit_tests_passed": 11
+  },
+  "cleanup": {
+    "verified_at_utc": "2026-11-02T21:31:09.257909+00:00",
+    "successful_workers_automatically_deleted": 5,
+    "successful_managed_boot_disks_automatically_deleted": 5,
+    "aborted_attempt_vms_manually_deleted": 2,
+    "exact_id_api_get_result": "NOT_FOUND for all 7 test VMs and all 5 created boot disks",
+    "test_vms_remaining": 0,
+    "test_boot_disks_remaining": 0
+  },
+  "aborted_attempt": {
+    "run_id": "20261102T210400Z-70f36fc3",
+    "managed_job_ids": [
+      2,
+      3,
+      4,
+      5
+    ],
+    "terminal_status": "CANCELLED",
+    "successful_simulations": 0,
+    "created_vms": 2,
+    "failure": "Native SIGSEGV in grpc_event_engine::experimental::PollPoller::HandleForkInChild with grpcio 1.85.1 on macOS. Retried with grpcio 1.83.0.",
+    "cleanup": "Two incomplete VMs removed explicitly; no managed boot disks remained."
+  },
+  "visualization": {
+    "rerun_version": "0.38.1",
+    "recording_sha256": "8ed0513bd96006d5f4763d5ce30e80ed9c2444e4e40cee20e598fe48c54fd460",
+    "source_sweep_run_id": "20261102T211117Z-30aedde3",
+    "screenshots": [
+      {
+        "file": "images/rerun-sweep.webp",
+        "simulation_time_s": 5.8,
+        "sha256": "7c2d78998a85fe227a0b5e10f77ec91cf54f792d4ee86751b160e20a7c74e1b2"
+      },
+      {
+        "file": "images/rerun-placed.webp",
+        "simulation_time_s": 10.133333333,
+        "sha256": "6fce3278609f3d35a133d38492b41af242c4dcc3f8eea32eba2de058ad59e0fa"
+      }
+    ],
+    "note": "Fresh replay captures and all four trajectory payloads are identical to the prior Serverless default-grid example; existing image bytes are unchanged."
+  }
+}

@@ -1,0 +1,54 @@
+<svg role="img" aria-labelledby="title description" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 570" font-family="Arial">
+<title id="title">Isaac Sim sweep workflow</title>
+<desc id="description">Configure sweep.json, submit managed jobs with launch.py, run one L40S VM per case on Nebius Compute, then upload each result to Object Storage. Inspect results to configure the next sweep.</desc>
+<defs>
+<marker id="arwN" markerWidth="12" markerHeight="12" refX="9" refY="3.5" orient="auto">
+<path d="M0,0 L9,3.5 L0,7 Z" fill="#12263A"/>
+</marker>
+<marker id="arwG" markerWidth="12" markerHeight="12" refX="9" refY="3.5" orient="auto">
+<path d="M0,0 L9,3.5 L0,7 Z" fill="#A6CE3A"/>
+</marker>
+</defs>
+<rect width="1440" height="570" fill="#FFFFFF"/>
+<rect x="55" y="34" width="11" height="46" fill="#A6CE3A"/>
+<text x="82" y="70" font-family="Georgia,serif" font-size="40" font-weight="bold" fill="#12263A">From parameter grid to simulation results</text>
+<text x="84" y="108" font-family="Arial" font-size="20" fill="#56657A">One managed job per case; every case publishes its own result.</text>
+<rect x="55" y="210" width="235" height="145" rx="14" fill="#D7E3F2" stroke="#9DB8D6" stroke-width="2.6"/>
+<text x="172.5" y="264.5" text-anchor="middle" font-family="Arial" font-size="21" font-weight="bold" fill="#12263A">Choose the grid</text>
+<text x="172.5" y="289.5" text-anchor="middle" font-family="Arial" font-size="16" fill="#12263A">sweep.json · pick X × place Y</text>
+<text x="172.5" y="314.5" text-anchor="middle" font-family="Arial" font-size="16" font-style="italic" font-weight="bold" fill="#2A4B6E">Step 1 · configure</text>
+<rect x="340" y="210" width="245" height="145" rx="14" fill="#D7E3F2" stroke="#9DB8D6" stroke-width="2.6"/>
+<text x="462.5" y="264.5" text-anchor="middle" font-family="Arial" font-size="21" font-weight="bold" fill="#12263A">Submit with SkyPilot</text>
+<text x="462.5" y="289.5" text-anchor="middle" font-family="Arial" font-size="16" fill="#12263A">launch.py → managed jobs</text>
+<text x="462.5" y="314.5" text-anchor="middle" font-family="Arial" font-size="16" font-style="italic" font-weight="bold" fill="#2A4B6E">Step 2 · launch</text>
+<rect x="635" y="170" width="355" height="225" rx="14" fill="#12263A" stroke="#12263A" stroke-width="2.6"/>
+<text x="812.5" y="264.5" text-anchor="middle" font-family="Arial" font-size="21" font-weight="bold" fill="#FFFFFF">Nebius Compute</text>
+<text x="812.5" y="289.5" text-anchor="middle" font-family="Arial" font-size="16" fill="#FFFFFF">4 independent managed jobs</text>
+<text x="812.5" y="314.5" text-anchor="middle" font-family="Arial" font-size="16" font-style="italic" font-weight="bold" fill="#A6CE3A">Step 3 · simulate</text>
+<rect x="675" y="325" width="275" height="55" rx="14" fill="#C56B2C" stroke="#A85A22" stroke-width="2.6"/>
+<text x="812.5" y="359.5" text-anchor="middle" font-family="Arial" font-size="21" font-weight="bold" fill="#FFFFFF">Isaac Sim 6.1.0</text>
+<path d="M1040,214.25 A170.0,19.25 0 0 1 1380,214.25 L1380,350.75 A170.0,19.25 0 0 1 1040,350.75 Z" fill="#12263A" stroke="#12263A" stroke-width="2.6"/>
+<path d="M1040,214.25 A170.0,19.25 0 0 0 1380,214.25" fill="none" stroke="#12263A" stroke-width="2.6"/>
+<text x="1210.0" y="257.0" text-anchor="middle" font-family="Arial" font-size="21" font-weight="bold" fill="#FFFFFF">Object Storage</text>
+<text x="1210.0" y="282.0" text-anchor="middle" font-family="Arial" font-size="16" fill="#FFFFFF">result.json → COMPLETE</text>
+<text x="1210.0" y="307.0" text-anchor="middle" font-family="Arial" font-size="16" fill="#FFFFFF">trajectory.json (optional)</text>
+<text x="1210.0" y="332.0" text-anchor="middle" font-family="Arial" font-size="16" font-style="italic" font-weight="bold" fill="#A6CE3A">Step 4 · inspect</text>
+<polyline points="290,282 340,282" fill="none" stroke="#12263A" stroke-width="2.8" marker-end="url(#arwN)"/>
+<polyline points="585,282 635,282" fill="none" stroke="#12263A" stroke-width="2.8" marker-end="url(#arwN)"/>
+<polyline points="990,282 1040,282" fill="none" stroke="#12263A" stroke-width="2.8" marker-end="url(#arwN)"/>
+<text x="635" y="153" font-family="Arial" font-size="14" font-weight="bold" fill="#56657A">ONE L40S VM PER JOB · AUTO CLEANUP</text>
+<polyline points="1210,370 1210,442 172,442 172,355" fill="none" stroke="#A6CE3A" stroke-width="3.6" marker-end="url(#arwG)"/>
+<rect x="550.0" y="419" width="340.0" height="23" fill="#FFFFFF" opacity="0.92" rx="3"/>
+<text x="720" y="435" text-anchor="middle" font-family="Arial" font-size="15" fill="#12263A">Inspect results and adjust the next sweep</text>
+<text x="58" y="491" font-family="Arial" font-size="18" font-weight="bold" fill="#12263A">Color key</text>
+<rect x="58" y="505" width="44" height="30" rx="6" fill="#D7E3F2" stroke="#9DB8D6" stroke-width="2.5"/>
+<text x="116" y="526" font-family="Arial" font-size="16" fill="#243541">Your code / configuration</text>
+<text x="510" y="491" font-family="Arial" font-size="18" font-weight="bold" fill="#12263A">
+</text>
+<rect x="510" y="505" width="44" height="30" rx="6" fill="#12263A" stroke="#12263A" stroke-width="2.5"/>
+<text x="568" y="526" font-family="Arial" font-size="16" fill="#243541">Nebius compute / storage</text>
+<text x="1010" y="491" font-family="Arial" font-size="18" font-weight="bold" fill="#12263A">
+</text>
+<rect x="1010" y="505" width="44" height="30" rx="6" fill="#C56B2C" stroke="#A85A22" stroke-width="2.5"/>
+<text x="1068" y="526" font-family="Arial" font-size="16" fill="#243541">NVIDIA simulator</text>
+</svg>

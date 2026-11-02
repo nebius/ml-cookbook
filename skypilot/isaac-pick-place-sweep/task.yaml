@@ -1,0 +1,61 @@
+name: isaac-pick-place
+api_server_access: false
+
+resources:
+  infra: nebius/eu-north1
+  accelerators: L40S:1
+  cpus: 8+
+  memory: 32+
+  disk_size: 150
+  image_id: computeimage-e00z45axwdzgve5e2d
+  use_spot: false
+  job_recovery:
+    max_restarts_on_errors: 0
+
+envs:
+  IMAGE:
+  S3_BUCKET:
+  S3_ENDPOINT_URL: https://storage.eu-north1.nebius.cloud
+  AWS_DEFAULT_REGION: eu-north1
+  S3_PREFIX: isaac-pick-place
+  RUN_ID:
+  CASE_ID: case-000
+  PICK_X: '0.4'
+  PLACE_Y: '0.2'
+  RECORD_MOTION: '0'
+  ACCEPT_EULA: Y
+  PRIVACY_CONSENT: Y
+
+secrets:
+  AWS_ACCESS_KEY_ID:
+  AWS_SECRET_ACCESS_KEY:
+
+setup: |
+  set -euo pipefail
+  nvidia-smi
+  sudo docker info > /dev/null
+  if [ -n "${REGISTRY_PASSWORD:-}" ]; then
+    registry_auth_dir="$(mktemp -d)"
+    trap 'sudo rm -rf "$registry_auth_dir"' EXIT
+    printf '%s' "$REGISTRY_PASSWORD" | sudo docker --config "$registry_auth_dir" login \
+      --username "$REGISTRY_USERNAME" --password-stdin "$REGISTRY_SERVER"
+    sudo docker --config "$registry_auth_dir" pull "$IMAGE"
+  else
+    sudo docker pull "$IMAGE"
+  fi
+
+run: |
+  set -euo pipefail
+  recording_args=()
+  if [ "$RECORD_MOTION" = 1 ]; then
+    recording_args+=(--record-motion)
+  fi
+  # Pass names, so credentials stay out of Docker's command-line arguments.
+  sudo --preserve-env=AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,S3_BUCKET,S3_ENDPOINT_URL,AWS_DEFAULT_REGION,S3_PREFIX,ACCEPT_EULA,PRIVACY_CONSENT \
+    timeout --signal=TERM --kill-after=60s 2h \
+    docker run --rm --gpus all --network host --shm-size=1g \
+      --env AWS_ACCESS_KEY_ID --env AWS_SECRET_ACCESS_KEY \
+      --env S3_BUCKET --env S3_ENDPOINT_URL --env AWS_DEFAULT_REGION --env S3_PREFIX \
+      --env ACCEPT_EULA --env PRIVACY_CONSENT \
+      "$IMAGE" --run-id "$RUN_ID" --case-id "$CASE_ID" \
+      --pick-x "$PICK_X" --place-y "$PLACE_Y" "${recording_args[@]}"

@@ -7,6 +7,7 @@ SkyPilot is an open-source framework for running AI and batch workloads. Nebius 
 ## Examples and Solutions
 
 - [Basic Job](examples/basic-job.yaml): A simple job to verify GPU access ([see details here](#basic-job))
+- [Isaac Sim pick-and-place sweep](isaac-pick-place-sweep/): Run one robot simulation, then four independent managed jobs, and save results to Object Storage.
 - [Mount Cloud Buckets](examples/test-cloud-bucket.yaml): Mount Nebius Object Storage to the filesystem. ([see details here](#mount-cloud-buckets))
 - [S3 Migration](examples/s3_migration.yaml): Migrate data from AWS S3 to Nebius Object Storage. ([see details here](#s3-migration))
 - [AI Training](examples/ai-training.yaml): Train a GPT-like model using PyTorch. ([see details here](#ai-training))
