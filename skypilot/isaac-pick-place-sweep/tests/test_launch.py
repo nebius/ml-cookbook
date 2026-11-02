@@ -77,6 +77,33 @@ class LaunchTest(unittest.TestCase):
             with self.subTest(config=config), self.assertRaises(ValueError):
                 launch.expand_sweep(config)
 
+    def test_submission_error_is_informative_without_exposing_credentials(self):
+        args = [
+            "launch.py",
+            "--image",
+            self.options.image,
+            "--bucket",
+            self.options.bucket,
+            "--single",
+        ]
+        credentials = {
+            name: f"example-value-for-{name}"
+            for name in ("AWS_SECRET_ACCESS_KEY", "REGISTRY_PASSWORD")
+        }
+        error = RuntimeError("No project found: " + " ".join(credentials.values()))
+        with (
+            patch.object(sys, "argv", args),
+            patch("launch.read_secrets", return_value=credentials),
+            patch("launch.submit_jobs", side_effect=error),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            launch.main()
+        message = str(raised.exception)
+        self.assertIn("No project found", message)
+        self.assertIn("[redacted]", message)
+        for value in credentials.values():
+            self.assertNotIn(value, message)
+
     def test_required_and_optional_credentials(self):
         env = {name: f"value-for-{name}" for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")}
         with patch.dict(os.environ, env, clear=True):

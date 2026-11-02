@@ -7,7 +7,7 @@ resources:
   cpus: 8+
   memory: 32+
   disk_size: 150
-  image_id: ubuntu24.04-cuda13-latest
+  image_id: computeimage-e00z45axwdzgve5e2d
   use_spot: false
   job_recovery:
     max_restarts_on_errors: 0

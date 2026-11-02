@@ -4,9 +4,11 @@ Run a Franka Panda pick-and-place simulation on a Nebius Compute GPU VM.
 Start with one case, then submit four independent [SkyPilot managed jobs](https://docs.skypilot.ai/en/latest/examples/managed-jobs.html).
 Each job runs the committed Docker image, writes its measured result to Nebius Object Storage, and releases its worker VM when finished.
 
+**Cloud verified on November 2, 2026:** one case and the four-job sweep passed, with all results downloaded and worker cleanup checked. [See the results](#validation).
+
 ![Four measured Franka pick-and-place trajectories replayed side by side in Rerun](images/rerun-sweep.webp)
 
-*Four cases approaching their placement targets at 5.8 seconds of simulated time. Blue cubes and cyan paths show measured motion; green marks pickup and yellow marks the target. This recording comes from the original Serverless recipe, not a SkyPilot cloud run.*
+*Four independent Nebius Compute jobs approaching their placement targets at 5.8 seconds of simulated time, from the November 2 SkyPilot sweep. Blue cubes and cyan paths show measured motion; green marks pickup and yellow marks the target.*
 
 This is a self-contained adaptation of the [Serverless Isaac Sim recipe](https://github.com/nebius/serverless-ai-cookbook/tree/354ad615ed8d4e07532125bb82add11fed5992f8/robotics/isaac-pick-place-sweep).
 The simulation and result fields are the same; SkyPilot provisions and manages the VMs.
@@ -26,7 +28,7 @@ Your grid defines the cases. SkyPilot manages a worker for each job, and each si
 - A [Container Registry](https://docs.nebius.com/container-registry/quickstart) and an [Object Storage bucket with access keys](https://docs.nebius.com/object-storage/quickstart).
 
 The default VM uses one **L40S**, at least 8 vCPUs and 32 GB RAM, and a 150 GB boot disk. Isaac needs an RTX GPU; H100 and A100 are unsupported.
-The VM image `ubuntu24.04-cuda13-latest` supplies Docker and NVIDIA tooling. Check the driver printed in the setup logs against [NVIDIA's Isaac Sim 6.1 requirements](https://docs.isaacsim.omniverse.nvidia.com/6.1.0/installation/requirements.html), which list Linux driver 595.58.03.
+The default boot image is `computeimage-e00z45axwdzgve5e2d`, an AMD64 Ubuntu 24.04 CUDA 13 image in `eu-north1`, released on October 23, 2026. It supplies Docker and NVIDIA tooling. Check the driver printed in the setup logs against [NVIDIA's Isaac Sim 6.1 requirements](https://docs.isaacsim.omniverse.nvidia.com/6.1.0/installation/requirements.html), which list Linux driver 595.58.03.
 The VM needs outbound HTTPS for the registry, Object Storage, and `omniverse-content-production.s3-us-west-2.amazonaws.com`.
 
 Compute VMs, boot disks, Object Storage, and the API server can incur charges. Test one case before starting the sweep.
@@ -51,6 +53,20 @@ sky check nebius
 
 Use a server compatible with the pinned SkyPilot client, **0.14.2**, including support for task secrets. If you already use a configured API server, keep that connection and run `sky check nebius`.
 Cloud credentials belong on the API server; signing into the Nebius CLI on your laptop alone does not configure a remote server.
+
+For a local API server, install the same requirements in its environment. The file also pins `grpcio==1.83.0`: concurrent provisioning with 1.85.1 crashed in gRPC's native fork handler on the macOS test controller. Installing client dependencies does not update an already-running remote server.
+
+Configure the project and subnet on that server too. Merge this region mapping into its SkyPilot configuration, replacing the placeholders with your existing resource IDs:
+
+```yaml
+nebius:
+  region_configs:
+    eu-north1:
+      project_id: <your-project-id>
+      subnet_id: <your-subnet-id>
+```
+
+The server administrator can apply this through the server's configuration. For a new local server, set it in `~/.sky/config.yaml` before starting the server. This mapping avoids ambiguous project discovery and selects the network for the workers.
 
 ## 2. Build and push the image
 
@@ -189,13 +205,13 @@ Scrub the `simulation` timeline to compare cases. This displays a simplified arm
 
 ![The same four recorded cases after placement, with each cube close to its yellow target](images/rerun-placed.webp)
 
-*The original Serverless recordings at 10.133 seconds, after placement. Use each case's `result.json` for its measured errors and success flag. See [image provenance](images/README.md) for the source of both screenshots.*
+*The same four cloud jobs after placement, viewed at 10.133 seconds. Use each case's `result.json` for its measured errors and success flag. See [image provenance](images/README.md) for the source of both screenshots.*
 
 ## Customize and clean up
 
 - Edit `sweep.json` to change the grid; `--single` always selects its first point.
 - Edit [task.yaml](task.yaml) for GPU resources, VM image, disk size, or the two-hour simulation timeout. Use an RTX GPU supported in your region. `--region` selects the same region for Compute and Object Storage.
-- Edit `run.py` to change the task, or the Dockerfile to add dependencies. Build and push a new image tag after changes. Use an image digest and a specific Compute image ID when you need reproducible environments; the default VM image family follows new releases.
+- Edit `run.py` to change the task, or the Dockerfile to add dependencies. Build and push a new image tag after changes. Use a container image digest when you need reproducible environments. The default Compute image is already pinned by ID; select an image available in the destination region if you change `--region`.
 - Review NVIDIA's license and privacy terms before running; the YAML sets `ACCEPT_EULA=Y` and `PRIVACY_CONSENT=Y`.
 
 Managed jobs release their worker VMs and boot disks after completion or cancellation. The API server and any legacy jobs controller remain separate resources. Keep the API server if you use it for other work. Your registry image and S3 results also remain available.
@@ -214,6 +230,8 @@ These are on-demand jobs. Application errors are not automatically retried; SkyP
 | Symptom | Check |
 | --- | --- |
 | `sky check nebius` fails | The connected API server's Nebius credentials, project, subnet, and permissions. |
+| `No project found for region` | Set `nebius.region_configs.<region>.project_id` on the API server; an enabled cloud check alone does not select a project. |
+| Image family cannot be resolved | Use the exact public Compute image ID from `nebius compute image list-public --region <region>`; this recipe pins the tested region's image. |
 | Jobs stay pending | L40S quota and capacity in the selected region; inspect `sky jobs logs --controller <job-id>`. |
 | Image pull fails | Full image path, registry access, and token expiry while the job was queued. |
 | Docker or GPU setup fails | Use a GPU boot image with Docker and NVIDIA Container Toolkit; inspect `nvidia-smi` in setup logs. |
@@ -230,4 +248,21 @@ python -m unittest discover -s tests -v
 python launch.py --image example/image:v1 --bucket example-bucket --dry-run
 ```
 
-The Dockerfile was built locally and its entrypoint and bundled S3 dependency were checked. **This SkyPilot adaptation has not yet been run end to end on Nebius Compute.** The original Serverless runs validate the reused simulation only; they do not establish SkyPilot provisioning, VM driver compatibility, private image pulls, or cleanup.
+### Verified cloud run — November 2, 2026
+
+The documented single case and recording sweep ran on **Nebius Compute in `eu-north1`**, with one L40S, 8 vCPUs, 32 GB RAM, and a 150 GB boot disk per job. Workers reported NVIDIA driver **610.57.04**. The API server ran locally on macOS with SkyPilot 0.14.2; this test did not deploy Nebius's Managed SkyPilot API Server.
+
+The managed job IDs below belong to that isolated test server. Use the run IDs and artifact hashes in the verification record to identify its durable outputs.
+
+| Run | Managed job IDs | Robot-task success | XY placement error | S3 objects | Cold-start total time |
+| --- | --- | --- | --- | --- | --- |
+| Single case | 1 | 1/1 | 1.17 cm | 2 | 15.0 min |
+| Four-job sweep | 6–9 | 4/4 | 1.17–1.27 cm | 12 | 15.6–17.9 min per job |
+
+Every job reached `SUCCEEDED`. All **14 S3 objects** were independently downloaded and hashed. The four recordings each contain **98 measured frames** covering about 10.1 seconds of simulation. Their timestamps increase, cube quaternions are normalized, and every final recorded cube pose matches its `result.json`. The generated Rerun file passed `rerun rrd verify` and supplied the screenshots above.
+
+The cold-start times include provisioning, pulling and extracting the roughly 32 GB unpacked image, and initial Isaac startup. SkyPilot reports a managed job as `RUNNING` during image setup too; use the logs to distinguish setup from simulation.
+
+The five successful workers and their five managed boot disks were automatically deleted. Exact-ID queries to the Nebius API returned `NOT_FOUND` for each. A prior sweep was cancelled after a native gRPC 1.85.1 crash on the macOS controller; its two partially created VMs were manually removed before retrying with the pinned gRPC 1.83.0. No test VMs or boot disks remain.
+
+The tested container digest is `sha256:d2038691649b74ddcb165f2feb1aed4a959ff02488cf715ebb0c3892a7fe857d`. See the [verification record](validation/2026-11-02.json) for run IDs, per-case metrics, artifact hashes, runtime file hashes, and cleanup evidence. Bucket, account, and registry identifiers are omitted from that record.

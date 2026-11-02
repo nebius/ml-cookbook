@@ -135,8 +135,11 @@ def main():
     try:
         submit_jobs(configs, manifest, secrets)
     except Exception as exc:
+        message = str(exc)
+        for value in secrets.values():
+            message = message.replace(value, "[redacted]")
         raise SystemExit(
-            f"submission stopped ({type(exc).__name__}); inspect {manifest} and sky jobs queue before retrying"
+            f"submission stopped: {message}; inspect {manifest} and sky jobs queue before retrying"
         ) from None
 
 
