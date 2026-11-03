@@ -1087,7 +1087,7 @@ def scan_rootfs_tar(
 
     return RootfsScan(
         known_packages=tuple(sorted(known_packages)),
-        installed_packages=tuple(sorted(installed_packages))[:1000],
+        installed_packages=tuple(sorted(installed_packages)),
         cuda_targets=tuple(sorted(cuda_targets)),
         cuda_versions=tuple(sorted(cuda_versions, key=_version_sort_key)),
         nccl_versions=tuple(sorted(nccl_versions, key=_version_sort_key)),
@@ -3030,7 +3030,7 @@ def inspect_with_image(
         "available_platforms": [item.platform for item in manifests.platforms],
         "selected_manifests": selected_observations,
         "image_packages": sorted(image_packages),
-        "installed_packages": sorted(installed_packages)[:200],
+        "installed_packages": sorted(installed_packages),
         "image_cuda_targets": sorted(image_cuda_targets),
         "verified_image_cuda_targets": sorted(verified_image_cuda_targets),
         "unverified_image_cuda_target_strings": sorted(unverified_image_cuda_target_strings),

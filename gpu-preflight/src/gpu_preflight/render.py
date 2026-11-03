@@ -498,7 +498,15 @@ def render_text(report: InspectionReport) -> str:
         )
         installed = observations.get("installed_packages", [])
         if installed:
-            lines.append(f"  Installed package records: {len(installed)} (first 200 retained)")
+            statistics = observations.get("rootfs_statistics") or {}
+            partial = isinstance(statistics, dict) and any(
+                isinstance(item, dict) and item.get("metadata_scan_truncated")
+                for item in statistics.values()
+            )
+            inventory = f"  Installed package records: {len(installed)}"
+            if partial:
+                inventory += " (metadata scan limit reached; inventory is a subset)"
+            lines.append(inventory)
         if artifacts:
             targets_found = sum(
                 item.get("method") == "cuobjdump"

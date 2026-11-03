@@ -517,6 +517,87 @@ class ImageInspectionTests(unittest.TestCase):
         self.assertGreater(scan.metadata_bytes_scanned, 0)
         self.assertFalse(scan.metadata_truncated)
 
+    def _inventory_tar(self, names: list[str]) -> io.BytesIO:
+        status = b"".join(f"Package: {name}\nVersion: 1.0\n\n".encode() for name in names)
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w") as archive:
+            info = tarfile.TarInfo("var/lib/dpkg/status")
+            info.size = len(status)
+            archive.addfile(info, io.BytesIO(status))
+        stream.seek(0)
+        return stream
+
+    def test_inventory_keeps_records_past_the_alphabet(self) -> None:
+        names = [f"pkg{index:04d}" for index in range(400)] + ["torch", "triton", "zstd"]
+        scan = scan_rootfs_tar(self._inventory_tar(names), max_scan_bytes=1024 * 1024)
+        self.assertEqual(len(scan.installed_packages), len(names))
+        self.assertIn("triton==1.0", scan.installed_packages)
+        self.assertIn("zstd==1.0", scan.installed_packages)
+
+    def test_inventory_has_no_record_cap(self) -> None:
+        names = [f"pkg{index:05d}" for index in range(2500)] + ["zstd"]
+        scan = scan_rootfs_tar(self._inventory_tar(names), max_scan_bytes=1024 * 1024)
+        self.assertEqual(len(scan.installed_packages), len(names))
+        self.assertIn("zstd==1.0", scan.installed_packages)
+
+    def test_report_retains_the_whole_inventory(self) -> None:
+        records = tuple(f"pkg{index:04d}==1.0" for index in range(300)) + ("triton==3.5.0",)
+        arm64 = manifest("linux/arm64", "arm64")
+        pulled = PulledImageFacts(
+            platform="linux/arm64",
+            digest=arm64.digest,
+            environment={},
+            known_packages=("pytorch",),
+            installed_packages=records,
+            cuda_targets=("sm_103",),
+            cuda_versions=("12.9.0",),
+            nccl_versions=("2.28.3",),
+            user=None,
+            entrypoint=(),
+            command=(),
+        )
+        report = inspect_with_image(
+            image_facts(),
+            (self.profiles["gb300"],),
+            scan_mode="pull",
+            client=FakeImageClient((arm64,), pulled=pulled),
+        )
+        installed = report.observations["installed_packages"]
+        self.assertEqual(len(installed), len(records))
+        self.assertIn("triton==3.5.0", installed)
+        rendered = render_text(report)
+        self.assertIn(f"Installed package records: {len(records)}", rendered)
+        self.assertNotIn("first 200 retained", rendered)
+
+    def test_report_marks_an_inventory_cut_short_by_the_metadata_limit(self) -> None:
+        arm64 = manifest("linux/arm64", "arm64")
+        rootfs = replace(
+            rootfs_with(),
+            installed_packages=("torch==2.8.0",),
+            metadata_truncated=True,
+        )
+        pulled = PulledImageFacts(
+            platform="linux/arm64",
+            digest=arm64.digest,
+            environment={},
+            known_packages=("pytorch",),
+            installed_packages=rootfs.installed_packages,
+            cuda_targets=("sm_103",),
+            cuda_versions=("12.9.0",),
+            nccl_versions=("2.28.3",),
+            user=None,
+            entrypoint=(),
+            command=(),
+            rootfs=rootfs,
+        )
+        report = inspect_with_image(
+            image_facts(),
+            (self.profiles["gb300"],),
+            scan_mode="filesystem",
+            client=FakeImageClient((arm64,), pulled=pulled),
+        )
+        self.assertIn("metadata scan limit reached", render_text(report))
+
     def test_invalid_tar_is_rejected(self) -> None:
         with self.assertRaisesRegex(ImageInspectionError, "invalid rootfs tar"):
             scan_rootfs_tar(io.BytesIO(b"not a tar archive"), max_scan_bytes=1024)
