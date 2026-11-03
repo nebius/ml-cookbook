@@ -60,11 +60,17 @@ CUDA_TARGET_BYTES_RE = re.compile(
     re.IGNORECASE,
 )
 PACKAGE_METADATA_NAMES = {"METADATA", "PKG-INFO"}
-BINARY_SUFFIXES = (".a", ".bin", ".cubin", ".fatbin", ".ptx", ".so")
+CUDA_ONLY_SUFFIXES = (".cubin", ".fatbin", ".ptx")
+AMBIGUOUS_BINARY_SUFFIXES = (".a", ".bin", ".so")
+CUDA_PATH_MARKERS = ("cuda", "flash", "jax", "nccl", "nvidia", "nvshmem", "torch")
 VERSIONED_SO_RE = re.compile(r"\.so(?:\.\d+)*$", re.IGNORECASE)
-DEFAULT_MAX_SCAN_BYTES = 16384 * 1024 * 1024
-DEFAULT_MAX_CUOBJDUMP_FILES = 1024
-DEFAULT_MAX_ARTIFACT_BYTES = 2048 * 1024 * 1024
+# One candidate is written to a temporary file at a time and removed straight after,
+# so the scan needs room for the largest artifact, not for all of them. Inspecting an
+# artifact that would not leave this much free is refused instead of filling the disk.
+TEMPORARY_SPACE_MARGIN_BYTES = 2 * 1024 * 1024 * 1024
+# Checking free space costs a syscall, which is worth skipping for the small files
+# that make up most of a scan.
+TEMPORARY_SPACE_CHECK_BYTES = 128 * 1024 * 1024
 SKIPPED_CANDIDATE_RECORD_LIMIT = 200
 METADATA_SCAN_LIMIT_BYTES = 64 * 1024 * 1024
 METADATA_FILE_LIMIT_BYTES = 8 * 1024 * 1024
@@ -590,6 +596,22 @@ def _nccl_config_evidence(
     )
 
 
+def _temporary_space_allows(size_bytes: int) -> bool:
+    """Return whether one artifact of this size can be written out safely.
+
+    Artifacts are copied to the temporary filesystem one at a time and removed
+    immediately, so the question is only whether this one fits while leaving the
+    host room to work.
+    """
+    if size_bytes < TEMPORARY_SPACE_CHECK_BYTES:
+        return True
+    try:
+        free = shutil.disk_usage(tempfile.gettempdir()).free
+    except OSError:
+        return True
+    return size_bytes + TEMPORARY_SPACE_MARGIN_BYTES <= free
+
+
 def _read_member(
     archive: tarfile.TarFile,
     member: tarfile.TarInfo,
@@ -651,11 +673,11 @@ def _marker_targets_from_path(path: Path) -> tuple[str, ...]:
 
 def scan_rootfs_tar(
     stream: BinaryIO,
-    max_scan_bytes: int,
+    max_scan_bytes: int | None,
     *,
     cuobjdump: CuobjdumpTool | None = None,
-    max_cuobjdump_files: int | None = DEFAULT_MAX_CUOBJDUMP_FILES,
-    max_artifact_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
+    max_cuobjdump_files: int | None = None,
+    max_artifact_bytes: int | None = None,
     progress: Callable[[int, int, int], None] | None = None,
 ) -> RootfsScan:
     """Inspect a merged rootfs tar stream without extracting it."""
@@ -732,19 +754,12 @@ def scan_rootfs_tar(
                 is_conda_metadata = "/conda-meta/" in f"/{lower_name}" and lower_name.endswith(
                     ".json"
                 )
-                is_cuda_candidate = (
-                    lower_name.endswith(BINARY_SUFFIXES) or VERSIONED_SO_RE.search(lower_name)
-                ) and any(
-                    marker in lower_name
-                    for marker in (
-                        "cuda",
-                        "flash",
-                        "jax",
-                        "nccl",
-                        "nvidia",
-                        "nvshmem",
-                        "torch",
+                is_cuda_candidate = lower_name.endswith(CUDA_ONLY_SUFFIXES) or (
+                    (
+                        lower_name.endswith(AMBIGUOUS_BINARY_SUFFIXES)
+                        or VERSIONED_SO_RE.search(lower_name)
                     )
+                    and any(marker in lower_name for marker in CUDA_PATH_MARKERS)
                 )
                 if not (
                     is_python_metadata
@@ -794,7 +809,7 @@ def scan_rootfs_tar(
                             # selectable alternatives. The representative for this catalog/target
                             # pair carries the binary evidence; duplicates are not coverage gaps.
                             continue
-                    allowance = max_scan_bytes - bytes_scanned
+                    allowance = None if max_scan_bytes is None else max_scan_bytes - bytes_scanned
                     artifact: CudaArtifactEvidence | None = None
                     skip_reason: str | None = None
                     # The rootfs is a single tar stream, so files cannot be reordered; core
@@ -806,7 +821,12 @@ def scan_rootfs_tar(
                     elif artifact_role not in {"runtime", "kernel-catalog"}:
                         skip_reason = "non-runtime"
                         skipped_non_runtime += 1
-                    elif member.size > max_artifact_bytes:
+                    elif max_artifact_bytes is not None and member.size > max_artifact_bytes:
+                        skip_reason = "artifact-limit"
+                        skipped_artifact_limit += 1
+                    elif not _temporary_space_allows(member.size):
+                        # Refusing one oversized artifact keeps the rest of the scan
+                        # running; filling the temporary filesystem would not.
                         skip_reason = "artifact-limit"
                         skipped_artifact_limit += 1
                     elif (
@@ -816,7 +836,11 @@ def scan_rootfs_tar(
                     ):
                         skip_reason = "file-limit"
                         skipped_file_limit += 1
-                    elif not core_library and (allowance <= 0 or member.size > allowance):
+                    elif (
+                        not core_library
+                        and allowance is not None
+                        and (allowance <= 0 or member.size > allowance)
+                    ):
                         skip_reason = "scan-budget"
                         skipped_scan_budget += 1
                     if (
@@ -836,7 +860,7 @@ def scan_rootfs_tar(
                             )
                         )
                     planned_cuobjdump = cuobjdump is not None and skip_reason is None
-                    if allowance <= 0 and not planned_cuobjdump:
+                    if allowance is not None and allowance <= 0 and not planned_cuobjdump:
                         truncated = True
                         continue
                     temporary_path: Path | None = None
@@ -859,11 +883,17 @@ def scan_rootfs_tar(
                             read_size, marker_targets = _stream_cuda_member(
                                 archive,
                                 member,
-                                min(allowance, BINARY_FILE_LIMIT_BYTES),
+                                BINARY_FILE_LIMIT_BYTES
+                                if allowance is None
+                                else min(allowance, BINARY_FILE_LIMIT_BYTES),
                             )
                         bytes_scanned += read_size
                         complete_file = read_size == member.size
-                        if not complete_file and bytes_scanned >= max_scan_bytes:
+                        if (
+                            not complete_file
+                            and max_scan_bytes is not None
+                            and bytes_scanned >= max_scan_bytes
+                        ):
                             truncated = True
 
                         if planned_cuobjdump and complete_file and temporary_path:
@@ -903,8 +933,14 @@ def scan_rootfs_tar(
                                 )
                             elif not complete_file:
                                 diagnostic = "file exceeded the candidate-content scan budget"
-                            elif member.size > max_artifact_bytes:
+                            elif (
+                                max_artifact_bytes is not None and member.size > max_artifact_bytes
+                            ):
                                 diagnostic = "file exceeded the per-artifact cuobjdump limit"
+                            elif not _temporary_space_allows(member.size):
+                                diagnostic = (
+                                    "file did not fit the free space in the temporary filesystem"
+                                )
                             else:
                                 diagnostic = "maximum cuobjdump file count was reached"
                             artifact = CudaArtifactEvidence(
@@ -1117,8 +1153,8 @@ class DockerImageClient:
         command_timeout_seconds: int = 3600,
         cuobjdump_mode: str = "auto",
         cuobjdump_timeout_seconds: int = 30,
-        max_cuobjdump_files: int | None = DEFAULT_MAX_CUOBJDUMP_FILES,
-        max_artifact_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
+        max_cuobjdump_files: int | None = None,
+        max_artifact_bytes: int | None = None,
         cuobjdump_fallback_mode: str = "auto",
     ) -> None:
         self.docker_binary = shutil.which("docker")
@@ -1131,6 +1167,20 @@ class DockerImageClient:
         )
         self.max_cuobjdump_files = max_cuobjdump_files
         self.max_artifact_bytes = max_artifact_bytes
+
+    def inspection_scope(self) -> str:
+        """Describe the bounds this scan runs under, including their absence."""
+        files = (
+            f"up to {self.max_cuobjdump_files} files"
+            if self.max_cuobjdump_files is not None
+            else "all eligible inspection units"
+        )
+        artifacts = (
+            f"{self.max_artifact_bytes / (1024**2):.0f} MiB per artifact"
+            if self.max_artifact_bytes is not None
+            else "artifacts bounded by free temporary space"
+        )
+        return f"{files} and {artifacts}"
 
     def preflight(self, *, require_daemon: bool, require_cuobjdump: bool) -> None:
         """Fail before registry access or image pulls when host prerequisites are missing."""
@@ -1243,7 +1293,7 @@ class DockerImageClient:
         reference: str,
         manifest: PlatformManifest,
         config: PulledImageFacts,
-        max_scan_bytes: int,
+        max_scan_bytes: int | None,
     ) -> PulledImageFacts:
         exact_reference = _exact_reference(reference, manifest.digest)
         print(
@@ -1256,14 +1306,8 @@ class DockerImageClient:
             if self.cuobjdump
             else "byte-marker fallback (cuobjdump unavailable)"
         )
-        inspection_scope = (
-            f"up to {self.max_cuobjdump_files} files"
-            if self.max_cuobjdump_files is not None
-            else "all eligible inspection units"
-        )
         print(
-            f"gpu-preflight: CUDA artifact analyzer: {analyzer}; {inspection_scope} and "
-            f"{self.max_artifact_bytes / (1024**2):.0f} MiB per artifact...",
+            f"gpu-preflight: CUDA artifact analyzer: {analyzer}; {self.inspection_scope()}...",
             file=sys.stderr,
             flush=True,
         )
@@ -1863,9 +1907,9 @@ def _cuda_artifact_findings(
     image_cuda_versions: tuple[str, ...],
     compatibility_exceptions: list[dict[str, object]],
     *,
-    max_scan_bytes: int,
+    max_scan_bytes: int | None,
     max_cuobjdump_files: int | None,
-    max_artifact_bytes: int,
+    max_artifact_bytes: int | None,
     cuobjdump_timeout_seconds: int,
 ) -> tuple[Finding, ...]:
     """Evaluate each successfully enumerated CUDA artifact independently for a target GPU.
@@ -2392,7 +2436,8 @@ def _cuda_artifact_findings(
                 "inspection units. Review the remaining paths in the report appendix and increase only "
                 "the relevant bound if the workload may load one of them."
             )
-        elif rootfs.skipped_scan_budget:
+        elif rootfs.skipped_scan_budget and max_scan_bytes is not None:
+            # Candidates are only skipped for the budget when one was asked for.
             current_scan_mb = max(1, max_scan_bytes // (1024 * 1024))
             rerun_flags.append(f"--max-scan-mb {current_scan_mb * 4}")
             prospective_files = (
@@ -2405,14 +2450,20 @@ def _cuda_artifact_findings(
                 suggested_file_limit *= 2
             if max_cuobjdump_files is not None and suggested_file_limit > max_cuobjdump_files:
                 rerun_flags.append(f"--max-cuobjdump-files {suggested_file_limit}")
-        elif rootfs.skipped_file_limit:
-            if max_cuobjdump_files is not None:
-                rerun_flags.append(f"--max-cuobjdump-files {max_cuobjdump_files * 2}")
-            else:
-                rerun_flags.append("--exhaustive")
+        elif rootfs.skipped_file_limit and max_cuobjdump_files is not None:
+            rerun_flags.append(f"--max-cuobjdump-files {max_cuobjdump_files * 2}")
         if rootfs.skipped_artifact_limit:
-            current_artifact_mb = max(1, max_artifact_bytes // (1024 * 1024))
-            rerun_flags.append(f"--max-artifact-mb {current_artifact_mb * 2}")
+            if max_artifact_bytes is not None:
+                current_artifact_mb = max(1, max_artifact_bytes // (1024 * 1024))
+                rerun_flags.append(f"--max-artifact-mb {current_artifact_mb * 2}")
+            else:
+                # Without a ceiling the only thing that refuses an artifact is the
+                # free space it would need, which no flag can raise.
+                rerun_guidance = (
+                    "An artifact was too large for the free space in the temporary "
+                    "filesystem. Free space on the scan host, or point TMPDIR at a "
+                    "larger filesystem, and repeat the scan."
+                )
         if rootfs.skipped_no_cuobjdump:
             rerun_flags.append("--cuobjdump /path/to/cuobjdump")
         if coverage_percent is not None and coverage_percent >= 90:
@@ -2536,12 +2587,12 @@ def inspect_with_image(
     facts: ImageFacts,
     profiles: tuple[HardwareProfile, ...],
     scan_mode: str = "filesystem",
-    max_scan_bytes: int = DEFAULT_MAX_SCAN_BYTES,
+    max_scan_bytes: int | None = None,
     cuobjdump_mode: str = "auto",
     cuobjdump_timeout_seconds: int = 30,
     cuobjdump_fallback_mode: str = "auto",
-    max_cuobjdump_files: int | None = DEFAULT_MAX_CUOBJDUMP_FILES,
-    max_artifact_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
+    max_cuobjdump_files: int | None = None,
+    max_artifact_bytes: int | None = None,
     command_timeout_seconds: int = 3600,
     client: DockerImageClient | None = None,
 ) -> InspectionReport:
@@ -3032,12 +3083,12 @@ def inspect_image_reference(
     profiles: tuple[HardwareProfile, ...],
     platform: str | None = None,
     scan_mode: str = "filesystem",
-    max_scan_bytes: int = DEFAULT_MAX_SCAN_BYTES,
+    max_scan_bytes: int | None = None,
     cuobjdump_mode: str = "auto",
     cuobjdump_timeout_seconds: int = 30,
     cuobjdump_fallback_mode: str = "auto",
-    max_cuobjdump_files: int | None = DEFAULT_MAX_CUOBJDUMP_FILES,
-    max_artifact_bytes: int = DEFAULT_MAX_ARTIFACT_BYTES,
+    max_cuobjdump_files: int | None = None,
+    max_artifact_bytes: int | None = None,
     command_timeout_seconds: int = 3600,
     client: DockerImageClient | None = None,
 ) -> InspectionReport:

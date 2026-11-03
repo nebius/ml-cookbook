@@ -15,6 +15,39 @@ SEVERITY_LABEL = {
     "info": "INFO",
 }
 
+# A report is read for its verdict first. Tone groups the five compatibility results
+# into what the reader has to do about them: nothing, look into it, change the image,
+# or stop. The words stay, so the colour is reinforcement and never the only signal.
+STATUS_TONE = {
+    "READY_FOR_HARDWARE_TESTING": "ok",
+    "REVIEW_REQUIRED": "caution",
+    "INSUFFICIENT_EVIDENCE": "caution",
+    "ACTION_REQUIRED": "alert",
+    "INCOMPATIBLE": "bad",
+}
+REPRODUCIBILITY_TONE = {"PINNED": "ok", "UNPINNED": "caution"}
+
+
+def _coverage_tone(percent: float | None) -> str | None:
+    """Green only when every eligible unit was inspected.
+
+    Anything short of complete means an artifact was not read, and an artifact
+    that was not read can hold the target mismatch the report is looking for, so
+    partial coverage is not a lesser shade of done. A coverage figure that could
+    not be established carries no tone at all.
+    """
+    if percent is None:
+        return None
+    return "ok" if percent >= 100 else "bad"
+
+
+SEVERITY_TONE = {"blocker": "bad", "warning": "caution", "info": "info"}
+
+
+def _tone_class(tone: str | None) -> str:
+    return f" tone-{tone}" if tone else ""
+
+
 SKIP_REASON_LABEL = {
     "no-cuobjdump": "CUDA analyzer unavailable",
     "scan-budget": "candidate-content budget",
@@ -536,8 +569,9 @@ def _finding_html(finding: Finding) -> str:
         )
     return (
         f'<article class="finding {escape(finding.severity)}">'
-        f"<h3>{escape(SEVERITY_LABEL[finding.severity])} · {escape(finding.id)} · "
-        f"{escape(finding.title)}</h3>"
+        f'<h3><span class="badge{_tone_class(SEVERITY_TONE.get(finding.severity))}">'
+        f"{escape(SEVERITY_LABEL[finding.severity])}</span>"
+        f"{escape(finding.id)} · {escape(finding.title)}</h3>"
         f"<p><strong>Category:</strong> {escape(finding.category)}</p>"
         f"<p><strong>Evidence:</strong> {escape(finding.evidence)}</p>"
         f"{detail_table}"
@@ -887,14 +921,24 @@ def render_html(report: InspectionReport) -> str:
             for item in target.required_hardware_checks
         )
         findings = "".join(_finding_html(finding) for finding in target.findings)
+        # An unrecognized status keeps the neutral border rather than naming a
+        # custom property that does not exist.
+        status_tone = STATUS_TONE.get(target.compatibility_status, "info")
         target_sections.append(
             f'<section class="target"><h2>{escape(target.display_name)}</h2>'
-            f'<div class="assessment"><div><strong>Compatibility</strong><br>'
-            f'<span class="status">{escape(target.compatibility_status)}</span></div>'
+            f'<div class="assessment">'
+            f'<div class="keyed" style="--tone: var(--{status_tone}-br)">'
+            f"<strong>Compatibility</strong><br>"
+            f'<span class="status{_tone_class(status_tone)}">'
+            f"{escape(target.compatibility_status)}</span></div>"
             f"<div><strong>CUDA artifact inspection coverage</strong><br>"
-            f"{escape(_artifact_coverage_text(target.artifact_inspection_coverage_percent, target.artifact_inspection_covered_candidates, target.artifact_inspection_eligible_candidates))}</div>"
+            f'<span class="status'
+            f'{_tone_class(_coverage_tone(target.artifact_inspection_coverage_percent))}">'
+            f"{escape(_artifact_coverage_text(target.artifact_inspection_coverage_percent, target.artifact_inspection_covered_candidates, target.artifact_inspection_eligible_candidates))}"
+            f"</span></div>"
             f"<div><strong>Reproducibility</strong><br>"
-            f"{escape(target.reproducibility_status)}</div></div>"
+            f'<span class="status{_tone_class(REPRODUCIBILITY_TONE.get(target.reproducibility_status))}">'
+            f"{escape(target.reproducibility_status)}</span></div></div>"
             f'<p class="lead">{escape(target.summary)}</p>'
             f"<h3>Actions</h3><ul>{action_items}</ul>"
             f"<h3>Passed checks</h3><ul>{passed_items}</ul>"
@@ -919,18 +963,46 @@ def render_html(report: InspectionReport) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Nebius GPU Preflight report</title>
   <style>
-    :root {{ color-scheme: light dark; font-family: Inter, system-ui, sans-serif; }}
+    :root {{
+      color-scheme: light dark; font-family: Inter, system-ui, sans-serif;
+      --ok-fg: #15803d; --ok-bg: #dcfce7; --ok-br: #4ade80;
+      --caution-fg: #a16207; --caution-bg: #fef9c3; --caution-br: #facc15;
+      --alert-fg: #c2410c; --alert-bg: #ffedd5; --alert-br: #fb923c;
+      --bad-fg: #b91c1c; --bad-bg: #fee2e2; --bad-br: #f87171;
+      --info-fg: #1d4ed8; --info-bg: #dbeafe; --info-br: #60a5fa;
+    }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{
+        --ok-fg: #86efac; --ok-bg: #0b2e1a; --ok-br: #15803d;
+        --caution-fg: #fde047; --caution-bg: #2e2708; --caution-br: #a16207;
+        --alert-fg: #fdba74; --alert-bg: #341a0b; --alert-br: #c2410c;
+        --bad-fg: #fca5a5; --bad-bg: #350f0f; --bad-br: #b91c1c;
+        --info-fg: #93c5fd; --info-bg: #0d1b33; --info-br: #1d4ed8;
+      }}
+    }}
     body {{ max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.5; }}
     header, section {{ margin-bottom: 2rem; }}
     .summary, .assessment {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(190px,1fr)); gap: .8rem; }}
     .summary div, .assessment div, .finding {{ border: 1px solid #7776; border-radius: .6rem; padding: .8rem 1rem; }}
     .finding {{ margin: .8rem 0; border-left-width: .4rem; }}
-    .finding.blocker {{ border-left-color: #dc2626; }}
-    .finding.warning {{ border-left-color: #d97706; }}
-    .finding.info {{ border-left-color: #2563eb; }}
+    /* Problems carry a tint so they separate from the informational majority. */
+    .finding.blocker {{ border-left-color: var(--bad-br); background: var(--bad-bg); }}
+    .finding.warning {{ border-left-color: var(--caution-br); background: var(--caution-bg); }}
+    .finding.info {{ border-left-color: var(--info-br); }}
     .finding h3 {{ font-size: 1rem; margin: 0 0 .5rem; }}
     .finding p {{ margin: .35rem 0; }}
-    .status {{ font-size: .75rem; border: 1px solid currentColor; border-radius: 1rem; padding: .15rem .55rem; }}
+    /* Tone repeats what the adjacent words already say; it never replaces them. */
+    .status, .badge {{
+      display: inline-block; font-size: .75rem; font-weight: 700; letter-spacing: .02em;
+      border: 1px solid currentColor; border-radius: 1rem; padding: .15rem .55rem;
+    }}
+    .badge {{ margin-right: .4rem; }}
+    .tone-ok {{ color: var(--ok-fg); background: var(--ok-bg); border-color: var(--ok-br); }}
+    .tone-caution {{ color: var(--caution-fg); background: var(--caution-bg); border-color: var(--caution-br); }}
+    .tone-alert {{ color: var(--alert-fg); background: var(--alert-bg); border-color: var(--alert-br); }}
+    .tone-bad {{ color: var(--bad-fg); background: var(--bad-bg); border-color: var(--bad-br); }}
+    .tone-info {{ color: var(--info-fg); background: var(--info-bg); border-color: var(--info-br); }}
+    .assessment div.keyed {{ border-left: .35rem solid var(--tone, #7776); }}
     .lead {{ font-size: 1.1rem; }}
     details summary {{ cursor: pointer; font-weight: 700; margin: 1rem 0; }}
     .table-wrap {{ overflow-x: auto; }}

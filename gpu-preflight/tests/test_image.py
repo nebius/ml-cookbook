@@ -8,6 +8,7 @@ import unittest
 from contextlib import redirect_stderr
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from gpu_preflight.cuda_inspection import (
@@ -1892,3 +1893,231 @@ class MarkerScanSkipTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CudaCandidateGateTests(unittest.TestCase):
+    """Which files reach cuobjdump at all.
+
+    A suffix only CUDA produces identifies an artifact wherever it sits. The
+    generic binary suffixes do not, and an image carries thousands of them, so
+    those still need a CUDA-bearing project in the path.
+    """
+
+    @staticmethod
+    def _cuobjdump(directory: str) -> str:
+        executable = Path(directory) / "cuobjdump"
+        executable.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "--version" ]; then '
+            "echo 'Cuda compilation tools, release 13.4, V13.4.92'; exit 0; fi\n"
+            "echo 'ELF file    1: payload.1.sm_70.cubin'\n",
+            encoding="utf-8",
+        )
+        executable.chmod(0o755)
+        return str(executable)
+
+    @staticmethod
+    def _rootfs(name: str) -> io.BytesIO:
+        stream = io.BytesIO()
+        data = b"device code payload" * 64
+        with tarfile.open(fileobj=stream, mode="w") as archive:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+        stream.seek(0)
+        return stream
+
+    def _scan(self, name: str) -> RootfsScan:
+        with tempfile.TemporaryDirectory() as directory:
+            tool = resolve_cuobjdump(
+                self._cuobjdump(directory), timeout_seconds=5, fallback_mode="off"
+            )
+            return scan_rootfs_tar(
+                self._rootfs(name),
+                max_scan_bytes=1024 * 1024,
+                cuobjdump=tool,
+                max_cuobjdump_files=8,
+                max_artifact_bytes=1024 * 1024,
+            )
+
+    def test_cuda_only_suffixes_are_inspected_without_a_path_marker(self) -> None:
+        # An application's own kernels sit under its own directory, which names
+        # no CUDA project. Requiring a marker here loses them silently: they are
+        # not inspected, not recorded as skipped, and so never counted.
+        for name in (
+            "opt/app/kernels.cubin",
+            "opt/app/build/fused.fatbin",
+            "workspace/kernels.ptx",
+            "root/.triton/cache/ab12/kernel.cubin",
+            "opt/pkg/cubins/attention.sm_90.cubin",
+        ):
+            with self.subTest(name=name):
+                scan = self._scan(name)
+                self.assertEqual(scan.cuda_candidate_files, 1)
+                self.assertEqual(scan.cuobjdump_files_analyzed, 1)
+                self.assertEqual(scan.cuda_artifacts[0].targets, ("sm_70",))
+
+    def test_generic_suffixes_still_need_a_path_marker(self) -> None:
+        for name in ("usr/lib/libssl.so.3", "usr/lib/libz.a", "boot/vmlinuz.bin"):
+            with self.subTest(name=name):
+                scan = self._scan(name)
+                self.assertEqual(scan.cuda_candidate_files, 0)
+                self.assertEqual(scan.cuobjdump_files_analyzed, 0)
+
+    def test_a_marked_path_still_admits_a_generic_suffix(self) -> None:
+        scan = self._scan("usr/lib/python3/torch/lib/libtorch_cuda.so")
+        self.assertEqual(scan.cuda_candidate_files, 1)
+        self.assertEqual(scan.cuobjdump_files_analyzed, 1)
+
+    def test_a_role_excluded_cubin_is_counted_rather_than_dropped(self) -> None:
+        # Reaching the gate is what makes a test or benchmark artifact appear in
+        # the candidate accounting instead of vanishing before it is classified.
+        scan = self._scan("opt/app/tests/kernels.cubin")
+        self.assertEqual(scan.cuda_candidate_files, 1)
+        self.assertEqual(scan.cuobjdump_files_analyzed, 0)
+        self.assertEqual(scan.skipped_non_runtime, 1)
+
+
+class UnbudgetedScanTests(unittest.TestCase):
+    """A default scan is bounded by what the host can do, not by chosen numbers.
+
+    The file-count, candidate-byte and per-artifact budgets each traded coverage
+    for predictability, so a report could read "complete" having stopped at a
+    limit. None of them is set by default. Free temporary space still refuses a
+    single artifact that would not fit, because that one is not a preference.
+    """
+
+    @staticmethod
+    def _cuobjdump(directory: str) -> str:
+        executable = Path(directory) / "cuobjdump"
+        executable.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "--version" ]; then '
+            "echo 'Cuda compilation tools, release 13.4, V13.4.92'; exit 0; fi\n"
+            "echo 'ELF file    1: payload.1.sm_90.cubin'\n",
+            encoding="utf-8",
+        )
+        executable.chmod(0o755)
+        return str(executable)
+
+    @staticmethod
+    def _rootfs(count: int, size: int) -> io.BytesIO:
+        stream = io.BytesIO()
+        data = b"x" * size
+        with tarfile.open(fileobj=stream, mode="w") as archive:
+            for index in range(count):
+                info = tarfile.TarInfo(f"opt/app/kernel{index}.cubin")
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+        stream.seek(0)
+        return stream
+
+    def test_no_budget_inspects_every_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            tool = resolve_cuobjdump(
+                self._cuobjdump(directory), timeout_seconds=5, fallback_mode="off"
+            )
+            scan = scan_rootfs_tar(
+                self._rootfs(40, 4096),
+                max_scan_bytes=None,
+                cuobjdump=tool,
+                max_cuobjdump_files=None,
+                max_artifact_bytes=None,
+            )
+        self.assertEqual(scan.cuobjdump_files_analyzed, 40)
+        self.assertEqual(scan.skipped_scan_budget, 0)
+        self.assertEqual(scan.skipped_file_limit, 0)
+        self.assertEqual(scan.skipped_artifact_limit, 0)
+        self.assertFalse(scan.truncated)
+
+    def test_each_budget_still_binds_when_asked_for(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            tool = resolve_cuobjdump(
+                self._cuobjdump(directory), timeout_seconds=5, fallback_mode="off"
+            )
+            capped = scan_rootfs_tar(
+                self._rootfs(40, 4096),
+                max_scan_bytes=None,
+                cuobjdump=tool,
+                max_cuobjdump_files=5,
+                max_artifact_bytes=None,
+            )
+            budgeted = scan_rootfs_tar(
+                self._rootfs(40, 4096),
+                max_scan_bytes=8192,
+                cuobjdump=tool,
+                max_cuobjdump_files=None,
+                max_artifact_bytes=None,
+            )
+            sized = scan_rootfs_tar(
+                self._rootfs(40, 4096),
+                max_scan_bytes=None,
+                cuobjdump=tool,
+                max_cuobjdump_files=None,
+                max_artifact_bytes=1024,
+            )
+        self.assertEqual(capped.cuobjdump_files_analyzed, 5)
+        self.assertTrue(capped.skipped_file_limit)
+        self.assertTrue(budgeted.skipped_scan_budget)
+        self.assertEqual(sized.cuobjdump_files_analyzed, 0)
+        self.assertEqual(sized.skipped_artifact_limit, 40)
+
+    def test_an_artifact_larger_than_free_space_is_refused(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("gpu_preflight.image.shutil.disk_usage") as disk_usage,
+        ):
+            disk_usage.return_value = SimpleNamespace(total=0, used=0, free=1024 * 1024)
+            tool = resolve_cuobjdump(
+                self._cuobjdump(directory), timeout_seconds=5, fallback_mode="off"
+            )
+            scan = scan_rootfs_tar(
+                self._rootfs(1, 256 * 1024 * 1024),
+                max_scan_bytes=None,
+                cuobjdump=tool,
+                max_cuobjdump_files=None,
+                max_artifact_bytes=None,
+            )
+        self.assertEqual(scan.cuobjdump_files_analyzed, 0)
+        self.assertEqual(scan.skipped_artifact_limit, 1)
+        self.assertEqual([item.reason for item in scan.skipped_cuda_candidates], ["artifact-limit"])
+
+    def test_a_small_artifact_never_consults_the_filesystem(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("gpu_preflight.image.shutil.disk_usage") as disk_usage,
+        ):
+            tool = resolve_cuobjdump(
+                self._cuobjdump(directory), timeout_seconds=5, fallback_mode="off"
+            )
+            scan = scan_rootfs_tar(
+                self._rootfs(5, 4096),
+                max_scan_bytes=None,
+                cuobjdump=tool,
+                max_cuobjdump_files=None,
+                max_artifact_bytes=None,
+            )
+        self.assertEqual(scan.cuobjdump_files_analyzed, 5)
+        disk_usage.assert_not_called()
+
+
+class InspectionScopeMessageTests(unittest.TestCase):
+    """The scan announces its bounds, and the default scan has none to announce.
+
+    This message is built outside scan_rootfs_tar, so tests that drive the scan
+    directly never reach it; formatting an absent bound as a number crashed a
+    real run while the whole unit suite passed.
+    """
+
+    def test_the_default_scan_names_no_numeric_bound(self) -> None:
+        client = DockerImageClient()
+        self.assertIsNone(client.max_cuobjdump_files)
+        self.assertIsNone(client.max_artifact_bytes)
+        scope = client.inspection_scope()
+        self.assertEqual(
+            scope, "all eligible inspection units and artifacts bounded by free temporary space"
+        )
+
+    def test_requested_bounds_appear_in_the_message(self) -> None:
+        client = DockerImageClient(max_cuobjdump_files=512, max_artifact_bytes=2048 * 1024 * 1024)
+        self.assertEqual(client.inspection_scope(), "up to 512 files and 2048 MiB per artifact")

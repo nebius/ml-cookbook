@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from html import escape
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -512,3 +513,45 @@ class HostileImageContentRenderingTests(unittest.TestCase):
         self.assertIn("script", blob)
         schema_path = Path(__file__).resolve().parents[1] / "schemas" / "report.schema.json"
         Draft202012Validator(json.loads(schema_path.read_text(encoding="utf-8"))).validate(document)
+
+
+class ReportToneTests(unittest.TestCase):
+    """Colour in the HTML report restates the verdict; it never carries it alone."""
+
+    def test_every_compatibility_status_has_a_tone(self) -> None:
+        from gpu_preflight.inspection import summary_for
+        from gpu_preflight.render import STATUS_TONE
+
+        statuses = {
+            "READY_FOR_HARDWARE_TESTING",
+            "REVIEW_REQUIRED",
+            "ACTION_REQUIRED",
+            "INCOMPATIBLE",
+            "INSUFFICIENT_EVIDENCE",
+        }
+        for status in statuses:
+            with self.subTest(status=status):
+                self.assertIn(status, STATUS_TONE)
+                # A status the renderer knows is a status the report can explain.
+                self.assertTrue(summary_for(status))
+        self.assertEqual(set(STATUS_TONE), statuses)
+
+    def test_coverage_is_green_only_when_complete(self) -> None:
+        from gpu_preflight.render import _coverage_tone
+
+        self.assertEqual(_coverage_tone(100.0), "ok")
+        for partial in (99.99, 96.6, 70.5, 0.0):
+            with self.subTest(percent=partial):
+                self.assertEqual(_coverage_tone(partial), "bad")
+        # Coverage that could not be established is not a failing coverage.
+        self.assertIsNone(_coverage_tone(None))
+
+    def test_the_rendered_page_carries_the_verdict_as_text_too(self) -> None:
+        from gpu_preflight.render import STATUS_TONE, render_html
+
+        report = HostileImageContentRenderingTests()._report()
+        page = render_html(report)
+        status = report.targets[0].compatibility_status
+        # Someone who cannot distinguish the colours still reads the verdict.
+        self.assertIn(escape(status), page)
+        self.assertIn(f"tone-{STATUS_TONE[status]}", page)

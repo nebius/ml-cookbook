@@ -122,10 +122,10 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-scan-mb",
         type=int,
-        default=16384,
+        default=None,
         help=(
-            "maximum candidate file content read during a filesystem scan (default: 16384 MiB); "
-            "core framework libraries are always read"
+            "cap the candidate file content read during a filesystem scan; unbudgeted by "
+            "default, and core framework libraries are read either way"
         ),
     )
     parser.add_argument(
@@ -156,26 +156,23 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-cuobjdump-files",
         type=int,
-        default=1024,
+        default=None,
         metavar="COUNT",
         help=(
-            "maximum CUDA candidate files passed to cuobjdump (default: 1024); core framework "
-            "libraries are not counted against it"
-        ),
-    )
-    parser.add_argument(
-        "--exhaustive",
-        action="store_true",
-        help=(
-            "remove the cuobjdump file-count cap; candidate-byte, per-artifact, and timeout "
-            "safety limits still apply"
+            "cap the number of CUDA candidate files passed to cuobjdump; uncapped by default, "
+            "so coverage is complete unless a limit is asked for. Core framework libraries are "
+            "never counted against it, and the candidate-byte, per-artifact and timeout limits "
+            "apply either way"
         ),
     )
     parser.add_argument(
         "--max-artifact-mb",
         type=int,
-        default=2048,
-        help="maximum size of one file passed to cuobjdump (default: 2048 MiB)",
+        default=None,
+        help=(
+            "cap the size of one file passed to cuobjdump; by default only the free space in "
+            "the temporary filesystem bounds it"
+        ),
     )
     parser.add_argument(
         "--command-timeout",
@@ -278,11 +275,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.target
             else ordered_profiles
         )
-        if args.max_scan_mb <= 0:
+        if args.max_scan_mb is not None and args.max_scan_mb <= 0:
             raise ValueError("--max-scan-mb must be greater than zero")
-        if args.max_artifact_mb <= 0:
+        if args.max_artifact_mb is not None and args.max_artifact_mb <= 0:
             raise ValueError("--max-artifact-mb must be greater than zero")
-        if args.max_cuobjdump_files <= 0:
+        if args.max_cuobjdump_files is not None and args.max_cuobjdump_files <= 0:
             raise ValueError("--max-cuobjdump-files must be greater than zero")
         if args.cuobjdump_timeout <= 0:
             raise ValueError("--cuobjdump-timeout must be greater than zero")
@@ -290,7 +287,9 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("--command-timeout must be greater than zero")
         scan_options = {
             "scan_mode": "filesystem",
-            "max_scan_bytes": args.max_scan_mb * 1024 * 1024,
+            "max_scan_bytes": (
+                None if args.max_scan_mb is None else args.max_scan_mb * 1024 * 1024
+            ),
             "cuobjdump_mode": "auto" if args.cuobjdump.lower() == "auto" else args.cuobjdump,
             "cuobjdump_timeout_seconds": args.cuobjdump_timeout,
             "cuobjdump_fallback_mode": (
@@ -298,8 +297,10 @@ def main(argv: list[str] | None = None) -> int:
                 if args.cuobjdump_fallback.lower() in {"auto", "off"}
                 else args.cuobjdump_fallback
             ),
-            "max_cuobjdump_files": None if args.exhaustive else args.max_cuobjdump_files,
-            "max_artifact_bytes": args.max_artifact_mb * 1024 * 1024,
+            "max_cuobjdump_files": args.max_cuobjdump_files,
+            "max_artifact_bytes": (
+                None if args.max_artifact_mb is None else args.max_artifact_mb * 1024 * 1024
+            ),
             "command_timeout_seconds": args.command_timeout,
         }
         report = inspect_image_reference(

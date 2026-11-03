@@ -48,12 +48,18 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "max_candidate_bytes": {"type": "integer", "minimum": 1},
-            "max_artifact_bytes": {"type": "integer", "minimum": 1},
+            "max_candidate_bytes": {
+              "description": "Candidate-content read budget for the scan, or null when it ran unbudgeted.",
+              "type": ["integer", "null"], "minimum": 1
+            },
+            "max_artifact_bytes": {
+              "description": "Ceiling on one file passed to the analyzer, or null when only free temporary space bounded it.",
+              "type": ["integer", "null"], "minimum": 1
+            },
             "max_cuobjdump_files": {
               "type": ["integer", "null"],
               "minimum": 1,
-              "description": "Null when --exhaustive removes the cuobjdump file-count cap."
+              "description": "Cap on analyzer invocations, or null when the scan ran uncapped."
             },
             "cuobjdump_mode": {"type": "string"},
             "cuobjdump_fallback_mode": {"type": "string"},
