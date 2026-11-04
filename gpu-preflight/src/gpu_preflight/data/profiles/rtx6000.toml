@@ -1,0 +1,85 @@
+schema_version = 1
+id = "rtx6000"
+aliases = ["nvidia-rtx-pro-6000", "rtx-pro-6000", "gpu-rtx6000", "gpu-rtx6000-a"]
+display_name = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+maturity = "supported"
+notes = [
+  "RTX-class Blackwell uses SM120 and is a separate target from the SM100 datacenter parts; sm_100 cubins do not run here.",
+  "The Nebius presets pair this GPU with a BlueField-3 network adapter and list no InfiniBand fabric, so the profile declares no compute-fabric adapter and no UCX or HPC-X floor applies.",
+  "No NVIDIA release note states an NCCL platform-support baseline for compute capability 12.0, so none is recorded and NCCL versions are not checked against one.",
+]
+
+[hardware]
+cpu_architectures = ["amd64"]
+gpu_architecture = "blackwell-rtx"
+compute_capability = "12.0"
+native_sm_targets = ["sm_120", "sm_120f", "sm_120a"]
+nebius_platforms = ["gpu-rtx6000", "gpu-rtx6000-a"]
+
+[validation]
+minimum_cuda_version = "12.8"
+runtime_checks = [
+  "cuda-runtime",
+  "nccl-intra-node",
+  "library-resolution",
+  "framework-smoke",
+  "workload-smoke",
+]
+
+[[validation.runtime_packages]]
+package = "triton"
+role = "compiler"
+note = """No Triton release note names sm_120. Community reports put working RTX PRO 6000 support at 3.6.0 and later, and a miscompilation on sm_120 was reported against 3.6.0, but neither is a release note, so no floor is stated here."""
+source = "https://github.com/triton-lang/triton/releases"
+
+[[validation.runtime_packages]]
+package = "nvidia-cutlass-dsl"
+role = "dsl"
+minimum_version = "4.5.0"
+note = """4.5.0 carries the first CuTe DSL bullet naming SM120, "Block Scaled MMA for SM120 now works on Spark", and 4.5.1 follows with "Fixed issues for SM120 blockscaled MMAs". C++ CUTLASS had SM120 from 3.9.0, so earlier DSL releases may work; 4.5.0 is the earliest the notes name."""
+source = "https://docs.nvidia.com/cutlass/latest/CHANGELOG.html"
+
+[[validation.runtime_packages]]
+package = "flash-attn-4"
+role = "kernel-library"
+note = """Its own distribution, not a 4.x release of flash-attn. The README claims "Hopper and Blackwell GPUs (e.g. H100, B200)" and names no part of this generation, so support here is neither stated nor denied. Reported, not judged."""
+source = "https://github.com/Dao-AILab/flash-attention"
+
+[[validation.runtime_packages]]
+package = "liger-kernel"
+role = "kernel-library"
+note = """Its Triton backend inherits Triton's architecture support rather than declaring its own floor, so the Triton entry governs. Present-but-unassessed."""
+
+[[validation.runtime_packages]]
+package = "numba"
+role = "compiler"
+note = """numba-cuda's release notes announce no GPU architectures at all, so no floor can be cited for any target. Present-but-unassessed."""
+
+[[validation.runtime_packages]]
+package = "flashinfer-python"
+role = "kernel-library"
+note = """The distribution is flashinfer-python; precompiled kernels ship separately as per-architecture packages -- flashinfer-jit-cache-sm103a, -sm120f, -sm90a -- which name the architecture directly. No release note announces first support for this architecture: it predates the published highlights, and the mentions within that window are feature work, not support milestones. Rubin is the one architecture flashinfer states a milestone for."""
+source = "https://github.com/flashinfer-ai/flashinfer/releases"
+
+[[validation.runtime_packages]]
+package = "nvshmem"
+distributions = ["nvidia-nvshmem-cu12", "nvidia-nvshmem-cu13", "libnvshmem3-cuda-12", "libnvshmem3-cuda-13"]
+role = "kernel-library"
+note = """No release note names sm_120, and the compatibility list records "NVIDIA Blackwell" as a family without naming a workstation part. Reported, not judged."""
+source = "https://docs.nvidia.com/nvshmem/release-notes-install-guide/prior-releases/"
+
+[[sources]]
+title = "NVIDIA CUDA GPU compute capability"
+url = "https://developer.nvidia.com/cuda/gpus"
+
+[[sources]]
+title = "NVIDIA CUDA 12.8 release notes (compiler support for SM_120)"
+url = "https://docs.nvidia.com/cuda/archive/12.8.0/cuda-toolkit-release-notes/"
+
+[[sources]]
+title = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+url = "https://www.nvidia.com/en-us/data-center/rtx-pro-6000-blackwell-server-edition/"
+
+[[sources]]
+title = "Nebius presets for GPU platforms"
+url = "https://docs.nebius.com/compute/virtual-machines/types#presets-for-gpu-platforms"

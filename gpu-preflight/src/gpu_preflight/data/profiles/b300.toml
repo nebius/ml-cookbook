@@ -1,0 +1,92 @@
+schema_version = 1
+id = "b300"
+aliases = ["nvidia-b300", "gpu-b300-sxm"]
+display_name = "NVIDIA B300"
+maturity = "supported"
+notes = [
+  "B300 and GB300 share SM103 but use different CPU architectures and platform topologies.",
+  "The NCCL floor matches the first NVIDIA framework release with explicit G/B300 performant support; B300 fabric behavior still requires hardware validation.",
+]
+
+[hardware]
+cpu_architectures = ["amd64"]
+gpu_architecture = "blackwell-ultra"
+compute_capability = "10.3"
+native_sm_targets = ["sm_103", "sm_103f", "sm_103a"]
+nebius_platforms = ["gpu-b300-sxm"]
+
+[fabric]
+compute_adapter = "connectx-8"
+
+[validation]
+minimum_cuda_version = "12.9"
+minimum_nccl_version = "2.27.7"
+runtime_checks = [
+  "cuda-runtime",
+  "nccl-intra-node",
+  "nccl-infiniband",
+  "ucx-transport",
+  "library-resolution",
+  "framework-smoke",
+  "workload-smoke",
+]
+
+[[validation.runtime_packages]]
+package = "triton"
+role = "compiler"
+minimum_version = "3.5.1"
+note = """The only SM103 statement in Triton's release notes is 3.5.1, "Fix sm103 (GB300) support broken by Triton 3.5.0 release". 3.4 is reported to work with a CUDA 12.9 ptxas, but no release note says so, so 3.5.1 is the floor this profile can cite."""
+source = "https://github.com/triton-lang/triton/releases"
+
+[[validation.runtime_packages]]
+package = "nvidia-cutlass-dsl"
+role = "dsl"
+minimum_version = "4.3.1"
+note = """CUTLASS 4.3.1 release notes: "CuTe DSL: Added Blackwell SM103 support." SM103 C++ kernels landed earlier, in 4.2.0."""
+source = "https://docs.nvidia.com/cutlass/latest/CHANGELOG.html"
+
+[[validation.runtime_packages]]
+package = "liger-kernel"
+role = "kernel-library"
+note = """Its Triton backend inherits Triton's architecture support rather than declaring its own floor, so the Triton entry governs. Present-but-unassessed."""
+
+[[validation.runtime_packages]]
+package = "numba"
+role = "compiler"
+note = """No published release note states a per-architecture floor. Present-but-unassessed: the installed version is reported, not judged."""
+
+[[validation.runtime_packages]]
+package = "flash-attn-4"
+role = "kernel-library"
+note = """Its own distribution, not a 4.x release of flash-attn. CuTeDSL, so it compiles at run time and leaves no cubin to inspect: the installed distribution is the only evidence. Every release so far is a beta whose suffix the version parser drops -- 4.0.0b19 and 4.0.0b37 both read as 4.0.0 -- so presence is recorded and no floor is stated."""
+source = "https://github.com/Dao-AILab/flash-attention"
+
+[[validation.runtime_packages]]
+package = "flashinfer-python"
+role = "kernel-library"
+note = """The distribution is flashinfer-python; precompiled kernels ship separately as per-architecture packages -- flashinfer-jit-cache-sm103a, -sm120f, -sm90a -- which name the architecture directly. No release note announces first support for this architecture: it predates the published highlights, and the mentions within that window are feature work, not support milestones. Rubin is the one architecture flashinfer states a milestone for."""
+source = "https://github.com/flashinfer-ai/flashinfer/releases"
+
+[[validation.runtime_packages]]
+package = "nvshmem"
+distributions = ["nvidia-nvshmem-cu12", "nvidia-nvshmem-cu13", "libnvshmem3-cuda-12", "libnvshmem3-cuda-13"]
+role = "kernel-library"
+minimum_version = "3.2.5"
+note = """No release note names SM103, B300 or GB300. 3.2.5 is the release that "Enables platform support for Blackwell SM100 architecture on NVLINK5 connected B200-based systems", and later notes list "NVIDIA Blackwell" as a family, so 3.2.5 is a lower bound for the generation rather than a statement about this part."""
+source = "https://docs.nvidia.com/nvshmem/release-notes-install-guide/prior-releases/"
+
+[[sources]]
+title = "NVIDIA CUDA GPU compute capability"
+url = "https://developer.nvidia.com/cuda/gpus"
+
+[[sources]]
+title = "NVIDIA CUDA 12.9 release notes"
+url = "https://docs.nvidia.com/cuda/archive/12.9.0/cuda-toolkit-release-notes/"
+
+[[sources]]
+title = "NVIDIA HGX B300 on Nebius"
+url = "https://nebius.com/compute/b300"
+
+[[sources]]
+title = "NVIDIA JAX 25.10 release notes (G/B300 performant support)"
+url = "https://docs.nvidia.com/deeplearning/frameworks/jax-release-notes/rel-25-10.html"
