@@ -59,6 +59,26 @@
           "type": "string",
           "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)*$"
         },
+        "runtime_packages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["package", "role"],
+            "properties": {
+              "package": {"type": "string", "minLength": 1},
+              "role": {"enum": ["compiler", "dsl", "kernel-library"]},
+              "applicability": {"enum": ["supported", "not-applicable"]},
+              "distributions": {"type": "array", "items": {"type": "string", "minLength": 1}},
+              "minimum_version": {
+                "type": "string",
+                "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)*$"
+              },
+              "note": {"type": "string"},
+              "source": {"type": "string", "format": "uri"}
+            }
+          }
+        },
         "runtime_checks": {"type": "array", "items": {"type": "string"}}
       }
     },

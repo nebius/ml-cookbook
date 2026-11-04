@@ -7,7 +7,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from gpu_preflight.cuda_inspection import CudaArtifactEvidence
-from gpu_preflight.facts import ImageFacts
+from gpu_preflight.facts import ImageFacts, LibraryArchitectureEvidence
 from gpu_preflight.image import (
     ImageManifestSet,
     KernelCatalogEvidence,
@@ -239,6 +239,10 @@ class FilesystemReportSchemaTests(unittest.TestCase):
         validator = Draft202012Validator(schema)
 
         rootfs = RootfsScan(
+            library_architectures=(
+                LibraryArchitectureEvidence("arm64", 3, ("/usr/lib/libtorch_cuda.so",), 2),
+                LibraryArchitectureEvidence("amd64", 1, ("/opt/app/_ext.so",), 1),
+            ),
             known_packages=("pytorch",),
             installed_packages=("torch 2.9.0",),
             cuda_targets=("sm_100", "sm_103"),
@@ -370,6 +374,25 @@ class FilesystemReportSchemaTests(unittest.TestCase):
 
         validator.validate(report.to_dict())
         validator.validate(json.loads(render_json(report)))
+        # The per-binary architecture evidence has to survive into the JSON, or the
+        # GPF-CPU-004 warning names files a reader cannot look up.
+        self.assertEqual(
+            report.observations["library_architectures"],
+            [
+                {
+                    "architecture": "arm64",
+                    "count": 3,
+                    "sample_paths": ["/usr/lib/libtorch_cuda.so"],
+                    "device_code_count": 2,
+                },
+                {
+                    "architecture": "amd64",
+                    "count": 1,
+                    "sample_paths": ["/opt/app/_ext.so"],
+                    "device_code_count": 1,
+                },
+            ],
+        )
 
         # The other renderings must not raise or drop the evidence.
         text = render_text(report)

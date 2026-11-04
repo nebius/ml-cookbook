@@ -53,7 +53,12 @@ CORE_FRAMEWORK_LIBRARY_RE = re.compile(
     r"|libtransformer_engine[^/]*\.so|transformer_engine[^/]*\.so)$",
     re.IGNORECASE,
 )
-FLASHINFER_JIT_CACHE_MARKER = "/flashinfer_jit_cache/jit_cache/"
+FLASHINFER_JIT_CACHE_ROOT = "/flashinfer_jit_cache/"
+FLASHINFER_JIT_CACHE_SEGMENT = "/jit_cache/"
+FLASHINFER_PROVIDER_RE = re.compile(
+    r"^sm(?P<number>75|80|86|87|89|90|100|101|103|107|110|120|121)(?P<suffix>[af]?)$",
+    re.IGNORECASE,
+)
 FLASHINFER_SM_SELECTOR_RE = re.compile(
     r"_sm(?P<number>75|80|86|87|89|90|100|101|103|107|110|120|121)"
     r"(?P<suffix>[af]?)(?=_|$)",
@@ -123,7 +128,7 @@ class CuobjdumpTool:
 
         output = f"{result.stdout}\n{result.stderr}".replace(str(path), image_path)
         targets = cuda_targets_from_listing(output)
-        if result.returncode and "does not contain device code" in output.lower():
+        if result.returncode and NO_DEVICE_CODE_RE.search(output):
             return CudaArtifactEvidence(
                 path=image_path,
                 size_bytes=size_bytes,
@@ -163,6 +168,15 @@ class CuobjdumpTool:
             complete=True,
             role=classify_artifact_role(image_path),
         )
+
+
+# cuobjdump exits non-zero for two different situations, and only one is a failure.
+# "does not contain device code" is its answer for an ELF it parsed. "Invalid fatbin
+# header" is its answer for a file that is not a CUDA container at all -- glibc's empty
+# stub archives (libdl.a, libpthread.a, librt.a). Both mean the complete file holds no
+# device code, which is a result; counting the second as an incomplete inspection would
+# understate coverage for every image that ships a static libc.
+NO_DEVICE_CODE_RE = re.compile(r"does not contain device code|invalid fatbin header", re.IGNORECASE)
 
 
 def analyzer_error_detail(output: str, returncode: int) -> str:
@@ -244,6 +258,7 @@ def classify_artifact_role(image_path: str) -> str:
         for marker in (
             "/samples/",
             "/examples/",
+            "/stubs/",
             "/nsightsystems",
             "/compute-sanitizer/",
             "/nvvm/",
@@ -308,7 +323,11 @@ def kernel_catalog_declared_targets(image_path: str) -> tuple[str, ...]:
 
 def _flashinfer_dispatch_module(image_path: str) -> tuple[str, tuple[str, ...]] | None:
     """Return a normalized FlashInfer dispatch-family path and declared targets."""
-    if FLASHINFER_JIT_CACHE_MARKER not in image_path or not image_path.endswith(".so"):
+    if (
+        FLASHINFER_JIT_CACHE_ROOT not in image_path
+        or FLASHINFER_JIT_CACHE_SEGMENT not in image_path
+        or not image_path.endswith(".so")
+    ):
         return None
     path = Path(image_path)
     stem = path.stem
@@ -319,6 +338,18 @@ def _flashinfer_dispatch_module(image_path: str) -> tuple[str, tuple[str, ...]] 
 
     targets: set[str] = set()
 
+    cache_root = path.parent.parent
+    provider_match = None
+    if cache_root.name == "jit_cache" and cache_root.parent.parent.name == "providers":
+        provider_match = FLASHINFER_PROVIDER_RE.match(cache_root.parent.name)
+    if provider_match:
+        targets.add(
+            f"sm_{int(provider_match.group('number'))}{provider_match.group('suffix').lower()}"
+        )
+        # Collapse providers/<sm>/jit_cache back onto the cache root so every
+        # provider's build of one module shares a dispatch family.
+        cache_root = cache_root.parent.parent.parent / "jit_cache"
+
     def remove_sm_selector(match: re.Match[str]) -> str:
         targets.add(f"sm_{int(match.group('number'))}{match.group('suffix').lower()}")
         return ""
@@ -328,7 +359,7 @@ def _flashinfer_dispatch_module(image_path: str) -> tuple[str, tuple[str, ...]] 
     if trailing:
         targets.add(f"sm_{int(trailing.group('number'))}{trailing.group('suffix').lower()}")
         family = family[: trailing.start()]
-    group = str(path.parent.parent / family)
+    group = str(cache_root / family)
     return group, tuple(sorted(targets))
 
 

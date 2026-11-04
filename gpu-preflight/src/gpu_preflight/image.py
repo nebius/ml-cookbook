@@ -34,6 +34,7 @@ from gpu_preflight.cuda_inspection import (
 )
 from gpu_preflight.facts import (
     ImageFacts,
+    LibraryArchitectureEvidence,
     UcxModuleGroup,
     detect_cuda_targets,
     detect_cuda_versions,
@@ -41,6 +42,7 @@ from gpu_preflight.facts import (
     detect_nccl_versions,
     detect_packages,
     detect_ucx_versions,
+    elf_architecture,
 )
 from gpu_preflight.inspection import (
     Finding,
@@ -62,7 +64,9 @@ CUDA_TARGET_BYTES_RE = re.compile(
 PACKAGE_METADATA_NAMES = {"METADATA", "PKG-INFO"}
 CUDA_ONLY_SUFFIXES = (".cubin", ".fatbin", ".ptx")
 AMBIGUOUS_BINARY_SUFFIXES = (".a", ".bin", ".so")
-CUDA_PATH_MARKERS = ("cuda", "flash", "jax", "nccl", "nvidia", "nvshmem", "torch")
+# An image that carries foreign-architecture binaries usually carries a handful and
+# naming a few is enough to find the package they came from. The count is exact.
+LIBRARY_ARCHITECTURE_SAMPLE_LIMIT = 10
 VERSIONED_SO_RE = re.compile(r"\.so(?:\.\d+)*$", re.IGNORECASE)
 # One candidate is written to a temporary file at a time and removed straight after,
 # so the scan needs room for the largest artifact, not for all of them. Inspecting an
@@ -310,6 +314,7 @@ class RootfsScan:
     dispatch_module_groups: int = 0
     nccl_evidence: tuple[NcclVersionEvidence, ...] = ()
     ucx_evidence: tuple[UcxEvidence, ...] = ()
+    library_architectures: tuple[LibraryArchitectureEvidence, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -636,15 +641,18 @@ def _stream_cuda_member(
     """Stream bounded CUDA candidate bytes, optionally to a cuobjdump input file."""
     file_object = archive.extractfile(member)
     if file_object is None or allowance <= 0:
-        return 0, ()
+        return 0, (), None
     remaining = min(member.size, allowance)
     bytes_read = 0
     carry = b""
+    architecture: str | None = None
     targets: set[str] = set()
     while remaining:
         chunk = file_object.read(min(1024 * 1024, remaining))
         if not chunk:
             break
+        if not bytes_read:
+            architecture = elf_architecture(chunk[:20])
         if destination:
             destination.write(chunk)
         if scan_markers:
@@ -652,7 +660,7 @@ def _stream_cuda_member(
             carry = (carry + chunk)[-64:]
         bytes_read += len(chunk)
         remaining -= len(chunk)
-    return bytes_read, tuple(sorted(targets))
+    return bytes_read, tuple(sorted(targets)), architecture
 
 
 def _marker_targets_from_path(path: Path) -> tuple[str, ...]:
@@ -710,6 +718,9 @@ def scan_rootfs_tar(
     kernel_catalog_sample_keys: set[tuple[str, tuple[str, ...]]] = set()
     kernel_catalog_members = 0
     kernel_catalog_grouped_members = 0
+    library_architectures: dict[str, list[str]] = {}
+    library_architecture_counts: dict[str, int] = {}
+    library_architecture_device_code: dict[str, int] = {}
     last_progress_at = time.monotonic()
 
     try:
@@ -755,11 +766,8 @@ def scan_rootfs_tar(
                     ".json"
                 )
                 is_cuda_candidate = lower_name.endswith(CUDA_ONLY_SUFFIXES) or (
-                    (
-                        lower_name.endswith(AMBIGUOUS_BINARY_SUFFIXES)
-                        or VERSIONED_SO_RE.search(lower_name)
-                    )
-                    and any(marker in lower_name for marker in CUDA_PATH_MARKERS)
+                    lower_name.endswith(AMBIGUOUS_BINARY_SUFFIXES)
+                    or bool(VERSIONED_SO_RE.search(lower_name))
                 )
                 if not (
                     is_python_metadata
@@ -872,7 +880,11 @@ def scan_rootfs_tar(
                                 delete=False,
                             ) as temporary:
                                 temporary_path = Path(temporary.name)
-                                read_size, marker_targets = _stream_cuda_member(
+                                (
+                                    read_size,
+                                    marker_targets,
+                                    architecture,
+                                ) = _stream_cuda_member(
                                     archive,
                                     member,
                                     member.size,
@@ -880,7 +892,7 @@ def scan_rootfs_tar(
                                     scan_markers=False,
                                 )
                         else:
-                            read_size, marker_targets = _stream_cuda_member(
+                            read_size, marker_targets, architecture = _stream_cuda_member(
                                 archive,
                                 member,
                                 BINARY_FILE_LIMIT_BYTES
@@ -888,6 +900,9 @@ def scan_rootfs_tar(
                                 else min(allowance, BINARY_FILE_LIMIT_BYTES),
                             )
                         bytes_scanned += read_size
+                        census_architecture = (
+                            architecture if artifact_role in {"runtime", "kernel-catalog"} else None
+                        )
                         complete_file = read_size == member.size
                         if (
                             not complete_file
@@ -899,6 +914,30 @@ def scan_rootfs_tar(
                         if planned_cuobjdump and complete_file and temporary_path:
                             artifact = cuobjdump.inspect(temporary_path, f"/{name}", member.size)
                             cuobjdump_files_analyzed += 1
+                            if census_architecture:
+                                # Counted after inspection, because whether a
+                                # foreign-architecture binary carries device code is
+                                # what separates a packaging error from a toolchain's
+                                # multilib payload.
+                                carries_device_code = bool(artifact.targets)
+                                library_architecture_counts[census_architecture] = (
+                                    library_architecture_counts.get(census_architecture, 0) + 1
+                                )
+                                if carries_device_code:
+                                    library_architecture_device_code[census_architecture] = (
+                                        library_architecture_device_code.get(census_architecture, 0)
+                                        + 1
+                                    )
+                                samples = library_architectures.setdefault(census_architecture, [])
+                                # A sample that carries kernels is the useful one, so it
+                                # displaces a plain one once the list is full.
+                                if len(samples) < LIBRARY_ARCHITECTURE_SAMPLE_LIMIT:
+                                    samples.insert(
+                                        0 if carries_device_code else len(samples), f"/{name}"
+                                    )
+                                elif carries_device_code:
+                                    samples.insert(0, f"/{name}")
+                                    del samples[-1]
                             if catalog:
                                 catalog.samples_inspected += 1
                                 if artifact.complete:
@@ -1086,6 +1125,17 @@ def scan_rootfs_tar(
     )
 
     return RootfsScan(
+        library_architectures=tuple(
+            LibraryArchitectureEvidence(
+                architecture=architecture,
+                count=count,
+                sample_paths=tuple(library_architectures.get(architecture, ())),
+                device_code_count=library_architecture_device_code.get(architecture, 0),
+            )
+            for architecture, count in sorted(
+                library_architecture_counts.items(), key=lambda item: (-item[1], item[0])
+            )
+        ),
         known_packages=tuple(sorted(known_packages)),
         installed_packages=tuple(sorted(installed_packages)),
         cuda_targets=tuple(sorted(cuda_targets)),
@@ -2814,6 +2864,10 @@ def inspect_with_image(
                 **facts.environment,
                 **(content.environment if content else {}),
             },
+            installed_packages=content.installed_packages if content else (),
+            library_architectures=(
+                content.rootfs.library_architectures if content and content.rootfs else ()
+            ),
             ucx_versions=ucx_versions(content.ucx_evidence) if content else (),
             hpcx_versions=hpcx_versions(content.ucx_evidence) if content else (),
             ucx_module_groups=ucx_module_groups(content.ucx_evidence) if content else (),
@@ -3031,6 +3085,15 @@ def inspect_with_image(
         "selected_manifests": selected_observations,
         "image_packages": sorted(image_packages),
         "installed_packages": sorted(installed_packages),
+        "library_architectures": [
+            {
+                "architecture": item.architecture,
+                "count": item.count,
+                "sample_paths": list(item.sample_paths),
+                "device_code_count": item.device_code_count,
+            }
+            for item in (content.rootfs.library_architectures if content and content.rootfs else ())
+        ],
         "image_cuda_targets": sorted(image_cuda_targets),
         "verified_image_cuda_targets": sorted(verified_image_cuda_targets),
         "unverified_image_cuda_target_strings": sorted(unverified_image_cuda_target_strings),

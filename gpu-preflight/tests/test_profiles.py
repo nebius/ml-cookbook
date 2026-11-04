@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from gpu_preflight.compatibility import evaluate_cuda_target
+from gpu_preflight.facts import normalize_package_name, package_versions
 from gpu_preflight.profiles import (
     load_fabrics,
     load_profiles,
@@ -218,3 +219,193 @@ class VersionFloorValidationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RuntimePackageFloorTests(unittest.TestCase):
+    """Runtime compilers, DSLs and kernel libraries emit device code when the workload
+    runs, so an image holds no artifact to inspect for them and the installed version
+    is the only static evidence. A floor is recorded only where a release note states
+    one, which is why the field is optional.
+    """
+
+    ENTRY = '\n[[validation.runtime_packages]]\npackage = "triton"\nrole = "compiler"\n'
+
+    def test_a_floor_and_its_citation_are_parsed(self) -> None:
+        profile = _profile(
+            MINIMAL_PROFILE
+            + self.ENTRY
+            + 'minimum_version = "3.5.1"\n'
+            + 'source = "https://github.com/triton-lang/triton/releases"\n'
+        )
+        (floor,) = profile.runtime_packages
+        self.assertEqual(floor.package, "triton")
+        self.assertEqual(floor.role, "compiler")
+        self.assertEqual(floor.minimum_version, "3.5.1")
+        self.assertEqual(floor.source, "https://github.com/triton-lang/triton/releases")
+
+    def test_a_package_may_be_listed_without_a_floor(self) -> None:
+        # Listing it without a floor is the point: the package is reported as
+        # present-but-unassessed rather than silently assumed compatible.
+        profile = _profile(MINIMAL_PROFILE + self.ENTRY)
+        (floor,) = profile.runtime_packages
+        self.assertIsNone(floor.minimum_version)
+
+    def test_profiles_without_the_table_keep_an_empty_tuple(self) -> None:
+        self.assertEqual(_profile(MINIMAL_PROFILE).runtime_packages, ())
+
+    def test_a_malformed_floor_is_rejected_at_load(self) -> None:
+        for value in VersionFloorValidationTests.MALFORMED:
+            with self.subTest(value=value):
+                document = MINIMAL_PROFILE + self.ENTRY + f'minimum_version = "{value}"\n'
+                with self.assertRaisesRegex(
+                    ValueError, "validation.runtime_packages.minimum_version"
+                ):
+                    _profile(document)
+
+    def test_an_unknown_role_is_rejected_at_load(self) -> None:
+        document = MINIMAL_PROFILE + (
+            '\n[[validation.runtime_packages]]\npackage = "triton"\nrole = "transpiler"\n'
+        )
+        with self.assertRaisesRegex(ValueError, "validation.runtime_packages.role"):
+            _profile(document)
+
+    def test_one_package_listed_twice_is_rejected(self) -> None:
+        # Two entries for one package would make the floor depend on table order.
+        with self.assertRaisesRegex(ValueError, "twice"):
+            _profile(MINIMAL_PROFILE + self.ENTRY + self.ENTRY)
+
+    def test_applicability_defaults_to_supported(self) -> None:
+        (floor,) = _profile(MINIMAL_PROFILE + self.ENTRY).runtime_packages
+        self.assertEqual(floor.applicability, "supported")
+
+    def test_a_package_can_be_marked_not_applicable(self) -> None:
+        # Hardware support does not always move forward along one version line, so a
+        # profile has to be able to say "no release of this targets us".
+        document = MINIMAL_PROFILE + self.ENTRY + 'applicability = "not-applicable"\n'
+        (floor,) = _profile(document).runtime_packages
+        self.assertEqual(floor.applicability, "not-applicable")
+
+    def test_an_unknown_applicability_is_rejected_at_load(self) -> None:
+        document = MINIMAL_PROFILE + self.ENTRY + 'applicability = "maybe"\n'
+        with self.assertRaisesRegex(ValueError, "validation.runtime_packages.applicability"):
+            _profile(document)
+
+    def test_a_floor_on_a_not_applicable_package_is_rejected(self) -> None:
+        # A floor says every later release works here; the marker says none does.
+        document = (
+            MINIMAL_PROFILE
+            + self.ENTRY
+            + 'applicability = "not-applicable"\n'
+            + 'minimum_version = "3.5.1"\n'
+        )
+        with self.assertRaisesRegex(ValueError, "cannot set minimum_version"):
+            _profile(document)
+
+    def test_only_packages_artifact_inspection_cannot_see_are_listed(self) -> None:
+        # cuobjdump reads a compiled extension's sm_ targets from the artifact and
+        # names the file, so listing those here would be a hand-maintained roster of
+        # libraries that artifact inspection already discovers. Only JIT compilers,
+        # DSLs and host-side libraries belong.
+        compiled = {"flash-attn", "flash-attn-3", "nixl", "xformers", "transformer-engine"}
+        for name, profile in load_profiles().items():
+            with self.subTest(profile=name):
+                listed = {floor.package for floor in profile.runtime_packages}
+                self.assertEqual(listed & compiled, set())
+
+    def test_every_profile_assesses_the_same_packages(self) -> None:
+        # The package table was built for Blackwell first, which left Hopper, RTX PRO
+        # 6000 and Vera Rubin silently skipping packages the Blackwell reports judged.
+        # Silence reads as "nothing to say" rather than "never looked", so the set is
+        # held identical across profiles; what differs is the floor, not the coverage.
+        profiles = load_profiles()
+        expected = {floor.package for floor in profiles["b300"].runtime_packages}
+        for name, profile in profiles.items():
+            with self.subTest(profile=name):
+                self.assertEqual({f.package for f in profile.runtime_packages}, expected)
+
+    def test_cute_dsl_floors_track_the_architecture(self) -> None:
+        # Each is the earliest release whose notes name that architecture.
+        floors = {
+            name: next(
+                f.minimum_version
+                for f in profile.runtime_packages
+                if f.package == "nvidia-cutlass-dsl"
+            )
+            for name, profile in load_profiles().items()
+        }
+        self.assertEqual(floors["h100"], "4.0.0")
+        self.assertEqual(floors["b200"], "4.0.0")
+        self.assertEqual(floors["b300"], "4.3.1")
+        self.assertEqual(floors["gb300"], "4.4.0")
+        self.assertEqual(floors["rtx6000"], "4.5.0")
+        self.assertEqual(floors["vr"], "4.8.0")
+
+    def test_package_names_match_what_images_actually_install(self) -> None:
+        # The floor lookup is an exact match on the normalized distribution name, so a
+        # profile naming "flashinfer" or "flash-attn-4" wrongly assesses nothing at all.
+        # These are the names seen in real image inventories.
+        installed = package_versions(
+            (
+                "flashinfer-python==0.7.2",
+                "flashinfer-cubin==0.7.2",
+                "flashinfer-jit-cache-sm103a==0.7.2",
+                "flash-attn-4==4.0.0b37",
+                "flash_attn==2.8.3",
+                "nixl==1.5.2",
+                "nixl-cu13==1.5.2",
+                "nvidia-nvshmem-cu12==3.4.5",
+                "nvidia-nvshmem-cu13==3.4.5",
+                "libnvshmem3-cuda-12==3.2.5-1",
+                "libnvshmem3-cuda-13==3.7.2-1",
+                "nvidia-cutlass-dsl==4.8.0",
+                "triton==3.8.0",
+            )
+        )
+        for name, profile in load_profiles().items():
+            for floor in profile.runtime_packages:
+                if floor.package in {"flash-attn-3", "liger-kernel", "numba"}:
+                    continue
+                for alias in floor.lookup_names:
+                    with self.subTest(profile=name, package=alias):
+                        self.assertIn(normalize_package_name(alias), installed)
+
+    def test_rubin_floors_come_from_release_notes(self) -> None:
+        # Triton 3.8.0 is the release that announces SM107; nothing earlier names it.
+        floors = {f.package: f for f in load_profiles()["vr"].runtime_packages}
+        self.assertEqual(floors["triton"].minimum_version, "3.8.0")
+        self.assertTrue(floors["triton"].source)
+
+    def test_packages_without_a_published_floor_stay_unfloored(self) -> None:
+        # numba-cuda announces no architectures at all and no Triton release note
+        # names sm_120, so neither may carry an invented floor.
+        profiles = load_profiles()
+        for name in profiles:
+            floors = {f.package: f for f in profiles[name].runtime_packages}
+            with self.subTest(profile=name):
+                self.assertIsNone(floors["numba"].minimum_version)
+        rtx = {f.package: f for f in profiles["rtx6000"].runtime_packages}
+        self.assertIsNone(rtx["triton"].minimum_version)
+
+    def test_shipped_blackwell_profiles_cite_every_floor(self) -> None:
+        # A floor without a citation is a number nobody can check, and these were
+        # read out of vendor release notes one at a time.
+        floors = 0
+        for profile in load_profiles().values():
+            for floor in profile.runtime_packages:
+                if floor.minimum_version is not None:
+                    floors += 1
+                    self.assertTrue(floor.source, f"{profile.id}/{floor.package}")
+        self.assertGreater(floors, 0)
+
+    def test_gb300_needs_a_newer_cute_dsl_than_b300(self) -> None:
+        # SM103 reached CuTe DSL in CUTLASS 4.3.1, but the GB300 platform only in
+        # 4.4.0. Sharing an SM target does not mean sharing a floor.
+        profiles = load_profiles()
+        floors = {
+            name: {
+                floor.package: floor.minimum_version for floor in profiles[name].runtime_packages
+            }
+            for name in ("b300", "gb300")
+        }
+        self.assertEqual(floors["b300"]["nvidia-cutlass-dsl"], "4.3.1")
+        self.assertEqual(floors["gb300"]["nvidia-cutlass-dsl"], "4.4.0")

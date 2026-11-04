@@ -57,20 +57,25 @@ HPCX_PACKAGE_VERSION_RE = re.compile(
 
 PACKAGE_PATTERNS = {
     "cuda": re.compile(r"\bcuda(?:-toolkit)?\b|\bcu(?:12|13)\d\b", re.IGNORECASE),
+    "cutlass-dsl": re.compile(r"\bnvidia[-_]?cutlass[-_]?dsl\b|\bcute[-_]?dsl\b", re.IGNORECASE),
     "deepep": re.compile(r"\bdeep[-_]?ep\b", re.IGNORECASE),
+    "flash-attn": re.compile(r"\bflash[-_]?attn\b|\bflash[-_]?attention\b", re.IGNORECASE),
     "flashinfer": re.compile(r"\bflashinfer(?:-python)?\b", re.IGNORECASE),
     "gdrcopy": re.compile(r"\bgdrcopy\b|\blibgdrapi\b", re.IGNORECASE),
     "hpcx": re.compile(r"\bhpcx\b|\bhpc-x\b", re.IGNORECASE),
     "hybridep": re.compile(r"\bhybrid[-_]?ep\b", re.IGNORECASE),
     "jax": re.compile(r"\bjax(?:lib)?\b", re.IGNORECASE),
+    "liger-kernel": re.compile(r"\bliger[-_]?kernel\b", re.IGNORECASE),
     "megatron-lm": re.compile(r"\bmegatron[-_]?lm\b", re.IGNORECASE),
     "mooncake": re.compile(r"\bmooncake(?:-transfer-engine)?\b", re.IGNORECASE),
     "nccl": re.compile(r"\bnccl\b|\blibnccl\d*\b|\bnvidia-nccl\b", re.IGNORECASE),
-    "nixl": re.compile(r"\bnixl(?:-cu\d+)?\b", re.IGNORECASE),
+    "nixl": re.compile(r"\bnixl(?:[-_]cu\d+)?\b", re.IGNORECASE),
+    "numba": re.compile(r"\bnumba(?:[-_]cuda)?\b", re.IGNORECASE),
     "nvshmem": re.compile(r"\bnvshmem\b|\bnvidia-nvshmem\b", re.IGNORECASE),
     "pytorch": re.compile(r"\bpytorch\b|\btorch(?:==|~=|>=|<=|\[|\s)", re.IGNORECASE),
     "sglang": re.compile(r"\bsglang\b", re.IGNORECASE),
     "transformer-engine": re.compile(r"\btransformer[-_]?engine\b", re.IGNORECASE),
+    "triton": re.compile(r"\b(?:pytorch-)?triton(?:-lang)?\b", re.IGNORECASE),
     "ucx": re.compile(r"\bucx\b|\blibucx\d*\b|\bopenucx\b", re.IGNORECASE),
     "vllm": re.compile(r"\bvllm\b", re.IGNORECASE),
     "xla": re.compile(r"\bxla\b", re.IGNORECASE),
@@ -94,6 +99,47 @@ class UcxModuleGroup:
         return any(module.startswith("libuct_") and "cuda" in module for module in self.modules)
 
 
+# ELF e_machine values, mapped to the same vocabulary as a profile's
+# hardware.cpu_architectures. Only the machines a container image plausibly ships are
+# named; anything else is reported by its raw e_machine so an unexpected build still
+# shows up instead of being silently treated as native.
+# EM_CUDA. A .cubin is an ELF object whose machine is CUDA because it holds device
+# code, so it matches no CPU architecture by design and the dynamic loader never sees
+# it -- the driver does. Counting one as a foreign-architecture host binary claimed
+# that vLLM's FlashInfer cubins were unloadable, which is the opposite of true.
+ELF_MACHINE_CUDA = 0xBE
+ELF_MACHINES = {
+    0x03: "i386",
+    0x28: "arm",
+    0x3E: "amd64",
+    0xB7: "arm64",
+    0xF3: "riscv64",
+    0x15: "ppc64le",
+    0x16: "s390x",
+}
+
+
+def elf_architecture(header: bytes) -> str | None:
+    """Read the CPU architecture out of an ELF header, or None if this is not an ELF."""
+    if len(header) < 20 or header[:4] != b"\x7fELF":
+        return None
+    byteorder = "little" if header[5] == 1 else "big"
+    machine = int.from_bytes(header[18:20], byteorder)
+    if machine == ELF_MACHINE_CUDA:
+        return None
+    return ELF_MACHINES.get(machine, f"elf-machine-0x{machine:x}")
+
+
+@dataclass(frozen=True)
+class LibraryArchitectureEvidence:
+    """One CPU architecture observed among an image's binaries, with example paths."""
+
+    architecture: str
+    count: int
+    sample_paths: tuple[str, ...]
+    device_code_count: int = 0
+
+
 @dataclass(frozen=True)
 class ImageFacts:
     path: str
@@ -104,6 +150,8 @@ class ImageFacts:
     nccl_versions: tuple[str, ...]
     detected_packages: tuple[str, ...]
     environment: dict[str, str]
+    installed_packages: tuple[str, ...] = ()
+    library_architectures: tuple[LibraryArchitectureEvidence, ...] = ()
     ucx_versions: tuple[str, ...] = ()
     hpcx_versions: tuple[str, ...] = ()
     ucx_module_groups: tuple[UcxModuleGroup, ...] = ()
@@ -127,6 +175,32 @@ def detect_cuda_targets(text: str, environment: dict[str, str] | None = None) ->
         if match.group("ptx"):
             targets.add(f"compute_{number}{suffix}")
     return targets
+
+
+PACKAGE_RECORD_RE = re.compile(r"^(?P<name>[^=]+)==(?P<version>\d+(?:\.\d+)*)")
+PACKAGE_NAME_SEPARATORS = re.compile(r"[-_.]+")
+
+
+def normalize_package_name(name: str) -> str:
+    """Normalize a distribution name to align with PyPI (i.e. cuTe-DSL == cutlass_dsl)."""
+    return PACKAGE_NAME_SEPARATORS.sub("-", name.strip().lower())
+
+
+def package_versions(records: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+    """Index ``name==version`` inventory records by normalized distribution name.
+
+    One name can carry several versions: an image may install the same package into
+    both the system and the Python prefix. Every version is kept, because which one a
+    process actually loads is a runtime property this scan cannot observe.
+    """
+    versions: dict[str, set[str]] = {}
+    for record in records:
+        match = PACKAGE_RECORD_RE.match(record)
+        if match:
+            versions.setdefault(normalize_package_name(match.group("name")), set()).add(
+                match.group("version")
+            )
+    return {name: tuple(sorted(found)) for name, found in versions.items()}
 
 
 def detect_packages(text: str) -> set[str]:

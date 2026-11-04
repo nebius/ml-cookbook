@@ -9,7 +9,12 @@ from functools import lru_cache
 
 from gpu_preflight import __version__
 from gpu_preflight.compatibility import summarize_compatibility
-from gpu_preflight.facts import ImageFacts
+from gpu_preflight.facts import (
+    ImageFacts,
+    LibraryArchitectureEvidence,
+    normalize_package_name,
+    package_versions,
+)
 from gpu_preflight.profiles import FabricProfile, HardwareProfile, load_fabrics
 
 UNRESOLVED_FINDINGS = {
@@ -59,6 +64,9 @@ FINDING_DISPLAY_ORDER = {
     "GPF-CPU-001": 30,
     "GPF-CPU-002": 30,
     "GPF-CPU-003": 30,
+    "GPF-CPU-004": 31,
+    "GPF-CPU-005": 31,
+    "GPF-CPU-006": 31,
     "GPF-CUDA-006": 40,
     "GPF-CUDA-007": 40,
     "GPF-CUDA-008": 40,
@@ -71,6 +79,11 @@ FINDING_DISPLAY_ORDER = {
     "GPF-UCX-004": 55,
     "GPF-UCX-005": 55,
     "GPF-UCX-006": 55,
+    "GPF-PKG-001": 56,
+    "GPF-PKG-002": 56,
+    "GPF-PKG-005": 56,
+    "GPF-PKG-003": 57,
+    "GPF-PKG-004": 57,
     "GPF-CUDA-001": 60,
     "GPF-CUDA-002": 60,
     "GPF-CUDA-003": 60,
@@ -91,6 +104,10 @@ FINDING_DISPLAY_ORDER = {
     "GPF-CUDA-019": 82,
     "GPF-RUNTIME-001": 90,
 }
+
+# The report keeps up to ten example paths per architecture; a finding names
+# three of them and leaves the rest to the JSON.
+ARCHITECTURE_SAMPLES_SHOWN = 3
 
 STATIC_ANALYSIS_LIMITATIONS = (
     "The scan cannot determine which NCCL installation or dynamic library the workload will load.",
@@ -176,6 +193,244 @@ def order_findings(findings: tuple[Finding, ...]) -> tuple[Finding, ...]:
             key=lambda finding: (FINDING_DISPLAY_ORDER.get(finding.id, 85), finding.id),
         )
     )
+
+
+def _runtime_package_findings(facts: ImageFacts, profile: HardwareProfile) -> list[Finding]:
+    """Assess the runtime compilers, DSLs and kernel libraries an image installs.
+
+    These packages build or select device code when the workload runs, so they ship no
+    cubin for artifact inspection -- an image can scan at full coverage while the code
+    that will actually execute does not exist yet. Their installed version is the only
+    static evidence available, and it is weaker than a compiled artifact: it says what
+    could be generated, never what will be, and never which copy a process loads.
+    """
+    installed = package_versions(facts.installed_packages)
+    findings: list[Finding] = []
+    for floor in profile.runtime_packages:
+        versions = tuple(
+            sorted(
+                {
+                    version
+                    for name in floor.lookup_names
+                    for version in installed.get(normalize_package_name(name), ())
+                }
+            )
+        )
+        if not versions:
+            continue
+        found = ", ".join(versions)
+        citation = f" Source: {floor.source}" if floor.source else ""
+        # The note carries why this package is floored, unfloored or inapplicable, and
+        # the reason differs per package: no release note exists, the floor lives in a
+        # package this one only wraps, or every release so far is a beta whose suffix
+        # the version parser drops. A generic sentence would misstate most of them.
+        rationale = f" {' '.join(floor.note.split())}" if floor.note else ""
+        if floor.applicability == "not-applicable":
+            findings.append(
+                Finding(
+                    id="GPF-PKG-005",
+                    severity="warning",
+                    category="compatibility",
+                    title=f"{floor.package} is published for other hardware",
+                    evidence=(
+                        f"Found {floor.package} {found}, which its vendor publishes for a "
+                        f"different GPU generation than {profile.display_name}. No release of "
+                        f"it targets this hardware, so a newer version is not a remedy.{rationale}"
+                        f"{citation}"
+                    ),
+                    remediation=(
+                        f"Install the release line that covers {profile.display_name} instead, "
+                        "and confirm the workload does not import this one. A package the "
+                        "workload never imports is harmless, which static inspection cannot "
+                        "establish."
+                    ),
+                )
+            )
+            continue
+        if floor.minimum_version is None:
+            findings.append(
+                Finding(
+                    id="GPF-PKG-003",
+                    severity="info",
+                    category="evidence",
+                    title=f"{floor.package} version is not assessed for this hardware",
+                    evidence=(
+                        f"Found {floor.package} {found}."
+                        + (
+                            rationale
+                            or (
+                                " No published release note states a "
+                                f"{profile.display_name} floor for it, so this scan reports "
+                                "the version without judging it."
+                            )
+                        )
+                        + citation
+                    ),
+                    remediation=(
+                        f"Confirm {floor.package} support for {profile.display_name} against its "
+                        "own release notes, and exercise it on the target hardware."
+                    ),
+                )
+            )
+            continue
+        floor_version = _version_tuple(floor.minimum_version)
+        if any(_version_tuple(version) >= floor_version for version in versions):
+            findings.append(
+                Finding(
+                    id="GPF-PKG-001",
+                    severity="info",
+                    category="compatibility",
+                    title=f"{floor.package} meets the published floor",
+                    evidence=(
+                        f"Found {floor.package} {found}; {profile.display_name} requires "
+                        f"{floor.minimum_version} or newer.{rationale}{citation}"
+                    ),
+                    remediation=(
+                        "A version floor shows the release can target this hardware, not that "
+                        "the workload's kernels compile or run. Exercise them on the target."
+                    ),
+                )
+            )
+            continue
+        findings.append(
+            Finding(
+                id="GPF-PKG-002",
+                severity="warning",
+                category="compatibility",
+                title=f"{floor.package} predates published support for this hardware",
+                evidence=(
+                    f"Found {floor.package} {found}; {profile.display_name} requires "
+                    f"{floor.minimum_version} or newer.{rationale}{citation}"
+                ),
+                remediation=(
+                    f"Upgrade {floor.package} to {floor.minimum_version} or newer. Kernels this "
+                    "package generates at runtime are not represented in the artifact scan, so "
+                    "no amount of target coverage compensates for the gap."
+                ),
+            )
+        )
+    # Several versions of one package means the image installs it more than once.
+    # Which copy a process loads depends on sys.path and ld.so at runtime, which a
+    # static scan cannot resolve, so the ambiguity is reported rather than guessed.
+    ambiguous = sorted(
+        f"{floor.package} ({', '.join(installed[normalize_package_name(floor.package)])})"
+        for floor in profile.runtime_packages
+        if len(installed.get(normalize_package_name(floor.package), ())) > 1
+    )
+    if ambiguous:
+        # The image's own LD_LIBRARY_PATH is the one input to that decision a static
+        # scan can read, so it is quoted rather than described.
+        declared = facts.environment.get("LD_LIBRARY_PATH", "")
+        search_path = f" The image sets LD_LIBRARY_PATH={declared}." if declared else ""
+        findings.append(
+            Finding(
+                id="GPF-PKG-004",
+                severity="info",
+                category="evidence",
+                title="Several versions of one runtime package are installed",
+                evidence=(
+                    "The image carries more than one version of "
+                    f"{'; '.join(ambiguous)}. Which one a process loads is decided at start-up "
+                    "by RPATH, ld.so.cache, LD_LIBRARY_PATH and sys.path order, none of which a "
+                    "static scan can resolve, so the assessment above used the most favourable "
+                    f"version present.{search_path}"
+                ),
+                remediation=(
+                    "Resolve the duplicate installations, or run the library-resolution "
+                    "hardware check and compare the loaded paths against this inventory."
+                ),
+            )
+        )
+    return findings
+
+
+def _library_architecture_findings(
+    facts: ImageFacts, declared_architecture: str | None
+) -> list[Finding]:
+    """Compare each inspected binary's ELF machine against the resolved platform.
+
+    The manifest declares one architecture for the whole image, and GPF-CPU-002 checks
+    that declaration against the profile. It cannot see inside: a wheel built for the
+    wrong platform, or an extension copied between architectures, leaves a binary the
+    dynamic loader will refuse while the image still declares the right platform.
+    """
+    if not declared_architecture or not facts.library_architectures:
+        return []
+    inspected = sum(item.count for item in facts.library_architectures)
+    foreign = [
+        item for item in facts.library_architectures if item.architecture != declared_architecture
+    ]
+    if not foreign:
+        return [
+            Finding(
+                id="GPF-CPU-005",
+                severity="info",
+                category="compatibility",
+                title="Every inspected binary matches the image architecture",
+                evidence=(
+                    f"All {inspected} inspected binaries are {declared_architecture} ELF objects, "
+                    f"matching the resolved platform {facts.final_platform}."
+                ),
+                remediation=(
+                    "Binaries loaded from outside the image, such as a mounted driver or an "
+                    "extension installed at start-up, are not covered by this check."
+                ),
+            )
+        ]
+
+    def summarize(items: list[LibraryArchitectureEvidence]) -> str:
+        parts = []
+        for item in items:
+            shown = item.sample_paths[:ARCHITECTURE_SAMPLES_SHOWN]
+            parts.append(
+                f"{item.count} {item.architecture} ({', '.join(shown)}"
+                f"{', ...' if item.count > len(shown) else ''})"
+            )
+        return "; ".join(parts)
+
+    foreign_count = sum(item.count for item in foreign)
+    bearing = [item for item in foreign if item.device_code_count]
+    if bearing:
+        kernels = sum(item.device_code_count for item in bearing)
+        return [
+            Finding(
+                id="GPF-CPU-004",
+                severity="warning",
+                category="compatibility",
+                title="CUDA-bearing binaries do not match the image architecture",
+                evidence=(
+                    f"The resolved platform is {facts.final_platform}, but {kernels} of "
+                    f"{inspected} inspected binaries carry CUDA device code while being built "
+                    f"for another CPU architecture: {summarize(bearing)}. The dynamic loader "
+                    "cannot load these on the target, so their kernels are unreachable."
+                ),
+                remediation=(
+                    "Identify the package that installed them and reinstall its "
+                    f"{declared_architecture} build. A binary the workload never loads is "
+                    "harmless, which static inspection cannot establish, so confirm it on the "
+                    "target."
+                ),
+            )
+        ]
+    return [
+        Finding(
+            id="GPF-CPU-006",
+            severity="info",
+            category="evidence",
+            title="Foreign-architecture binaries carry no device code",
+            evidence=(
+                f"{foreign_count} of {inspected} inspected binaries are built for another CPU "
+                f"architecture, and none of them carries CUDA device code: {summarize(foreign)}. "
+                "Toolchains ship these deliberately -- multilib compiler runtimes, 32-bit "
+                "interceptors -- and no GPU work depends on them."
+            ),
+            remediation=(
+                "No action for this hardware. Confirm the workload does not load them if the "
+                "image is expected to contain only "
+                f"{declared_architecture} objects."
+            ),
+        )
+    ]
 
 
 def _architecture_from_platform(platform: str | None) -> str | None:
@@ -483,6 +738,8 @@ def _target_findings(facts: ImageFacts, profile: HardwareProfile) -> tuple[Findi
             )
         )
 
+    findings.extend(_runtime_package_findings(facts, profile))
+
     declared_architecture = _architecture_from_platform(facts.final_platform)
     if declared_architecture and declared_architecture not in profile.cpu_architectures:
         findings.append(
@@ -526,6 +783,8 @@ def _target_findings(facts: ImageFacts, profile: HardwareProfile) -> tuple[Findi
                 ),
             )
         )
+
+    findings.extend(_library_architecture_findings(facts, declared_architecture))
 
     compatibility = summarize_compatibility(facts.cuda_targets, profile.compute_capability_number)
     if compatibility is None:

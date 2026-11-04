@@ -329,3 +329,131 @@ class AnalyzerErrorDetailTests(unittest.TestCase):
         self.assertEqual(first, second)
         for fragment in ("preflight-", "8uo_5ru", "_n1za4w"):
             self.assertNotIn(fragment, first)
+
+
+class FlashInferProviderLayoutTests(unittest.TestCase):
+    """Newer FlashInfer wheels interpose a per-architecture provider directory:
+    flashinfer_jit_cache/providers/<sm>/jit_cache/<module>/<module>.so. Without it the
+    sm100a and sm103a builds of one operation land in different dispatch families and
+    neither is recognized as the other's compatible alternative.
+    """
+
+    ROOT = "/usr/local/lib/python3.12/dist-packages/flashinfer_jit_cache"
+    MODULE = "alphamoe_fused_router_nvrtc_a1b2"
+
+    def _provider(self, provider: str) -> str:
+        return f"{self.ROOT}/providers/{provider}/jit_cache/{self.MODULE}/{self.MODULE}.so"
+
+    def test_sibling_providers_share_one_dispatch_family(self) -> None:
+        self.assertEqual(
+            kernel_catalog_group(self._provider("sm100a")),
+            kernel_catalog_group(self._provider("sm103a")),
+        )
+
+    def test_the_provider_directory_declares_the_target(self) -> None:
+        self.assertEqual(kernel_catalog_declared_targets(self._provider("sm103a")), ("sm_103a",))
+        self.assertEqual(kernel_catalog_declared_targets(self._provider("sm100a")), ("sm_100a",))
+
+    def test_the_flat_layout_still_groups_as_before(self) -> None:
+        flat = f"{self.ROOT}/jit_cache/{self.MODULE}_sm90/{self.MODULE}_sm90.so"
+        self.assertEqual(kernel_catalog_group(flat), f"{self.ROOT}/jit_cache/{self.MODULE}")
+        self.assertEqual(kernel_catalog_declared_targets(flat), ("sm_90",))
+
+    def test_both_layouts_resolve_to_the_same_family(self) -> None:
+        # One image can carry both, and they are the same operation either way.
+        flat = f"{self.ROOT}/jit_cache/{self.MODULE}/{self.MODULE}.so"
+        self.assertEqual(kernel_catalog_group(flat), kernel_catalog_group(self._provider("sm103a")))
+
+    def test_an_unrecognized_provider_name_does_not_declare_a_target(self) -> None:
+        unknown = self._provider("rubin")
+        self.assertEqual(kernel_catalog_declared_targets(unknown), ())
+
+    def test_a_shared_library_outside_the_cache_is_not_grouped(self) -> None:
+        # Suppressing an unpaired incompatible module would hide a real gap, so the
+        # rule stays confined to the cache layout.
+        self.assertIsNone(kernel_catalog_group("/usr/lib/libth_common.so"))
+        self.assertIsNone(kernel_catalog_group(f"{self.ROOT}/providers/sm103a/jit_cache/a/b.so"))
+
+
+class NoDeviceCodeClassificationTests(unittest.TestCase):
+    """cuobjdump exits non-zero for two different situations and only one is a failure.
+
+    Now that candidates are no longer filtered by path keyword, glibc's empty stub
+    archives (libdl.a, libpthread.a, librt.a and friends) reach the analyzer. It
+    answers "Invalid fatbin header", which means the complete file holds no CUDA
+    container -- a result, not a failed look. Counting it as an incomplete inspection
+    understated coverage for every image that ships a static libc.
+    """
+
+    def _evidence(self, message: str, image_path: str):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "cuobjdump"
+            executable.write_text(f"#!/bin/sh\necho '{message}' >&2\nexit 1\n", encoding="utf-8")
+            executable.chmod(0o755)
+            artifact = Path(directory) / "artifact.a"
+            artifact.write_bytes(b"!<arch>\n")
+            tool = CuobjdumpTool(str(executable), "test", timeout_seconds=5)
+            return tool.inspect(artifact, image_path, 8)
+
+    def test_an_invalid_fatbin_header_is_a_complete_result(self) -> None:
+        evidence = self._evidence(
+            "cuobjdump fatal : Invalid fatbin header in <artifact>",
+            "/usr/lib/aarch64-linux-gnu/libdl.a",
+        )
+        self.assertTrue(evidence.complete)
+        self.assertIsNone(evidence.incomplete_reason)
+        self.assertEqual(evidence.targets, ())
+
+    def test_the_existing_no_device_code_answer_is_unchanged(self) -> None:
+        evidence = self._evidence(
+            "cuobjdump info : File <artifact> does not contain device code",
+            "/usr/lib/libz.so.1",
+        )
+        self.assertTrue(evidence.complete)
+        self.assertIsNone(evidence.incomplete_reason)
+
+    def test_a_real_analyzer_failure_is_still_incomplete(self) -> None:
+        # The distinction has to hold in both directions, or a genuinely unreadable
+        # artifact would be reported as inspected.
+        evidence = self._evidence(
+            "cuobjdump fatal : Could not open input file", "/usr/lib/libtorch_cuda.so"
+        )
+        self.assertFalse(evidence.complete)
+        self.assertEqual(evidence.incomplete_reason, "analyzer-error")
+
+
+class StubDirectoryRoleTests(unittest.TestCase):
+    """Link-time stub objects exist to satisfy the linker, not to be loaded. CUDA ships
+    lib/stubs/libcuda.so, and wheels ship stubs/<target-triple>/ built for other
+    architectures on purpose -- the JAX NGC image carries aarch64 CuTe DSL stubs inside
+    an amd64 image. Treating those as runtime libraries produced an architecture warning
+    on an image that is in fact correct.
+    """
+
+    def test_a_stub_directory_is_tooling(self) -> None:
+        for path in (
+            "/usr/local/cuda-13.4/targets/x86_64-linux/lib/stubs/libcuda.so",
+            "/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/cu13/lib/"
+            "stubs/aarch64-unknown-linux-gnu/libcute_dsl_runtime.so",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(classify_artifact_role(path), "tooling")
+
+    def test_the_real_library_beside_a_stub_is_still_runtime(self) -> None:
+        self.assertEqual(
+            classify_artifact_role(
+                "/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/cu13/lib/"
+                "libcute_dsl_runtime.so"
+            ),
+            "runtime",
+        )
+
+    def test_compute_sanitizer_interceptors_remain_tooling(self) -> None:
+        # The other half of the same false positive: 32-bit interceptor shims that
+        # NVIDIA ships deliberately.
+        self.assertEqual(
+            classify_artifact_role(
+                "/usr/local/cuda-13.4/compute-sanitizer/x86/libInterceptorInjectionTarget.so"
+            ),
+            "tooling",
+        )

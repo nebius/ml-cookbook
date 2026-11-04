@@ -20,6 +20,53 @@ class Source:
 
 
 @dataclass(frozen=True)
+class RuntimePackageFloor:
+    """The oldest release of a runtime compiler, DSL or kernel library that a vendor
+    has published as supporting this hardware.
+
+    These packages generate or select device code when the workload runs, so an image
+    carries no compiled artifact to inspect for them. The installed version is the
+    only static evidence, and a floor is recorded only where a release note states it:
+    ``minimum_version`` is therefore optional, and a package listed without one is
+    reported as present-but-unassessed rather than silently assumed compatible.
+
+    A package belongs in this table only when artifact inspection cannot answer the
+    question for it: JIT compilers and DSLs that emit no cubin at build time, and
+    libraries whose architecture support is host-side rather than device code. A
+    compiled extension does not belong, however prominent -- cuobjdump reads its sm_
+    targets from the artifact, per build, and names the offending file in the report.
+    Listing those would mean maintaining a roster of libraries that artifact
+    inspection already discovers on its own, and the roster would be stale the moment
+    a new one ships.
+
+    Support does not always move forward along one version line, and a successor may
+    ship under a different distribution name entirely. An entry marked
+    ``applicability = "not-applicable"`` records that the package targets other
+    hardware, which a version floor cannot express.
+    """
+
+    package: str
+    role: str
+    minimum_version: str | None
+    note: str | None
+    source: str | None
+    applicability: str = "supported"
+    # One library can reach an image under several distribution names: NVSHMEM ships
+    # as nvidia-nvshmem-cu12/-cu13 from pip and libnvshmem3-cuda-12/-13 from apt, all
+    # carrying the same upstream version. The lookup is an exact name match, so an
+    # entry naming only one of them assesses only the images that chose that one.
+    distributions: tuple[str, ...] = ()
+
+    @property
+    def lookup_names(self) -> tuple[str, ...]:
+        return self.distributions or (self.package,)
+
+
+SUPPORTED_PACKAGE_ROLES = {"compiler", "dsl", "kernel-library"}
+SUPPORTED_PACKAGE_APPLICABILITY = {"supported", "not-applicable"}
+
+
+@dataclass(frozen=True)
 class FabricProfile:
     """Version floors and provenance for one compute-fabric network adapter.
 
@@ -52,6 +99,7 @@ class HardwareProfile:
     compute_fabric: str | None
     minimum_cuda_version: str | None
     minimum_nccl_version: str | None
+    runtime_packages: tuple[RuntimePackageFloor, ...]
     runtime_checks: tuple[str, ...]
     notes: tuple[str, ...]
     sources: tuple[Source, ...]
@@ -131,6 +179,71 @@ def _sources(document: dict[str, object], path: str) -> tuple[Source, ...]:
     if len(sources) != len(source_documents):
         raise ValueError(f"{path}: every source must be a table")
     return sources
+
+
+def _runtime_packages(validation: dict[str, object], path: str) -> tuple[RuntimePackageFloor, ...]:
+    entries = validation.get("runtime_packages", [])
+    if not isinstance(entries, list):
+        raise ValueError(f"{path}: validation.runtime_packages must be an array of tables")
+    floors: list[RuntimePackageFloor] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError(f"{path}: every validation.runtime_packages entry must be a table")
+        package = _string(entry.get("package"), "validation.runtime_packages.package", path).lower()
+        if package in seen:
+            raise ValueError(f"{path}: validation.runtime_packages lists {package!r} twice")
+        seen.add(package)
+        role = _string(entry.get("role"), "validation.runtime_packages.role", path).lower()
+        if role not in SUPPORTED_PACKAGE_ROLES:
+            supported = ", ".join(sorted(SUPPORTED_PACKAGE_ROLES))
+            raise ValueError(
+                f"{path}: validation.runtime_packages.role must be one of {supported}, got {role!r}"
+            )
+        applicability = _string(
+            entry.get("applicability", "supported"),
+            "validation.runtime_packages.applicability",
+            path,
+        ).lower()
+        if applicability not in SUPPORTED_PACKAGE_APPLICABILITY:
+            supported = ", ".join(sorted(SUPPORTED_PACKAGE_APPLICABILITY))
+            raise ValueError(
+                f"{path}: validation.runtime_packages.applicability must be one of "
+                f"{supported}, got {applicability!r}"
+            )
+        minimum_version = _optional_version(
+            entry.get("minimum_version"),
+            "validation.runtime_packages.minimum_version",
+            path,
+        )
+        if applicability == "not-applicable" and minimum_version is not None:
+            # A floor claims every later release works here; the marker claims none
+            # does. Accepting both would leave the assessment undefined.
+            raise ValueError(
+                f"{path}: validation.runtime_packages entry {package!r} cannot set "
+                "minimum_version while applicability is not-applicable"
+            )
+        raw_distributions = entry.get("distributions", [])
+        if not isinstance(raw_distributions, list):
+            raise ValueError(f"{path}: validation.runtime_packages.distributions must be an array")
+        distributions = tuple(
+            _string(item, "validation.runtime_packages.distributions", path).lower()
+            for item in raw_distributions
+        )
+        floors.append(
+            RuntimePackageFloor(
+                distributions=distributions,
+                package=package,
+                role=role,
+                minimum_version=minimum_version,
+                note=_optional_string(entry.get("note"), "validation.runtime_packages.note", path),
+                source=_optional_string(
+                    entry.get("source"), "validation.runtime_packages.source", path
+                ),
+                applicability=applicability,
+            )
+        )
+    return tuple(sorted(floors, key=lambda floor: floor.package))
 
 
 def _optional_table(document: dict[str, object], name: str, path: str) -> dict[str, object]:
@@ -216,6 +329,7 @@ def parse_profile(document: dict[str, object], path: str) -> HardwareProfile:
             "validation.minimum_nccl_version",
             path,
         ),
+        runtime_packages=_runtime_packages(validation, path),
         runtime_checks=_strings(
             validation.get("runtime_checks"), "validation.runtime_checks", path
         ),

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import re
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
-from gpu_preflight.facts import ImageFacts
+from gpu_preflight.facts import ImageFacts, LibraryArchitectureEvidence
 from gpu_preflight.inspection import (
     FINDING_DISPLAY_ORDER,
     Finding,
@@ -14,7 +15,7 @@ from gpu_preflight.inspection import (
     evidence_limitations_for,
     inspect,
 )
-from gpu_preflight.profiles import load_profiles
+from gpu_preflight.profiles import RuntimePackageFloor, load_profiles
 
 
 def image_facts(
@@ -24,6 +25,9 @@ def image_facts(
     cuda_targets: tuple[str, ...] = (),
     cuda_versions: tuple[str, ...] = (),
     nccl_versions: tuple[str, ...] = (),
+    installed_packages: tuple[str, ...] = (),
+    library_architectures: tuple[LibraryArchitectureEvidence, ...] = (),
+    environment: dict[str, str] | None = None,
 ) -> ImageFacts:
     return ImageFacts(
         path=f"image://{reference}",
@@ -33,7 +37,9 @@ def image_facts(
         cuda_versions=cuda_versions,
         nccl_versions=nccl_versions,
         detected_packages=(),
-        environment={},
+        environment=environment or {},
+        installed_packages=installed_packages,
+        library_architectures=library_architectures,
     )
 
 
@@ -314,3 +320,217 @@ class FindingDisplayOrderTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RuntimePackageFindingTests(unittest.TestCase):
+    """Triton, CuTe DSL and friends generate device code when the workload runs. An
+    image can inspect at full artifact coverage while the kernels that will actually
+    execute do not exist yet, so their installed version is assessed on its own.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.profiles = load_profiles()
+
+    def _ids(self, installed: tuple[str, ...], target: str = "gb300") -> dict[str, str]:
+        facts = image_facts(platform="linux/arm64", installed_packages=installed)
+        report = inspect(facts, (self.profiles[target],)).targets[0]
+        return {finding.id: finding.evidence for finding in report.findings}
+
+    def test_a_version_below_the_floor_is_a_warning(self) -> None:
+        # Triton 3.5.0 is the release whose sm_103 support regressed; the floor the
+        # release notes support is 3.5.1, so the broken release is caught by it.
+        found = self._ids(("triton==3.5.0",))
+        self.assertIn("GPF-PKG-002", found)
+        self.assertIn("3.5.1", found["GPF-PKG-002"])
+
+    def test_a_version_at_the_floor_passes(self) -> None:
+        self.assertIn("GPF-PKG-001", self._ids(("triton==3.5.1",)))
+
+    def test_a_package_the_image_does_not_install_says_nothing(self) -> None:
+        found = self._ids(("numpy==2.1.0",))
+        self.assertEqual({key for key in found if key.startswith("GPF-PKG")}, set())
+
+    def test_a_package_published_for_other_hardware_is_a_warning(self) -> None:
+        # No shipped profile needs this today: the libraries whose support is bounded
+        # by generation are compiled ones, and artifact inspection names those. The
+        # mechanism is kept for a JIT package that is ever restricted the same way.
+        profile = replace(
+            self.profiles["gb300"],
+            runtime_packages=(
+                RuntimePackageFloor(
+                    package="example-dsl",
+                    role="dsl",
+                    minimum_version=None,
+                    note=None,
+                    source=None,
+                    applicability="not-applicable",
+                ),
+            ),
+        )
+        facts = image_facts(platform="linux/arm64", installed_packages=("example-dsl==1.0.0",))
+        found = {f.id for f in inspect(facts, (profile,)).targets[0].findings}
+        self.assertIn("GPF-PKG-005", found)
+        self.assertNotIn("GPF-PKG-003", found)
+
+    def test_an_unfloored_package_is_reported_as_unassessed(self) -> None:
+        found = self._ids(("numba==0.62.0",))
+        self.assertIn("GPF-PKG-003", found)
+        self.assertIn("0.62.0", found["GPF-PKG-003"])
+        self.assertNotIn("GPF-PKG-002", found)
+
+    def test_a_compiled_library_is_left_to_artifact_inspection(self) -> None:
+        # flash-attn and nixl ship cubins, so cuobjdump answers them and the package
+        # layer stays silent rather than duplicating a roster it would have to curate.
+        found = self._ids(("flash_attn==2.8.3", "nixl==1.5.2"))
+        self.assertEqual({key for key in found if key.startswith("GPF-PKG")}, set())
+
+    def test_a_distribution_name_is_normalized_before_matching(self) -> None:
+        # dist-info and dpkg disagree about separators and case.
+        for record in ("nvidia_cutlass_dsl==4.4.0", "NVIDIA-Cutlass-DSL==4.4.0"):
+            with self.subTest(record=record):
+                self.assertIn("GPF-PKG-001", self._ids((record,)))
+
+    def test_two_installed_versions_are_reported_as_unresolved(self) -> None:
+        # The MiMo vLLM image carried NCCL 2.28.9 in its Python prefix and 2.30.4 in
+        # the system one. Which copy a process loads is decided at runtime.
+        found = self._ids(("triton==3.5.1", "triton==3.4.0"))
+        self.assertIn("GPF-PKG-004", found)
+        self.assertIn("3.4.0", found["GPF-PKG-004"])
+        self.assertIn("GPF-PKG-001", found)
+
+    def test_the_same_image_is_judged_against_each_target_floor(self) -> None:
+        # CuTe DSL 4.3.1 clears B300 and not GB300, from the same inventory.
+        installed = ("nvidia-cutlass-dsl==4.3.1",)
+        self.assertIn("GPF-PKG-001", self._ids(installed, target="b300"))
+        self.assertIn("GPF-PKG-002", self._ids(installed, target="gb300"))
+
+    def test_a_package_with_no_published_floor_reports_as_unassessed(self) -> None:
+        # Hopper predates Triton's published release notes, so no floor can be cited.
+        # The package is still named, because silence would read as "never looked".
+        found = self._ids(("triton==3.5.1",), target="h100")
+        self.assertIn("GPF-PKG-003", found)
+        self.assertNotIn("GPF-PKG-002", found)
+
+    def test_rubin_judges_triton_against_its_announced_release(self) -> None:
+        self.assertIn("GPF-PKG-002", self._ids(("triton==3.7.1",), target="vr"))
+        self.assertIn("GPF-PKG-001", self._ids(("triton==3.8.0",), target="vr"))
+
+
+class LibraryArchitectureFindingTests(unittest.TestCase):
+    """GPF-CPU-002 checks the manifest's declared architecture against the profile. It
+    cannot see inside the image, which is why an ARM64 image carrying an x86-64
+    extension used to pass every architecture check the scan performed.
+
+    Foreign binaries alone are not the signal, though. Real images ship them on
+    purpose: clang's i386 compiler-rt runtimes (278 of them in TensorRT-LLM), CUDA's
+    32-bit interceptors, a wheel's cross-compilation stubs. What separates a packaging
+    error from a toolchain payload is whether the foreign binary carries device code.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.profile = load_profiles()["gb300"]
+
+    def _ids(self, *architectures: LibraryArchitectureEvidence) -> dict[str, str]:
+        facts = image_facts(platform="linux/arm64", library_architectures=architectures)
+        report = inspect(facts, (self.profile,)).targets[0]
+        return {finding.id: finding.evidence for finding in report.findings}
+
+    def test_a_foreign_binary_with_kernels_is_a_warning(self) -> None:
+        found = self._ids(
+            LibraryArchitectureEvidence("arm64", 2000, ("/usr/lib/libtorch_cuda.so",), 900),
+            LibraryArchitectureEvidence("amd64", 2, ("/opt/app/_ext.so",), 2),
+        )
+        self.assertIn("GPF-CPU-004", found)
+        self.assertIn("/opt/app/_ext.so", found["GPF-CPU-004"])
+        self.assertIn("2 of 2002", found["GPF-CPU-004"])
+        self.assertNotIn("GPF-CPU-005", found)
+        self.assertNotIn("GPF-CPU-006", found)
+
+    def test_foreign_binaries_without_kernels_are_only_evidence(self) -> None:
+        # The TensorRT-LLM case: 278 i386 compiler-rt runtimes, no device code,
+        # nothing for this GPU to be wrong about.
+        found = self._ids(
+            LibraryArchitectureEvidence("arm64", 2069, ("/usr/lib/libtorch_cuda.so",), 150),
+            LibraryArchitectureEvidence(
+                "i386", 278, ("/usr/lib/llvm-18/lib/clang/18/lib/linux/libclang_rt.asan-i386.so",)
+            ),
+        )
+        self.assertIn("GPF-CPU-006", found)
+        self.assertIn("278 of 2347", found["GPF-CPU-006"])
+        self.assertNotIn("GPF-CPU-004", found)
+
+    def test_one_bearing_group_outranks_a_harmless_one(self) -> None:
+        found = self._ids(
+            LibraryArchitectureEvidence("arm64", 100, ("/usr/lib/a.so",), 50),
+            LibraryArchitectureEvidence("i386", 278, ("/usr/lib/rt-i386.so",)),
+            LibraryArchitectureEvidence("amd64", 1, ("/opt/app/_ext.so",), 1),
+        )
+        self.assertIn("GPF-CPU-004", found)
+        # The warning names the binary that matters, not the 278 that do not.
+        self.assertIn("/opt/app/_ext.so", found["GPF-CPU-004"])
+        self.assertNotIn("rt-i386", found["GPF-CPU-004"])
+
+    def test_a_uniform_image_passes(self) -> None:
+        found = self._ids(LibraryArchitectureEvidence("arm64", 2000, ("/usr/lib/a.so",), 80))
+        self.assertIn("GPF-CPU-005", found)
+        self.assertNotIn("GPF-CPU-004", found)
+        self.assertNotIn("GPF-CPU-006", found)
+
+    def test_the_declared_architecture_decides_what_is_foreign(self) -> None:
+        # The same binaries are native on an amd64 image and foreign on an arm64 one.
+        amd64 = (LibraryArchitectureEvidence("amd64", 5, ("/usr/lib/a.so",), 5),)
+        facts = image_facts(platform="linux/amd64", library_architectures=amd64)
+        ids = {f.id for f in inspect(facts, (load_profiles()["b300"],)).targets[0].findings}
+        self.assertIn("GPF-CPU-005", ids)
+        self.assertIn("GPF-CPU-004", self._ids(*amd64))
+
+    def test_nothing_is_claimed_when_no_binary_was_inspected(self) -> None:
+        found = self._ids()
+        for identifier in ("GPF-CPU-004", "GPF-CPU-005", "GPF-CPU-006"):
+            self.assertNotIn(identifier, found)
+
+    def test_an_unresolved_platform_makes_no_architecture_claim(self) -> None:
+        facts = image_facts(
+            library_architectures=(LibraryArchitectureEvidence("amd64", 5, ("/a.so",), 5),)
+        )
+        ids = {f.id for f in inspect(facts, (self.profile,)).targets[0].findings}
+        for identifier in ("GPF-CPU-004", "GPF-CPU-005", "GPF-CPU-006"):
+            self.assertNotIn(identifier, ids)
+
+
+class LibraryResolutionEvidenceTests(unittest.TestCase):
+    """Which copy of a duplicated library a process loads is decided at start-up. The
+    scan can read the image's own LD_LIBRARY_PATH; the rest belongs to the hardware run.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.profile = load_profiles()["gb300"]
+
+    def test_the_declared_search_path_is_quoted(self) -> None:
+        facts = image_facts(
+            platform="linux/arm64",
+            installed_packages=("triton==3.5.1", "triton==3.8.0"),
+            environment={"LD_LIBRARY_PATH": "/usr/local/nvidia/lib64"},
+        )
+        report = inspect(facts, (self.profile,)).targets[0]
+        evidence = {f.id: f.evidence for f in report.findings}
+        self.assertIn("LD_LIBRARY_PATH=/usr/local/nvidia/lib64", evidence["GPF-PKG-004"])
+
+    def test_an_unset_search_path_is_not_mentioned(self) -> None:
+        facts = image_facts(
+            platform="linux/arm64", installed_packages=("triton==3.5.1", "triton==3.8.0")
+        )
+        report = inspect(facts, (self.profile,)).targets[0]
+        evidence = {f.id: f.evidence for f in report.findings}
+        # The mechanism is still named in the generic sentence; only the quoted
+        # value is absent, because there is none to quote.
+        self.assertIn("LD_LIBRARY_PATH and sys.path", evidence["GPF-PKG-004"])
+        self.assertNotIn("LD_LIBRARY_PATH=", evidence["GPF-PKG-004"])
+
+    def test_every_profile_requires_capturing_resolved_libraries(self) -> None:
+        for name, profile in load_profiles().items():
+            with self.subTest(profile=name):
+                self.assertIn("library-resolution", profile.runtime_checks)

@@ -1174,7 +1174,7 @@ class ImageInspectionTests(unittest.TestCase):
         text_report = render_text(report)
         self.assertNotIn("Assessment confidence", text_report)
         self.assertIn(
-            "  CUDA artifact inspection coverage: 100.0% (3/3 eligible runtime inspection units)",
+            "  Discovered artifacts inspected: 100.0% (3/3 eligible runtime inspection units)",
             text_report,
         )
         self.assertIn("  Verified embedded CUDA targets: 3 unique", text_report)
@@ -2038,17 +2038,39 @@ class CudaCandidateGateTests(unittest.TestCase):
                 self.assertEqual(scan.cuobjdump_files_analyzed, 1)
                 self.assertEqual(scan.cuda_artifacts[0].targets, ("sm_70",))
 
-    def test_generic_suffixes_still_need_a_path_marker(self) -> None:
+    def test_a_binary_under_a_neutral_path_is_inspected(self) -> None:
+        # Selecting candidates by path keyword hid CUDA-bearing libraries whose names
+        # mention no CUDA project: cuDNN's precompiled engines, TensorRT's
+        # per-architecture builder resources, TensorRT-LLM's libth_common.so, vLLM's
+        # _qutlass_C.abi3.so. Each one carries device code and none carries a keyword.
+        for name in (
+            "usr/lib/aarch64-linux-gnu/libth_common.so",
+            "usr/lib/aarch64-linux-gnu/libcudnn_engines_precompiled.so.9.26.0",
+            "usr/lib/aarch64-linux-gnu/libnvinfer_builder_resource_sm100.so.11.3.0",
+            "usr/local/lib/python3.12/dist-packages/vllm/_qutlass_C.abi3.so",
+        ):
+            with self.subTest(name=name):
+                scan = self._scan(name)
+                self.assertEqual(scan.cuda_candidate_files, 1)
+                self.assertEqual(scan.cuobjdump_files_analyzed, 1)
+                self.assertEqual(scan.cuda_artifacts[0].targets, ("sm_70",))
+
+    def test_a_binary_without_device_code_is_counted_not_dropped(self) -> None:
+        # Admitting every binary means ordinary system libraries reach cuobjdump.
+        # That is the point: a library with no device code is a measured outcome,
+        # where a library excluded by its path was an invisible one.
         for name in ("usr/lib/libssl.so.3", "usr/lib/libz.a", "boot/vmlinuz.bin"):
+            with self.subTest(name=name):
+                scan = self._scan(name)
+                self.assertEqual(scan.cuda_candidate_files, 1)
+                self.assertEqual(scan.cuobjdump_files_analyzed, 1)
+
+    def test_a_non_binary_suffix_is_not_a_candidate(self) -> None:
+        for name in ("usr/share/doc/readme.txt", "etc/nccl.conf", "opt/cuda/notes.md"):
             with self.subTest(name=name):
                 scan = self._scan(name)
                 self.assertEqual(scan.cuda_candidate_files, 0)
                 self.assertEqual(scan.cuobjdump_files_analyzed, 0)
-
-    def test_a_marked_path_still_admits_a_generic_suffix(self) -> None:
-        scan = self._scan("usr/lib/python3/torch/lib/libtorch_cuda.so")
-        self.assertEqual(scan.cuda_candidate_files, 1)
-        self.assertEqual(scan.cuobjdump_files_analyzed, 1)
 
     def test_a_role_excluded_cubin_is_counted_rather_than_dropped(self) -> None:
         # Reaching the gate is what makes a test or benchmark artifact appear in

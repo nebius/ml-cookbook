@@ -7,6 +7,7 @@ from gpu_preflight.facts import (
     detect_cuda_versions,
     detect_nccl_versions,
     detect_packages,
+    elf_architecture,
 )
 
 
@@ -49,3 +50,71 @@ class ImageFactsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ElfArchitectureTests(unittest.TestCase):
+    """The image manifest declares one architecture for the whole image. The ELF header
+    of each binary says what that binary was actually built for, and the two can
+    disagree -- a wheel built for the wrong platform, or an extension copied between
+    architectures, leaves a library the dynamic loader will refuse.
+    """
+
+    @staticmethod
+    def _header(machine: int, *, elf_class: int = 2, data: int = 1) -> bytes:
+        return (
+            b"\x7fELF"
+            + bytes([elf_class, data, 1, 0])
+            + b"\x00" * 8
+            + (3).to_bytes(2, "little")
+            + machine.to_bytes(2, "little" if data == 1 else "big")
+        )
+
+    def test_known_machines_use_the_profile_vocabulary(self) -> None:
+        # These must read the same way as a profile's hardware.cpu_architectures,
+        # or every comparison against it reports a false mismatch.
+        self.assertEqual(elf_architecture(self._header(0xB7)), "arm64")
+        self.assertEqual(elf_architecture(self._header(0x3E)), "amd64")
+
+    def test_a_big_endian_header_is_read_in_its_own_byte_order(self) -> None:
+        self.assertEqual(elf_architecture(self._header(0x16, data=2)), "s390x")
+
+    def test_an_unlisted_machine_is_named_rather_than_assumed_native(self) -> None:
+        self.assertEqual(elf_architecture(self._header(0x999)), "elf-machine-0x999")
+
+    def test_a_non_elf_file_has_no_architecture(self) -> None:
+        for header in (b"!<arch>\n" + b"x" * 20, b"\x00" * 32, b""):
+            with self.subTest(header=header[:8]):
+                self.assertIsNone(elf_architecture(header))
+
+    def test_a_header_shorter_than_e_machine_is_not_guessed_at(self) -> None:
+        self.assertIsNone(elf_architecture(b"\x7fELF" + b"\x00" * 10))
+
+
+class CudaObjectArchitectureTests(unittest.TestCase):
+    """A .cubin is an ELF whose e_machine is EM_CUDA (190). It holds device code, runs
+    on no CPU, and is loaded by the driver rather than by ld.so. Reporting one as a
+    foreign-architecture host binary told us vLLM's FlashInfer cubins were unloadable
+    on the very GPU they were built for.
+    """
+
+    def test_a_cuda_object_has_no_host_architecture(self) -> None:
+        header = (
+            b"\x7fELF"
+            + bytes([2, 1, 1, 0])
+            + b"\x00" * 8
+            + (1).to_bytes(2, "little")
+            + (0xBE).to_bytes(2, "little")
+        )
+        self.assertIsNone(elf_architecture(header))
+
+    def test_a_host_binary_is_still_read(self) -> None:
+        # The guard must not swallow ordinary objects: a .so holding an embedded
+        # fatbin is an amd64 ELF and has to keep counting as one.
+        header = (
+            b"\x7fELF"
+            + bytes([2, 1, 1, 0])
+            + b"\x00" * 8
+            + (3).to_bytes(2, "little")
+            + (0x3E).to_bytes(2, "little")
+        )
+        self.assertEqual(elf_architecture(header), "amd64")

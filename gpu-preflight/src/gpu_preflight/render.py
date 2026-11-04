@@ -84,6 +84,11 @@ HARDWARE_CHECK_GUIDANCE = {
     "scaleout-network": "Run multi-node collectives over the production scale-out network.",
     "framework-smoke": "Import the framework, enumerate GPUs, and run a small tensor operation.",
     "workload-smoke": "Run a representative reduced workload and verify correctness and stability.",
+    "library-resolution": (
+        "Capture the libraries the workload actually loads and their versions "
+        "(for example /proc/<pid>/maps, ldd on the entrypoint, NCCL_DEBUG=VERSION, "
+        "torch.utils.collect_env), and compare them against the image inventory."
+    ),
 }
 
 
@@ -119,6 +124,14 @@ def _cuda_release_versions(values: list[str]) -> list[str]:
 def _hardware_check_text(check: str) -> str:
     guidance = HARDWARE_CHECK_GUIDANCE.get(check, "Execute and retain target-hardware evidence.")
     return f"{check}: {guidance}"
+
+
+ARTIFACT_COVERAGE_LABEL = "Discovered artifacts inspected"
+ARTIFACT_COVERAGE_SCOPE = (
+    "excludes discovery completeness (libraries not found are not counted as missed), "
+    "catalog breadth (a sampled family represents operations, shapes and dtypes that "
+    "were not individually inspected), and runtime-generated kernels"
+)
 
 
 def _artifact_coverage_text(
@@ -383,12 +396,13 @@ def render_text(report: InspectionReport) -> str:
                 "",
                 f"{target.display_name} ({target.target})",
                 f"  Compatibility: {target.compatibility_status}",
-                "  CUDA artifact inspection coverage: "
+                f"  {ARTIFACT_COVERAGE_LABEL}: "
                 + _artifact_coverage_text(
                     target.artifact_inspection_coverage_percent,
                     target.artifact_inspection_covered_candidates,
                     target.artifact_inspection_eligible_candidates,
                 ),
+                f"    This figure {ARTIFACT_COVERAGE_SCOPE}.",
                 f"  Reproducibility: {target.reproducibility_status}",
                 (
                     f"  Profile: {target.profile_maturity}; "
@@ -939,11 +953,11 @@ def render_html(report: InspectionReport) -> str:
             f"<strong>Compatibility</strong><br>"
             f'<span class="status{_tone_class(status_tone)}">'
             f"{escape(target.compatibility_status)}</span></div>"
-            f"<div><strong>CUDA artifact inspection coverage</strong><br>"
+            f"<div><strong>{escape(ARTIFACT_COVERAGE_LABEL)}</strong><br>"
             f'<span class="status'
             f'{_tone_class(_coverage_tone(target.artifact_inspection_coverage_percent))}">'
             f"{escape(_artifact_coverage_text(target.artifact_inspection_coverage_percent, target.artifact_inspection_covered_candidates, target.artifact_inspection_eligible_candidates))}"
-            f"</span></div>"
+            f"</span><br><small>{escape(ARTIFACT_COVERAGE_SCOPE.capitalize())}.</small></div>"
             f"<div><strong>Reproducibility</strong><br>"
             f'<span class="status{_tone_class(REPRODUCIBILITY_TONE.get(target.reproducibility_status))}">'
             f"{escape(target.reproducibility_status)}</span></div></div>"

@@ -128,6 +128,20 @@
           "additionalProperties": {"$ref": "#/$defs/selectedManifest"}
         },
         "image_packages": {"type": "array", "items": {"type": "string"}},
+        "library_architectures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["architecture", "count", "sample_paths", "device_code_count"],
+            "properties": {
+              "architecture": {"type": "string"},
+              "count": {"type": "integer", "minimum": 1},
+              "sample_paths": {"type": "array", "items": {"type": "string"}},
+              "device_code_count": {"type": "integer", "minimum": 0}
+            }
+          }
+        },
         "installed_packages": {"type": "array", "items": {"type": "string"}},
         "image_cuda_targets": {
           "description": "CUDA targets found in the scanned image: its configuration, packages and inspected artifacts.",
