@@ -8,6 +8,7 @@ the GPU, a deliberately corrupt file a packaging tool ships on purpose.
 
 from __future__ import annotations
 
+import errno
 import gzip
 import io
 import json
@@ -1013,3 +1014,77 @@ class DeadLibraryQuestionTests(unittest.TestCase):
         self.assertIn("imported by path", remediation)
         self.assertIn("/proc/<pid>/maps", remediation)
         self.assertIn("needs no action", remediation)
+
+
+class DiskFullDuringCopyTests(unittest.TestCase):
+    """anyscale/ray:2.59.1-py310-cu130 met a full filesystem 1164 seconds into its scan.
+
+    The artifact copy was guarded by try/finally with no except, so the ENOSPC from one
+    write ended the whole scan: 2172 artifacts had already been analyzed and the image
+    produced no report at all. Refusing the one artifact is the policy the size pre-check
+    already applies a few lines above; a filesystem that fills after that check is the
+    same fact found later, not a reason to discard everything read so far.
+    """
+
+    LIBRARY = "usr/local/lib/python3.10/site-packages/torch/lib/libtorch_cuda.so"
+
+    def _scan(self, failure: OSError, members: tuple[tuple[str, bytes], ...] | None = None):
+        members = members or ((self.LIBRARY, elf_bytes()),)
+        real = scan_rootfs_tar.__globals__["_stream_cuda_member"]
+
+        def stream(archive, member, destination=None, **kwargs):
+            if destination is not None:
+                raise failure
+            return real(archive, member, destination, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            analyzer = listing_cuobjdump(directory)
+            with patch("gpu_preflight.image._stream_cuda_member", side_effect=stream):
+                return scan_rootfs_tar(tar_of(members), cuobjdump=analyzer)
+
+    def test_a_full_filesystem_refuses_the_artifact_and_the_scan_goes_on(self) -> None:
+        scan = self._scan(OSError(errno.ENOSPC, "No space left on device"))
+        self.assertEqual(scan.skipped_temporary_space, 1)
+        self.assertEqual(
+            [(c.path, c.reason) for c in scan.skipped_cuda_candidates],
+            [(f"/{self.LIBRARY}", "temporary-space")],
+        )
+        # Refused, not analyzed: no evidence record claims to have read it.
+        self.assertEqual(scan.cuda_artifacts, ())
+
+    def test_a_quota_or_size_limit_is_read_as_space_as_well(self) -> None:
+        for number in (errno.EDQUOT, errno.EFBIG):
+            with self.subTest(errno=number):
+                scan = self._scan(OSError(number, "limit"))
+                self.assertEqual(scan.skipped_temporary_space, 1)
+
+    def test_a_broken_device_is_reported_as_an_io_error_rather_than_as_space(self) -> None:
+        scan = self._scan(OSError(errno.EIO, "Input/output error"))
+        self.assertEqual(scan.skipped_temporary_space, 0)
+        self.assertEqual(scan.cuobjdump_incomplete, 1)
+        artifact = scan.cuda_artifacts[0]
+        self.assertEqual(artifact.incomplete_reason, "io-error")
+        self.assertEqual(artifact.targets, ())
+        self.assertIn("Input/output error", artifact.diagnostic or "")
+
+    def test_the_next_artifact_is_still_read_and_inherits_nothing(self) -> None:
+        """The raising call leaves read_size and marker_targets holding the last file's
+        values, so the failed iteration must end before anything downstream reads them."""
+        failing = "usr/lib/libfirst.so"
+        real = scan_rootfs_tar.__globals__["_stream_cuda_member"]
+
+        def stream(archive, member, destination=None, **kwargs):
+            if destination is not None and member.name == failing:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real(archive, member, destination, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            analyzer = listing_cuobjdump(directory)
+            with patch("gpu_preflight.image._stream_cuda_member", side_effect=stream):
+                scan = scan_rootfs_tar(
+                    tar_of(((failing, elf_bytes()), ("usr/lib/libsecond.so", elf_bytes()))),
+                    cuobjdump=analyzer,
+                )
+        self.assertEqual(scan.skipped_temporary_space, 1)
+        self.assertEqual([a.path for a in scan.cuda_artifacts], ["/usr/lib/libsecond.so"])
+        self.assertEqual(scan.cuda_targets, ("sm_103",))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import errno
 import gzip
 import json
 import re
@@ -104,6 +105,9 @@ TEMPORARY_SPACE_MARGIN_BYTES = 2 * 1024 * 1024 * 1024
 # Checking free space costs a syscall, which is worth skipping for the small files
 # that make up most of a scan.
 TEMPORARY_SPACE_CHECK_BYTES = 128 * 1024 * 1024
+# Errnos that mean the copy ran out of room rather than hit a broken device. They are
+# the same fact _temporary_space_allows checks for, found after the write began.
+OUT_OF_SPACE_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT, errno.EFBIG})
 
 
 class ImageInspectionError(ValueError):
@@ -1027,6 +1031,42 @@ def scan_rootfs_tar(
                                 diagnostic=diagnostic,
                             )
                             marker_only_files += 1
+                    except OSError as error:
+                        # A copy that fails part-way must not end the scan: a filesystem
+                        # that fills between the check above and this write is the same
+                        # fact found later, and the rest of the image is still worth
+                        # reading.
+                        # Nothing below this point may use read_size, marker_targets or
+                        # architecture: the call that raised left them holding the
+                        # previous file's values, so this iteration ends here.
+                        if artifact_role in {"runtime", "kernel-catalog"}:
+                            if error.errno in OUT_OF_SPACE_ERRNOS:
+                                skipped_temporary_space += 1
+                                skipped_cuda_candidates.append(
+                                    SkippedCudaCandidate(
+                                        path=f"/{name}",
+                                        size_bytes=member.size,
+                                        reason="temporary-space",
+                                    )
+                                )
+                            else:
+                                cuobjdump_incomplete += 1
+                                cuda_artifacts.append(
+                                    CudaArtifactEvidence(
+                                        path=f"/{name}",
+                                        size_bytes=member.size,
+                                        targets=(),
+                                        method="cuobjdump",
+                                        complete=False,
+                                        role=artifact_role,
+                                        diagnostic=(
+                                            "copying the artifact for analysis failed: "
+                                            f"{error.strerror or error}"
+                                        ),
+                                        incomplete_reason="io-error",
+                                    )
+                                )
+                        continue
                     finally:
                         if temporary_path:
                             temporary_path.unlink(missing_ok=True)
