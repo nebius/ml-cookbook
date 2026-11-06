@@ -305,6 +305,7 @@ def _rootfs_statistics_lines(
                 f"{reasons.get('timeout', 0)} timeout, "
                 f"{reasons.get('analyzer-error', 0)} analyzer error, "
                 f"{reasons.get('io-error', 0)} I/O error, "
+                f"{reasons.get('unsupported-legacy-target', 0)} unreadable architecture, "
                 f"{reasons.get('other', 0)} other."
             )
         lines.extend(

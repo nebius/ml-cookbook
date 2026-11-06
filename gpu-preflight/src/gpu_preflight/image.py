@@ -12,7 +12,7 @@ import sys
 import tarfile
 import tempfile
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path, PurePosixPath
@@ -66,6 +66,9 @@ VALID_SCAN_MODES = {"none", "manifest", "pull", "filesystem"}
 # docker create refuses an image that declares neither CMD nor ENTRYPOINT, which is
 # ordinary for cluster images that take their command from the job spec. The export
 # container is never started, so any path satisfies the check.
+# The incompleteness that still carries evidence: cuobjdump named the architecture it
+# refused, so the artifact's target list is a floor rather than a blank.
+LEGACY_TARGET_REASON = "unsupported-legacy-target"
 NEVER_EXECUTED_ENTRYPOINT = "/__gpu_preflight_never_executed__"
 # An x86-64 distribution installs its 32-bit set in directories the loader consults only
 # for a 32-bit process. They are not dependencies of a 64-bit workload, and an i386 copy
@@ -1924,7 +1927,13 @@ def _cuda_compatibility_exceptions(
 
 def _incomplete_reason_counts(rootfs: RootfsScan) -> dict[str, int]:
     """Aggregate incomplete cuobjdump inspections into customer-facing reason groups."""
-    counts = {"timeout": 0, "analyzer-error": 0, "io-error": 0, "other": 0}
+    counts = {
+        "timeout": 0,
+        "analyzer-error": 0,
+        "io-error": 0,
+        "unsupported-legacy-target": 0,
+        "other": 0,
+    }
     for artifact in rootfs.cuda_artifacts:
         if artifact.method != "cuobjdump" or artifact.complete:
             continue
@@ -2259,6 +2268,9 @@ def _cuda_artifact_findings(
         for artifact in rootfs.cuda_artifacts
         if artifact.method == "cuobjdump"
         and not artifact.complete
+        # One whose listing stopped at a refused architecture is not uninspected: the
+        # analyzer read it and named what it holds.
+        and not (artifact.incomplete_reason == LEGACY_TARGET_REASON and artifact.targets)
         and is_core_framework_library(artifact.path)
     ]
     if uninspected_core:
@@ -2544,6 +2556,13 @@ def _cuda_artifact_findings(
                 "Review the named analyzer diagnostic; changing scan limits will not fix a "
                 "format or parser error."
             )
+        if reason_counts["unsupported-legacy-target"]:
+            next_steps.append(
+                "The architectures those artifacts were built for are named in their "
+                "targets and are already judged against the hardware; rebuild for a "
+                "supported architecture, or re-run with --cuobjdump-fallback pointing at "
+                "a toolkit old enough to list the rest of their contents."
+            )
         evidence_details = [
             FindingDetail(label="Unverified target-string records", value=marker_only),
             FindingDetail(label="Runtime", value=marker_roles["runtime"]),
@@ -2561,6 +2580,10 @@ def _cuda_artifact_findings(
             FindingDetail(label="Timeouts", value=reason_counts["timeout"]),
             FindingDetail(label="Analyzer errors", value=reason_counts["analyzer-error"]),
             FindingDetail(label="I/O errors", value=reason_counts["io-error"]),
+            FindingDetail(
+                label="Artifacts whose architecture the analyzer no longer reads",
+                value=reason_counts["unsupported-legacy-target"],
+            ),
             FindingDetail(label="Other incomplete inspections", value=reason_counts["other"]),
         ]
         evidence_details.extend(
@@ -2605,11 +2628,23 @@ def _cuda_artifact_findings(
         )
         if rootfs.skipped_no_cuobjdump:
             rerun_flags.append("--cuobjdump /path/to/cuobjdump")
+        if any(
+            artifact.incomplete_reason == LEGACY_TARGET_REASON for artifact in rootfs.cuda_artifacts
+        ):
+            # The gap a flag can close: these artifacts hold device code for an
+            # architecture this analyzer dropped, and an older toolkit lists them in full.
+            rerun_flags.append("--cuobjdump-fallback /path/to/older/cuobjdump")
         if coverage_percent is not None and coverage_percent >= 90:
             rerun_guidance = (
                 f"Artifact inspection already covers {coverage_percent:.1f}% of loadable runtime "
                 "inspection units. Review the remaining paths in the report appendix before "
-                f"relying on a positive assessment.{space_note}"
+                f"relying on a positive assessment."
+                + (
+                    f" For a deeper rerun, start with {' '.join(rerun_flags)}."
+                    if rerun_flags
+                    else ""
+                )
+                + space_note
             )
         elif rerun_flags:
             rerun_guidance = f"For a deeper rerun, start with {' '.join(rerun_flags)}.{space_note}"
@@ -2659,6 +2694,31 @@ def _cuda_artifact_findings(
             )
         )
     return tuple(findings)
+
+
+def verified_targets(
+    artifacts: Sequence[CudaArtifactEvidence], *, analyzer_matches_image: bool
+) -> tuple[str, ...]:
+    """Return the CUDA targets an analyzer actually listed for this image.
+
+    A listing cut short at an architecture the analyzer refuses still listed what it
+    reached, and those targets are as verified as any other -- cuobjdump named them.
+    Dropping them left bvlc/caffe with no image targets at all, so an image built
+    entirely for sm_20 came back as needing more evidence rather than as incompatible.
+    """
+    if not analyzer_matches_image:
+        return ()
+    return tuple(
+        sorted(
+            {
+                target
+                for artifact in artifacts
+                if artifact.method in VERIFIED_ANALYSIS_METHODS
+                and (artifact.complete or artifact.incomplete_reason == LEGACY_TARGET_REASON)
+                for target in artifact.targets
+            }
+        )
+    )
 
 
 def _select_manifest(
@@ -2827,19 +2887,9 @@ def inspect_with_image(
             and content.rootfs
             and _cuobjdump_is_older(content.rootfs.cuobjdump_version, content.cuda_versions)
         )
-        verified_content_targets = tuple(
-            sorted(
-                {
-                    target
-                    for artifact in (
-                        content.rootfs.cuda_artifacts if content and content.rootfs else ()
-                    )
-                    if analyzer_matches_image
-                    and artifact.method in VERIFIED_ANALYSIS_METHODS
-                    and artifact.complete
-                    for target in artifact.targets
-                }
-            )
+        verified_content_targets = verified_targets(
+            content.rootfs.cuda_artifacts if content and content.rootfs else (),
+            analyzer_matches_image=analyzer_matches_image,
         )
         if selected and scan_mode in {"manifest", "pull"}:
             image_findings.append(

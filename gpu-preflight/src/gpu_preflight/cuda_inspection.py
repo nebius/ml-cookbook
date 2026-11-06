@@ -200,6 +200,25 @@ class CuobjdumpTool:
                             f"fallback cuobjdump {self.fallback.version}"
                         ),
                     )
+            if legacy := removed_architectures(output):
+                # Only once the fallback has had its turn, since an older toolkit lists
+                # these files completely. Failing that, cuobjdump stops at the first
+                # architecture it refuses, so the artifact is known to hold sm_21 code --
+                # not to hold nothing else.
+                return CudaArtifactEvidence(
+                    path=image_path,
+                    size_bytes=size_bytes,
+                    targets=tuple(sorted(set(targets) | set(legacy))),
+                    method="cuobjdump",
+                    complete=False,
+                    role=classify_artifact_role(image_path),
+                    diagnostic=(
+                        f"artifact holds device code for {', '.join(legacy)}, which "
+                        f"cuobjdump {self.version} no longer reads; any further targets "
+                        "in it were not listed"
+                    ),
+                    incomplete_reason="unsupported-legacy-target",
+                )
             return CudaArtifactEvidence(
                 path=image_path,
                 size_bytes=size_bytes,
@@ -291,6 +310,21 @@ def read_ptx_declaration(path: Path) -> tuple[tuple[str, ...], str | None]:
 # device code, which is a result; counting the second as an incomplete inspection would
 # understate coverage for every image that ships a static libc.
 NO_DEVICE_CODE_RE = re.compile(r"does not contain device code|invalid fatbin header", re.IGNORECASE)
+# cuobjdump refuses a fatbin holding device code for an architecture its toolkit has
+# dropped, and names the architecture while refusing: "Support for 'sm_21' has been
+# removed. Please use CUDA toolkit 9.1 or earlier." That sentence is evidence that the
+# artifact carries sm_21 code, so it is read rather than discarded as a parser error.
+REMOVED_ARCHITECTURE_RE = re.compile(r"Support for '(sm_\d+)' has been removed", re.IGNORECASE)
+
+
+def removed_architectures(output: str) -> tuple[str, ...]:
+    """Return the architectures cuobjdump named while refusing to read them."""
+    seen: list[str] = []
+    for name in REMOVED_ARCHITECTURE_RE.findall(output):
+        lowered = name.lower()
+        if lowered not in seen:
+            seen.append(lowered)
+    return tuple(seen)
 
 
 def analyzer_error_detail(output: str, returncode: int) -> str:

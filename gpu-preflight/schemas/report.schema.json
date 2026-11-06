@@ -262,11 +262,12 @@
         "cuobjdump_incomplete_reasons": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["timeout", "analyzer-error", "io-error", "other"],
+          "required": ["timeout", "analyzer-error", "io-error", "unsupported-legacy-target", "other"],
           "properties": {
             "timeout": {"type": "integer", "minimum": 0},
             "analyzer-error": {"type": "integer", "minimum": 0},
             "io-error": {"type": "integer", "minimum": 0},
+            "unsupported-legacy-target": {"type": "integer", "minimum": 0},
             "other": {"type": "integer", "minimum": 0}
           }
         },
@@ -297,7 +298,7 @@
         "role": {"enum": ["runtime", "kernel-catalog", "host-runtime", "test", "tooling"]},
         "diagnostic": {"type": ["string", "null"]},
         "incomplete_reason": {
-          "enum": ["timeout", "analyzer-error", "io-error", "other", null]
+          "enum": ["timeout", "analyzer-error", "io-error", "unsupported-legacy-target", "other", null]
         }
       }
     },

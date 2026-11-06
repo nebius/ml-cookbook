@@ -24,6 +24,7 @@ Report terms:
 - **unverified target strings**: a raw-byte scan found target-like strings, but `cuobjdump` did not verify them as device-code records. Treat these as discovery hints.
 - **role-excluded**: path heuristics classified the file as a test, benchmark, tool, sample, or host-side CUDA runtime component rather than a loadable workload artifact.
 - **incomplete inspection**: `cuobjdump` timed out, returned an analyzer error, encountered an I/O error, or did not otherwise complete. The report aggregates those reasons and retains example paths and diagnostics.
+- **unreadable architecture** (`unsupported-legacy-target`): `cuobjdump` refused the artifact because it holds device code for an architecture its toolkit has dropped, and named that architecture while refusing — "Support for 'sm_21' has been removed." Those targets count as listed, because the analyzer listed them. The inspection stays incomplete, because `cuobjdump` stops at the first architecture it refuses and anything after it went unread. An older toolkit, passed as `--cuobjdump-fallback`, lists the artifact in full.
 - **CUDA Toolkit libraries** (cuBLAS, cuFFT, cuRAND, cuSOLVER, cuSPARSE, NPP, nvJPEG): judged by the CUDA release that shipped them rather than by the `cuobjdump` listing, because NVIDIA packages several of them in ways `cuobjdump` does not fully list (cuFFT keeps most kernels in a vendor-packaged section; cuFFTW and the NPP core library carry one placeholder cubin). A library from a release at or above the profile's minimum CUDA version is informational (GPF-CUDA-020); an older release remains a likely runtime gap.
 
   The release has to come from something that names *that library*, not the image. Two things do: a versioned install directory (`/usr/local/cuda-12.8/...`), and, for a pip-installed copy, the wheel whose `RECORD` lists the file. A wheel speaks for the toolkit release only if NVIDIA versions it with the toolkit — `nvidia-cuda-runtime` 13.0.48 is CUDA 13.0, while `nvidia-cufft` 12.0.0.15 and `nvidia-curand` 10.4.0.35 are component versions that name no release at all. Component wheels inherit the release an authoritative wheel pins in the same `site-packages`, because pip resolves a CUDA wheel set together. A library that neither names covers — `jrottenberg/ffmpeg`'s four NPP copies in `/usr/local/lib` — is judged on its own code, as it should be: a CUDA 12.6 installation elsewhere in that image had nothing to do with them.
@@ -52,7 +53,10 @@ host, or point `TMPDIR` at a larger filesystem, and repeat the scan.
 
 Core framework libraries (PyTorch CUDA, NCCL, FlashAttention, Transformer Engine) are
 named explicitly in the report when they cannot be inspected (GPF-CUDA-019), and the
-result cannot be ready for hardware testing while one is unread.
+result cannot be ready for hardware testing while one is unread. A library whose
+listing stopped at an architecture the analyzer refuses is not unread: cuobjdump named
+what it holds, those targets count, and the inspection is reported as incomplete under
+`unsupported-legacy-target` rather than as a failure.
 
 The two timeouts are a different kind of limit and are set by default, because they
 recover a stuck run rather than trading away coverage. Neither has been observed to

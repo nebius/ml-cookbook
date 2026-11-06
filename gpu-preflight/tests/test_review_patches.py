@@ -26,6 +26,7 @@ from gpu_preflight.cuda_inspection import (
 )
 from gpu_preflight.facts import ImageFacts, elf_architecture, is_gpu_firmware
 from gpu_preflight.image import (
+    CudaArtifactEvidence,
     DockerImageClient,
     ImageInspectionError,
     ImageManifestSet,
@@ -33,9 +34,11 @@ from gpu_preflight.image import (
     PulledImageFacts,
     _select_manifest,
     scan_rootfs_tar,
+    verified_targets,
 )
 from gpu_preflight.inspection import _target_findings
 from gpu_preflight.profiles import load_profiles
+from tests.test_image import artifact_findings, rootfs_with
 
 
 def unresolved_facts(final_platform: str | None = None) -> ImageFacts:
@@ -658,3 +661,220 @@ class WindowsManifestTests(unittest.TestCase):
         }
         self.assertIn("GPF-CPU-001", findings)
         self.assertNotIn("GPF-CPU-002", findings)
+
+
+class RemovedArchitectureTests(unittest.TestCase):
+    """bvlc/caffe:gpu, and 1,566 artifacts across the corpus.
+
+    cuobjdump refuses a fatbin built for an architecture its toolkit has dropped, and
+    names the architecture while refusing. Treating that as a parser error threw away
+    the most decisive fact about a Fermi-era build and charged it to coverage: caffe
+    came back INSUFFICIENT_EVIDENCE at 95.7% with a 194-line appendix of analyzer
+    failures, when every one of them said sm_20 or sm_21.
+    """
+
+    @staticmethod
+    def _refusing_cuobjdump(directory: str, message: str) -> object:
+        executable = Path(directory) / "cuobjdump"
+        executable.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "--version" ]; then '
+            "echo 'Cuda compilation tools, release 13.4, V13.4.92'; exit 0; fi\n"
+            f'echo "{message}" >&2; exit 1\n',
+            encoding="utf-8",
+        )
+        executable.chmod(0o755)
+        return resolve_cuobjdump(str(executable), timeout_seconds=10, fallback_mode="off")
+
+    def _inspect(self, message: str):
+        with tempfile.TemporaryDirectory() as directory:
+            tool = self._refusing_cuobjdump(directory, message)
+            artifact = Path(directory) / "libcaffe.so.1.0.0"
+            artifact.write_bytes(b"\x7fELF" + b"\0" * 64)
+            return tool.inspect(artifact, "/opt/caffe/build/lib/libcaffe.so.1.0.0", 68)
+
+    def test_the_refused_architecture_is_recorded_as_a_target(self) -> None:
+        evidence = self._inspect(
+            "cuobjdump fatal : Support for 'sm_21' has been removed. "
+            "Please use CUDA toolkit 9.1 or earlier."
+        )
+        self.assertEqual(evidence.targets, ("sm_21",))
+
+    def test_the_listing_is_still_incomplete_because_cuobjdump_stopped(self) -> None:
+        evidence = self._inspect(
+            "cuobjdump fatal : Support for 'sm_35' has been removed. "
+            "Please use CUDA toolkit 11.8 or earlier."
+        )
+        self.assertFalse(evidence.complete)
+        self.assertEqual(evidence.incomplete_reason, "unsupported-legacy-target")
+
+    def test_every_named_architecture_is_kept(self) -> None:
+        evidence = self._inspect(
+            "cuobjdump fatal : Support for 'sm_20' has been removed.\n"
+            "cuobjdump fatal : Support for 'sm_21' has been removed."
+        )
+        self.assertEqual(evidence.targets, ("sm_20", "sm_21"))
+
+    def test_an_older_toolkit_gets_its_turn_before_the_refusal_is_read(self) -> None:
+        """The fallback analyzer exists for exactly these files.
+
+        An older cuobjdump lists an sm_21 fatbin completely, which beats reading the
+        architecture out of a newer one's refusal. Returning the refusal first would
+        disable the one mechanism that can finish the job.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            older = Path(directory) / "cuobjdump-9"
+            older.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = "--version" ]; then '
+                "echo 'Cuda compilation tools, release 9.1, V9.1.85'; exit 0; fi\n"
+                "echo 'ELF file    1: payload.1.sm_21.cubin'\n",
+                encoding="utf-8",
+            )
+            older.chmod(0o755)
+            newer = Path(directory) / "cuobjdump"
+            newer.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = "--version" ]; then '
+                "echo 'Cuda compilation tools, release 13.4, V13.4.92'; exit 0; fi\n"
+                "echo \"cuobjdump fatal : Support for 'sm_21' has been removed.\" >&2\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            newer.chmod(0o755)
+            tool = resolve_cuobjdump(str(newer), timeout_seconds=10, fallback_mode=str(older))
+            artifact = Path(directory) / "libcaffe.so"
+            artifact.write_bytes(b"\x7fELF" + b"\0" * 64)
+            evidence = tool.inspect(artifact, "/opt/caffe/lib/libcaffe.so", 68)
+        self.assertTrue(evidence.complete)
+        self.assertEqual(evidence.targets, ("sm_21",))
+
+    def test_an_ordinary_parser_error_is_still_an_analyzer_error(self) -> None:
+        evidence = self._inspect("cuobjdump fatal : Cannot open input file")
+        self.assertEqual(evidence.targets, ())
+        self.assertEqual(evidence.incomplete_reason, "analyzer-error")
+
+
+class LegacyListingIsEvidenceTests(unittest.TestCase):
+    """bvlc/caffe:gpu came back INSUFFICIENT_EVIDENCE over 188 files it had read.
+
+    Every CUDA object in the image lists sm_20 or sm_21, and cuobjdump named the
+    architecture as it refused to read past it. Treating that listing as absent left
+    the image with no targets at all and invalidated the whole assessment, so the
+    report asked for more evidence about a Fermi-era build it had already identified.
+    """
+
+    @staticmethod
+    def _artifact(**overrides) -> CudaArtifactEvidence:
+        fields = {
+            "path": "/opt/caffe/build/lib/libcaffe.so.1.0.0",
+            "size_bytes": 12307472,
+            "targets": ("sm_20",),
+            "method": "cuobjdump",
+            "complete": False,
+            "role": "runtime",
+            "incomplete_reason": "unsupported-legacy-target",
+        }
+        fields.update(overrides)
+        return CudaArtifactEvidence(**fields)
+
+    def test_a_truncated_listing_still_reports_what_it_listed(self) -> None:
+        self.assertEqual(
+            verified_targets((self._artifact(),), analyzer_matches_image=True), ("sm_20",)
+        )
+
+    def test_an_inspection_that_listed_nothing_contributes_nothing(self) -> None:
+        self.assertEqual(
+            verified_targets(
+                (self._artifact(targets=(), incomplete_reason="analyzer-error"),),
+                analyzer_matches_image=True,
+            ),
+            (),
+        )
+
+    def test_an_ordinary_analyzer_failure_is_still_not_evidence(self) -> None:
+        self.assertEqual(
+            verified_targets(
+                (self._artifact(targets=("sm_80",), incomplete_reason="timeout"),),
+                analyzer_matches_image=True,
+            ),
+            (),
+        )
+
+    def test_an_analyzer_older_than_the_image_is_trusted_for_nothing(self) -> None:
+        self.assertEqual(verified_targets((self._artifact(),), analyzer_matches_image=False), ())
+
+    def test_marker_evidence_is_still_not_a_verified_listing(self) -> None:
+        self.assertEqual(
+            verified_targets(
+                (self._artifact(method="marker-scan", complete=True, incomplete_reason=None),),
+                analyzer_matches_image=True,
+            ),
+            (),
+        )
+
+
+class CoverageGuidanceTests(unittest.TestCase):
+    """The coverage note should name the flag that would close the gap it reports."""
+
+    def _coverage(self, artifacts: tuple[CudaArtifactEvidence, ...]):
+        rootfs = replace(
+            rootfs_with(artifacts),
+            cuobjdump_files_analyzed=len(artifacts),
+            cuobjdump_incomplete=sum(1 for item in artifacts if not item.complete),
+        )
+        return {
+            finding.id: finding
+            for finding in artifact_findings(
+                rootfs, load_profiles()["h100"], ("12.3",), cuobjdump_timeout_seconds=30
+            )
+        }["GPF-CUDA-014"]
+
+    def test_a_legacy_gap_points_at_the_toolkit_that_would_close_it(self) -> None:
+        finding = self._coverage(
+            (
+                CudaArtifactEvidence(
+                    path="/opt/caffe/lib/libcaffe.so",
+                    size_bytes=68,
+                    targets=("sm_21",),
+                    method="cuobjdump",
+                    complete=False,
+                    role="runtime",
+                    incomplete_reason="unsupported-legacy-target",
+                ),
+            )
+        )
+        self.assertIn("--cuobjdump-fallback", finding.remediation)
+
+    def test_a_timeout_is_not_a_reason_to_change_analyzer(self) -> None:
+        finding = self._coverage(
+            (
+                CudaArtifactEvidence(
+                    path="/opt/app/lib/libbig.so",
+                    size_bytes=68,
+                    targets=(),
+                    method="cuobjdump",
+                    complete=False,
+                    role="runtime",
+                    incomplete_reason="timeout",
+                ),
+            )
+        )
+        self.assertNotIn("--cuobjdump-fallback", finding.remediation)
+
+    def test_the_title_no_longer_claims_a_bound(self) -> None:
+        finding = self._coverage(
+            (
+                CudaArtifactEvidence(
+                    path="/opt/caffe/lib/libcaffe.so",
+                    size_bytes=68,
+                    targets=("sm_21",),
+                    method="cuobjdump",
+                    complete=False,
+                    role="runtime",
+                    incomplete_reason="unsupported-legacy-target",
+                ),
+            )
+        )
+        self.assertNotIn("bounded", finding.title)
+        self.assertNotIn("bounded", finding.evidence)

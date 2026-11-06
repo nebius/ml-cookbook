@@ -168,6 +168,7 @@ class ReportSchemaTests(unittest.TestCase):
                             "timeout": 0,
                             "analyzer-error": 0,
                             "io-error": 0,
+                            "unsupported-legacy-target": 0,
                             "other": 0,
                         },
                         "marker_only_files": 0,
