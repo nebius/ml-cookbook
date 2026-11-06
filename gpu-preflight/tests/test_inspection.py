@@ -66,7 +66,7 @@ class InspectionTests(unittest.TestCase):
                 FindingDetail("Inspected with cuobjdump", 76),
                 FindingDetail("Incomplete cuobjdump inspections", 0),
                 FindingDetail("Not inspected: scan budget", 324),
-                FindingDetail("Not inspected: artifact-size limit", 1),
+                FindingDetail("Not inspected: temporary filesystem space", 1),
                 FindingDetail("Not inspected: file-count limit", 0),
                 FindingDetail("Not inspected: analyzer unavailable", 0),
             ),

@@ -45,7 +45,6 @@ class _Client:
         reference: str,
         selected: PlatformManifest,
         config: PulledImageFacts,
-        max_scan_bytes: int,
     ) -> PulledImageFacts:
         return config
 
@@ -60,8 +59,6 @@ def _rootfs(**overrides: object) -> RootfsScan:
         "files_seen": 0,
         "bytes_scanned": 0,
         "metadata_bytes_scanned": 0,
-        "truncated": False,
-        "metadata_truncated": False,
         "cuda_candidate_files": 0,
         "cuda_artifacts": (),
         "cuobjdump_available": True,
@@ -73,9 +70,7 @@ def _rootfs(**overrides: object) -> RootfsScan:
         "marker_only_files": 0,
         "skipped_no_cuobjdump": 0,
         "skipped_non_runtime": 0,
-        "skipped_scan_budget": 0,
-        "skipped_artifact_limit": 0,
-        "skipped_file_limit": 0,
+        "skipped_temporary_space": 0,
         "skipped_cuda_candidates": (),
     }
     base.update(overrides)
@@ -183,9 +178,7 @@ SKIPPED = {
     "none": (),
     "every-reason": tuple(
         SkippedCudaCandidate(path=f"/opt/s{index}.so", size_bytes=index * 1024, reason=reason)
-        for index, reason in enumerate(
-            ("scan-budget", "artifact-limit", "file-limit", "no-cuobjdump")
-        )
+        for index, reason in enumerate(("temporary-space", "no-cuobjdump"))
     ),
 }
 

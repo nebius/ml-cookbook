@@ -17,7 +17,7 @@
     "targets"
   ],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "tool": {
       "type": "object",
       "additionalProperties": false,
@@ -48,19 +48,6 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "max_candidate_bytes": {
-              "description": "Candidate-content read budget for the scan, or null when it ran unbudgeted.",
-              "type": ["integer", "null"], "minimum": 1
-            },
-            "max_artifact_bytes": {
-              "description": "Ceiling on one file passed to the analyzer, or null when only free temporary space bounded it.",
-              "type": ["integer", "null"], "minimum": 1
-            },
-            "max_cuobjdump_files": {
-              "type": ["integer", "null"],
-              "minimum": 1,
-              "description": "Cap on analyzer invocations, or null when the scan ran uncapped."
-            },
             "cuobjdump_mode": {"type": "string"},
             "cuobjdump_fallback_mode": {"type": "string"},
             "cuobjdump_timeout_seconds": {"type": "integer", "minimum": 1},
@@ -246,8 +233,6 @@
         "files_seen",
         "candidate_bytes_scanned",
         "metadata_bytes_scanned",
-        "candidate_scan_truncated",
-        "metadata_scan_truncated",
         "cuda_candidate_files",
         "cuobjdump_version",
         "cuobjdump_files_analyzed",
@@ -258,16 +243,12 @@
         "marker_only_files",
         "skipped_no_cuobjdump",
         "skipped_non_runtime",
-        "skipped_scan_budget",
-        "skipped_artifact_limit",
-        "skipped_file_limit"
+        "skipped_temporary_space"
       ],
       "properties": {
         "files_seen": {"type": "integer", "minimum": 0},
         "candidate_bytes_scanned": {"type": "integer", "minimum": 0},
         "metadata_bytes_scanned": {"type": "integer", "minimum": 0},
-        "candidate_scan_truncated": {"type": "boolean"},
-        "metadata_scan_truncated": {"type": "boolean"},
         "cuda_candidate_files": {"type": "integer", "minimum": 0},
         "cuobjdump_version": {"type": ["string", "null"]},
         "cuobjdump_files_analyzed": {"type": "integer", "minimum": 0},
@@ -295,9 +276,7 @@
         "dispatch_module_target_variants": {"type": "integer", "minimum": 0},
         "skipped_no_cuobjdump": {"type": "integer", "minimum": 0},
         "skipped_non_runtime": {"type": "integer", "minimum": 0},
-        "skipped_scan_budget": {"type": "integer", "minimum": 0},
-        "skipped_artifact_limit": {"type": "integer", "minimum": 0},
-        "skipped_file_limit": {"type": "integer", "minimum": 0}
+        "skipped_temporary_space": {"type": "integer", "minimum": 0}
       }
     },
     "cudaArtifact": {
@@ -441,7 +420,7 @@
         "path": {"type": "string"},
         "size_bytes": {"type": "integer", "minimum": 0},
         "reason": {
-          "enum": ["no-cuobjdump", "scan-budget", "artifact-limit", "file-limit"]
+          "enum": ["no-cuobjdump", "temporary-space"]
         }
       }
     },

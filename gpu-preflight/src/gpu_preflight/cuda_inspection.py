@@ -46,8 +46,7 @@ REQUIRED_RUNTIME_LIBRARY_RE = re.compile(
     re.IGNORECASE,
 )
 # Framework libraries whose kernels a training or inference job loads on every run. They are
-# inspected regardless of the candidate-byte budget and file-count cap (the per-artifact size
-# limit and timeout still apply), and are named in the report when they cannot be inspected.
+# named in the report when they cannot be inspected.
 CORE_FRAMEWORK_LIBRARY_RE = re.compile(
     r"/(?:libtorch_cuda[^/]*\.so|libc10_cuda\.so|libnccl\.so(?:\.\d+)*|flash_attn[^/]*\.so"
     r"|libtransformer_engine[^/]*\.so|transformer_engine[^/]*\.so)$",

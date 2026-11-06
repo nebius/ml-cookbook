@@ -1249,7 +1249,7 @@ def inspect(facts: ImageFacts, profiles: tuple[HardwareProfile, ...]) -> Inspect
             )
         )
     return InspectionReport(
-        schema_version=1,
+        schema_version=2,
         tool=ToolMetadata(name="nebius-gpu-preflight", version=__version__),
         generated_at=datetime.now(UTC).isoformat(),
         duration_seconds=0.0,

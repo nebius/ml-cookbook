@@ -50,9 +50,7 @@ def _tone_class(tone: str | None) -> str:
 
 SKIP_REASON_LABEL = {
     "no-cuobjdump": "CUDA analyzer unavailable",
-    "scan-budget": "candidate-content budget",
-    "artifact-limit": "artifact-size limit",
-    "file-limit": "file-count limit",
+    "temporary-space": "temporary filesystem space",
 }
 
 NCCL_SOURCE_LABEL = {
@@ -276,9 +274,7 @@ def _rootfs_statistics_lines(
                 f"    Unverified target-string records: {value.get('marker_only_files', 0)}",
                 "    Not inspected with cuobjdump:",
                 f"      - Role-excluded: {value.get('skipped_non_runtime', 0)}",
-                f"      - Candidate-content budget: {value.get('skipped_scan_budget', 0)}",
-                f"      - Artifact-size limit: {value.get('skipped_artifact_limit', 0)}",
-                f"      - File-count limit: {value.get('skipped_file_limit', 0)}",
+                f"      - Temporary filesystem space: {value.get('skipped_temporary_space', 0)}",
                 f"      - Analyzer unavailable: {value.get('skipped_no_cuobjdump', 0)}",
                 "    Terms:",
                 (
@@ -311,22 +307,12 @@ def _rootfs_statistics_lines(
                 f"{reasons.get('io-error', 0)} I/O error, "
                 f"{reasons.get('other', 0)} other."
             )
-        max_candidate_bytes = settings.get("max_candidate_bytes")
-        budget = (
-            f"{int(max_candidate_bytes) / (1024**2):.0f} MiB"
-            if isinstance(max_candidate_bytes, int)
-            else "the configured --max-scan-mb value"
-        )
         lines.extend(
             (
                 "    Notes:",
                 (
                     "      - Role-excluded: path heuristics classified the files as tests, "
                     "tooling, or host-side runtime."
-                ),
-                (
-                    f"      - Candidate-content budget: cumulative {budget} read cap; this is "
-                    "not the image size or host-memory limit."
                 ),
                 (
                     "      - Unverified target-string records: subset of observed candidates, "
@@ -809,15 +795,9 @@ def render_html(report: InspectionReport) -> str:
                         value.get("skipped_non_runtime", 0),
                         "tests, tooling, or host-side runtime",
                     ),
-                    ("Scan budget", value.get("skipped_scan_budget", 0), "not inspected"),
                     (
-                        "Artifact-size limit",
-                        value.get("skipped_artifact_limit", 0),
-                        "not inspected",
-                    ),
-                    (
-                        "File-count limit",
-                        value.get("skipped_file_limit", 0),
+                        "Temporary filesystem space",
+                        value.get("skipped_temporary_space", 0),
                         "not inspected",
                     ),
                     (

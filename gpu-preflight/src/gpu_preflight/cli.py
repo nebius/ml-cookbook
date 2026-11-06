@@ -120,15 +120,6 @@ def _add_report_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--max-scan-mb",
-        type=int,
-        default=None,
-        help=(
-            "cap the candidate file content read during a filesystem scan; unbudgeted by "
-            "default, and core framework libraries are read either way"
-        ),
-    )
-    parser.add_argument(
         "--cuobjdump",
         default="auto",
         metavar="AUTO|PATH",
@@ -152,27 +143,6 @@ def _add_scan_arguments(parser: argparse.ArgumentParser) -> None:
         default=30,
         metavar="SECONDS",
         help="maximum time per cuobjdump artifact inspection (default: 30)",
-    )
-    parser.add_argument(
-        "--max-cuobjdump-files",
-        type=int,
-        default=None,
-        metavar="COUNT",
-        help=(
-            "cap the number of CUDA candidate files passed to cuobjdump; uncapped by default, "
-            "so coverage is complete unless a limit is asked for. Core framework libraries are "
-            "never counted against it, and the candidate-byte, per-artifact and timeout limits "
-            "apply either way"
-        ),
-    )
-    parser.add_argument(
-        "--max-artifact-mb",
-        type=int,
-        default=None,
-        help=(
-            "cap the size of one file passed to cuobjdump; by default only the free space in "
-            "the temporary filesystem bounds it"
-        ),
     )
     parser.add_argument(
         "--command-timeout",
@@ -275,31 +245,18 @@ def main(argv: list[str] | None = None) -> int:
             if args.target
             else ordered_profiles
         )
-        if args.max_scan_mb is not None and args.max_scan_mb <= 0:
-            raise ValueError("--max-scan-mb must be greater than zero")
-        if args.max_artifact_mb is not None and args.max_artifact_mb <= 0:
-            raise ValueError("--max-artifact-mb must be greater than zero")
-        if args.max_cuobjdump_files is not None and args.max_cuobjdump_files <= 0:
-            raise ValueError("--max-cuobjdump-files must be greater than zero")
         if args.cuobjdump_timeout <= 0:
             raise ValueError("--cuobjdump-timeout must be greater than zero")
         if args.command_timeout <= 0:
             raise ValueError("--command-timeout must be greater than zero")
         scan_options = {
             "scan_mode": "filesystem",
-            "max_scan_bytes": (
-                None if args.max_scan_mb is None else args.max_scan_mb * 1024 * 1024
-            ),
             "cuobjdump_mode": "auto" if args.cuobjdump.lower() == "auto" else args.cuobjdump,
             "cuobjdump_timeout_seconds": args.cuobjdump_timeout,
             "cuobjdump_fallback_mode": (
                 args.cuobjdump_fallback.lower()
                 if args.cuobjdump_fallback.lower() in {"auto", "off"}
                 else args.cuobjdump_fallback
-            ),
-            "max_cuobjdump_files": args.max_cuobjdump_files,
-            "max_artifact_bytes": (
-                None if args.max_artifact_mb is None else args.max_artifact_mb * 1024 * 1024
             ),
             "command_timeout_seconds": args.command_timeout,
         }

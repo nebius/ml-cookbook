@@ -133,7 +133,7 @@ class ReportSchemaTests(unittest.TestCase):
                         "platform": "linux/arm64",
                         "path": "/usr/lib/liboptional_cuda.so",
                         "size_bytes": 2048,
-                        "reason": "scan-budget",
+                        "reason": "temporary-space",
                     }
                 ],
                 "kernel_catalogs": [
@@ -158,8 +158,6 @@ class ReportSchemaTests(unittest.TestCase):
                         "files_seen": 10,
                         "candidate_bytes_scanned": 1024,
                         "metadata_bytes_scanned": 512,
-                        "candidate_scan_truncated": False,
-                        "metadata_scan_truncated": False,
                         "cuda_candidate_files": 1,
                         "cuobjdump_version": "CUDA 13.0 (V13.0.88)",
                         "cuobjdump_files_analyzed": 1,
@@ -175,9 +173,7 @@ class ReportSchemaTests(unittest.TestCase):
                         "marker_only_files": 0,
                         "skipped_no_cuobjdump": 0,
                         "skipped_non_runtime": 0,
-                        "skipped_scan_budget": 0,
-                        "skipped_artifact_limit": 0,
-                        "skipped_file_limit": 0,
+                        "skipped_temporary_space": 0,
                     }
                 },
                 "cuda_target_summaries": {
@@ -219,7 +215,6 @@ class _StaticImageClient:
         reference: str,
         selected: PlatformManifest,
         config: PulledImageFacts,
-        max_scan_bytes: int,
     ) -> PulledImageFacts:
         return config
 
@@ -251,8 +246,6 @@ class FilesystemReportSchemaTests(unittest.TestCase):
             files_seen=4,
             bytes_scanned=4096,
             metadata_bytes_scanned=512,
-            truncated=False,
-            metadata_truncated=False,
             cuda_candidate_files=4,
             cuda_artifacts=(
                 CudaArtifactEvidence(
@@ -301,9 +294,7 @@ class FilesystemReportSchemaTests(unittest.TestCase):
             marker_only_files=0,
             skipped_no_cuobjdump=0,
             skipped_non_runtime=0,
-            skipped_scan_budget=0,
-            skipped_artifact_limit=0,
-            skipped_file_limit=0,
+            skipped_temporary_space=0,
             skipped_cuda_candidates=(),
             # A fully inspected catalog with no compatible member exercises the
             # catalog branch of the exception inventory, which the artifact
@@ -443,8 +434,6 @@ class HostileImageContentRenderingTests(unittest.TestCase):
             files_seen=len(artifacts),
             bytes_scanned=1024,
             metadata_bytes_scanned=0,
-            truncated=False,
-            metadata_truncated=False,
             cuda_candidate_files=len(artifacts),
             cuda_artifacts=artifacts,
             cuobjdump_available=True,
@@ -456,9 +445,7 @@ class HostileImageContentRenderingTests(unittest.TestCase):
             marker_only_files=0,
             skipped_no_cuobjdump=0,
             skipped_non_runtime=0,
-            skipped_scan_budget=0,
-            skipped_artifact_limit=0,
-            skipped_file_limit=0,
+            skipped_temporary_space=0,
             skipped_cuda_candidates=(),
         )
         manifest = PlatformManifest(

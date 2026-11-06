@@ -102,7 +102,7 @@ The denominator is eligible runtime inspection units, not files. Role-excluded t
 - **Kernel catalogs**: shape-specific cubins in an explicit precompiled catalog are selectable alternatives. GPU Preflight inspects one representative per catalog and declared target combination.
 - **Architecture-selected module families**, such as paired generic and `_sm90` modules in FlashInfer's JIT cache, are evaluated as one runtime dispatch group.
 
-An alternate-architecture group drives `REVIEW_REQUIRED` only when the inspected group has neither a target-compatible sibling nor a compatible PTX/JIT fallback. A single unpaired module remains an ordinary runtime artifact, so grouping never hides a standalone compatibility gap. [CUDA artifact inspection and scan limits](docs/cuda-inspection.md) defines each term the report uses for what was found.
+An alternate-architecture group drives `REVIEW_REQUIRED` only when the inspected group has neither a target-compatible sibling nor a compatible PTX/JIT fallback. A single unpaired module remains an ordinary runtime artifact, so grouping never hides a standalone compatibility gap. [CUDA artifact inspection](docs/cuda-inspection.md) defines each term the report uses for what was found.
 
 ### How the report is organized
 
@@ -184,7 +184,7 @@ PYTHONPATH=src python3 -m gpu_preflight inspect IMAGE \
   --fail-on never
 ```
 
-JSON reports implement the strict, versioned `schemas/report.schema.json` contract. They include the tool version, profile schema version and hash, scan limits and capabilities, selected image digest, duration, per-artifact evidence provenance, and required hardware test plan. Finding breakdowns are retained as structured `details` records with `label`, `value`, and optional `context` fields; text renders them as indented rows and HTML renders them as tables.
+JSON reports implement the strict, versioned `schemas/report.schema.json` contract. They include the tool version, profile schema version and hash, scan settings and capabilities, selected image digest, duration, per-artifact evidence provenance, and required hardware test plan. Finding breakdowns are retained as structured `details` records with `label`, `value`, and optional `context` fields; text renders them as indented rows and HTML renders them as tables.
 
 ## Comparing hardware targets
 
@@ -202,5 +202,5 @@ Each profile also names the compute-fabric adapter of its Nebius platform, which
 
 ## Reference
 
-- [CUDA artifact inspection and scan limits](docs/cuda-inspection.md): what counts as a CUDA artifact, the terms the report uses, and the `--max-*` scan limits.
+- [CUDA artifact inspection](docs/cuda-inspection.md): what counts as a CUDA artifact, the terms the report uses, and what can refuse a file.
 - [Compute fabric, UCX, and HPC-X checks](docs/fabric-checks.md): adapter support floors and the `GPF-UCX-*` findings.

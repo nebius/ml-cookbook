@@ -103,7 +103,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "")
         self.assertIn("inspect requires at least one --target", stderr.getvalue())
 
-    def test_inspection_is_uncapped_unless_a_limit_is_asked_for(self) -> None:
+    def test_nothing_caps_a_scan(self) -> None:
         stdout = io.StringIO()
         stderr = io.StringIO()
         with (
@@ -129,13 +129,13 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         call = inspect_image.call_args
-        # Nothing budgets a default scan: a report that claims complete coverage
-        # inspected everything eligible, not everything up to an arbitrary bound.
-        self.assertIsNone(call.kwargs["max_cuobjdump_files"])
-        self.assertIsNone(call.kwargs["max_scan_bytes"])
-        self.assertIsNone(call.kwargs["max_artifact_bytes"])
+        # No bound reaches the scanner at all: a report that claims complete
+        # coverage inspected everything eligible, read in full.
+        self.assertNotIn("max_artifact_bytes", call.kwargs)
+        self.assertNotIn("max_scan_bytes", call.kwargs)
+        self.assertNotIn("max_cuobjdump_files", call.kwargs)
         # The timeouts stay: they recover a stuck run rather than trading away
-        # coverage, so removing them would buy nothing.
+        # coverage, and neither bounds the scan as a whole.
         self.assertEqual(call.kwargs["cuobjdump_timeout_seconds"], 30)
         self.assertEqual(call.kwargs["command_timeout_seconds"], 3600)
         self.assertEqual(call.kwargs["cuobjdump_fallback_mode"], "auto")
@@ -381,57 +381,3 @@ class CliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class CuobjdumpFileCapTests(unittest.TestCase):
-    """The file-count cap is opt-in, and still honoured when asked for."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.profiles = load_profiles()
-
-    def report(self):
-        return inspect_image_reference(
-            "registry.example/pytorch:1",
-            (self.profiles["gb300"],),
-            platform="linux/arm64",
-            scan_mode="none",
-        )
-
-    def _call_kwargs(self, extra: list[str]) -> dict:
-        stdout, stderr = io.StringIO(), io.StringIO()
-        with (
-            patch(
-                "gpu_preflight.cli.inspect_image_reference", return_value=self.report()
-            ) as inspect_image,
-            redirect_stdout(stdout),
-            redirect_stderr(stderr),
-        ):
-            exit_code = main(
-                ["inspect", "registry.example/pytorch:1", "--target", "gb300"]
-                + extra
-                + ["--format", "text", "--fail-on", "never"]
-            )
-        self.assertEqual(exit_code, 0)
-        return inspect_image.call_args.kwargs
-
-    def test_a_requested_cap_is_passed_through(self) -> None:
-        self.assertEqual(
-            self._call_kwargs(["--max-cuobjdump-files", "64"])["max_cuobjdump_files"], 64
-        )
-
-    def test_a_non_positive_cap_is_rejected(self) -> None:
-        stderr = io.StringIO()
-        with redirect_stderr(stderr), redirect_stdout(io.StringIO()):
-            exit_code = main(
-                [
-                    "inspect",
-                    "registry.example/pytorch:1",
-                    "--target",
-                    "gb300",
-                    "--max-cuobjdump-files",
-                    "0",
-                ]
-            )
-        self.assertEqual(exit_code, 1)
-        self.assertIn("--max-cuobjdump-files", stderr.getvalue())

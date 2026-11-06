@@ -63,9 +63,7 @@ class CommandlessImageTests(unittest.TestCase):
             patch.object(client, "_run", return_value="") as run,
             self.assertRaises(ImageInspectionError),
         ):
-            client.scan_filesystem(
-                "example/commandless:latest", manifest, config, max_scan_bytes=None
-            )
+            client.scan_filesystem("example/commandless:latest", manifest, config)
         arguments = run.call_args.args[0]
         self.assertIn("--entrypoint", arguments)
         entrypoint = arguments[arguments.index("--entrypoint") + 1]
@@ -150,7 +148,6 @@ class CondaMetadataTests(unittest.TestCase):
     def _packages(self, data: bytes) -> tuple[str, ...]:
         scan = scan_rootfs_tar(
             tar_of((("root/miniconda/conda-meta/keras-2.2.4-py36_0.json", data),)),
-            None,
             cuobjdump=None,
         )
         return scan.installed_packages

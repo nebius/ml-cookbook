@@ -82,8 +82,6 @@ def rootfs_with(
         files_seen=len(artifacts) + len(skipped),
         bytes_scanned=0,
         metadata_bytes_scanned=0,
-        truncated=False,
-        metadata_truncated=False,
         cuda_candidate_files=len(artifacts) + len(skipped),
         cuda_artifacts=artifacts,
         cuobjdump_available=True,
@@ -95,9 +93,7 @@ def rootfs_with(
         marker_only_files=0,
         skipped_no_cuobjdump=0,
         skipped_non_runtime=0,
-        skipped_scan_budget=0,
-        skipped_artifact_limit=sum(item.reason == "artifact-limit" for item in skipped),
-        skipped_file_limit=0,
+        skipped_temporary_space=sum(item.reason == "temporary-space" for item in skipped),
         skipped_cuda_candidates=skipped,
     )
 
@@ -160,7 +156,6 @@ class FakeImageClient:
         reference: str,
         selected: PlatformManifest,
         config: PulledImageFacts,
-        max_scan_bytes: int,
     ) -> PulledImageFacts:
         return config
 
@@ -478,7 +473,7 @@ class ImageInspectionTests(unittest.TestCase):
                 archive.addfile(info, io.BytesIO(data))
         stream.seek(0)
 
-        scan = scan_rootfs_tar(stream, max_scan_bytes=1024 * 1024)
+        scan = scan_rootfs_tar(stream)
         self.assertIn("torch==2.8.0", scan.installed_packages)
         self.assertIn("libnccl2==2.27.3-1+cuda12.9", scan.installed_packages)
         self.assertIn("pytorch", scan.known_packages)
@@ -490,9 +485,7 @@ class ImageInspectionTests(unittest.TestCase):
         self.assertIn(("2.27.3", "system-package", "libnccl2"), evidence)
         self.assertIn(("2.28.3", "header", "NCCL version macros"), evidence)
         self.assertIn(("2.28.9", "python-package", "nvidia-nccl-cu13"), evidence)
-        self.assertFalse(scan.truncated)
         self.assertGreater(scan.metadata_bytes_scanned, 0)
-        self.assertFalse(scan.metadata_truncated)
 
     def test_metadata_inventory_continues_after_binary_scan_limit(self) -> None:
         stream = io.BytesIO()
@@ -510,12 +503,10 @@ class ImageInspectionTests(unittest.TestCase):
                 archive.addfile(info, io.BytesIO(data))
         stream.seek(0)
 
-        scan = scan_rootfs_tar(stream, max_scan_bytes=8)
-        self.assertTrue(scan.truncated)
+        scan = scan_rootfs_tar(stream)
         self.assertIn("torch==2.8.0", scan.installed_packages)
         self.assertIn("libnccl2==2.27.3", scan.installed_packages)
         self.assertGreater(scan.metadata_bytes_scanned, 0)
-        self.assertFalse(scan.metadata_truncated)
 
     def _inventory_tar(self, names: list[str]) -> io.BytesIO:
         status = b"".join(f"Package: {name}\nVersion: 1.0\n\n".encode() for name in names)
@@ -529,14 +520,14 @@ class ImageInspectionTests(unittest.TestCase):
 
     def test_inventory_keeps_records_past_the_alphabet(self) -> None:
         names = [f"pkg{index:04d}" for index in range(400)] + ["torch", "triton", "zstd"]
-        scan = scan_rootfs_tar(self._inventory_tar(names), max_scan_bytes=1024 * 1024)
+        scan = scan_rootfs_tar(self._inventory_tar(names))
         self.assertEqual(len(scan.installed_packages), len(names))
         self.assertIn("triton==1.0", scan.installed_packages)
         self.assertIn("zstd==1.0", scan.installed_packages)
 
     def test_inventory_has_no_record_cap(self) -> None:
         names = [f"pkg{index:05d}" for index in range(2500)] + ["zstd"]
-        scan = scan_rootfs_tar(self._inventory_tar(names), max_scan_bytes=1024 * 1024)
+        scan = scan_rootfs_tar(self._inventory_tar(names))
         self.assertEqual(len(scan.installed_packages), len(names))
         self.assertIn("zstd==1.0", scan.installed_packages)
 
@@ -569,38 +560,9 @@ class ImageInspectionTests(unittest.TestCase):
         self.assertIn(f"Installed package records: {len(records)}", rendered)
         self.assertNotIn("first 200 retained", rendered)
 
-    def test_report_marks_an_inventory_cut_short_by_the_metadata_limit(self) -> None:
-        arm64 = manifest("linux/arm64", "arm64")
-        rootfs = replace(
-            rootfs_with(),
-            installed_packages=("torch==2.8.0",),
-            metadata_truncated=True,
-        )
-        pulled = PulledImageFacts(
-            platform="linux/arm64",
-            digest=arm64.digest,
-            environment={},
-            known_packages=("pytorch",),
-            installed_packages=rootfs.installed_packages,
-            cuda_targets=("sm_103",),
-            cuda_versions=("12.9.0",),
-            nccl_versions=("2.28.3",),
-            user=None,
-            entrypoint=(),
-            command=(),
-            rootfs=rootfs,
-        )
-        report = inspect_with_image(
-            image_facts(),
-            (self.profiles["gb300"],),
-            scan_mode="filesystem",
-            client=FakeImageClient((arm64,), pulled=pulled),
-        )
-        self.assertIn("metadata scan limit reached", render_text(report))
-
     def test_invalid_tar_is_rejected(self) -> None:
         with self.assertRaisesRegex(ImageInspectionError, "invalid rootfs tar"):
-            scan_rootfs_tar(io.BytesIO(b"not a tar archive"), max_scan_bytes=1024)
+            scan_rootfs_tar(io.BytesIO(b"not a tar archive"))
 
     def test_parent_path_tar_member_is_ignored(self) -> None:
         stream = io.BytesIO()
@@ -610,7 +572,7 @@ class ImageInspectionTests(unittest.TestCase):
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
         stream.seek(0)
-        scan = scan_rootfs_tar(stream, max_scan_bytes=1024)
+        scan = scan_rootfs_tar(stream)
         self.assertEqual(scan.cuda_candidate_files, 0)
         self.assertEqual(scan.cuda_artifacts, ())
 
@@ -638,14 +600,7 @@ class ImageInspectionTests(unittest.TestCase):
                 archive.addfile(info, io.BytesIO(data))
             stream.seek(0)
 
-            with patch("gpu_preflight.image.BINARY_FILE_LIMIT_BYTES", 8):
-                scan = scan_rootfs_tar(
-                    stream,
-                    max_scan_bytes=1024 * 1024,
-                    cuobjdump=tool,
-                    max_cuobjdump_files=4,
-                    max_artifact_bytes=1024 * 1024,
-                )
+            scan = scan_rootfs_tar(stream, cuobjdump=tool)
             self.assertTrue(scan.cuobjdump_available)
             self.assertEqual(scan.cuobjdump_files_analyzed, 1)
             self.assertEqual(scan.cuobjdump_targets_found, 1)
@@ -659,7 +614,7 @@ class ImageInspectionTests(unittest.TestCase):
             self.assertEqual(artifact.method, "cuobjdump")
             self.assertTrue(artifact.complete)
 
-    def test_cuda_candidate_accounting_explains_scan_budget_skips(self) -> None:
+    def test_every_candidate_is_accounted_for_by_one_reason(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / "cuobjdump"
             executable.write_text(
@@ -681,22 +636,18 @@ class ImageInspectionTests(unittest.TestCase):
                     archive.addfile(info, io.BytesIO(data))
             stream.seek(0)
 
-            scan = scan_rootfs_tar(stream, max_scan_bytes=1, cuobjdump=tool)
+            scan = scan_rootfs_tar(stream, cuobjdump=tool)
             self.assertEqual(scan.cuda_candidate_files, 2)
-            self.assertEqual(scan.cuobjdump_files_analyzed, 0)
-            self.assertEqual(scan.skipped_scan_budget, 2)
-            self.assertEqual(
-                [candidate.path for candidate in scan.skipped_cuda_candidates],
-                ["/usr/lib/libcustom_cuda.so", "/usr/lib/libflash_cuda.so"],
-            )
+            # Nothing is held back any more, so every candidate lands in the
+            # analyzed column and the skipped inventory stays empty.
+            self.assertEqual(scan.cuobjdump_files_analyzed, 2)
+            self.assertEqual(scan.skipped_cuda_candidates, ())
             self.assertEqual(
                 scan.cuda_candidate_files,
                 scan.cuobjdump_files_analyzed
                 + scan.skipped_no_cuobjdump
                 + scan.skipped_non_runtime
-                + scan.skipped_scan_budget
-                + scan.skipped_artifact_limit
-                + scan.skipped_file_limit,
+                + scan.skipped_temporary_space,
             )
 
     def test_kernel_catalog_inspects_one_representative_per_declared_target(self) -> None:
@@ -728,10 +679,7 @@ class ImageInspectionTests(unittest.TestCase):
 
             scan = scan_rootfs_tar(
                 stream,
-                max_scan_bytes=1024 * 1024,
                 cuobjdump=tool,
-                max_cuobjdump_files=8,
-                max_artifact_bytes=1024 * 1024,
             )
 
         self.assertEqual(scan.cuda_candidate_files, 3)
@@ -744,7 +692,6 @@ class ImageInspectionTests(unittest.TestCase):
         self.assertEqual(catalog.samples_inspected, 2)
         self.assertEqual(catalog.verified_targets, ("sm_103",))
         self.assertEqual({artifact.role for artifact in scan.cuda_artifacts}, {"kernel-catalog"})
-        self.assertEqual(scan.skipped_file_limit, 0)
 
         arm64 = manifest("linux/arm64", "arm64")
         pulled = PulledImageFacts(
@@ -827,10 +774,7 @@ class ImageInspectionTests(unittest.TestCase):
 
             scan = scan_rootfs_tar(
                 stream,
-                max_scan_bytes=1024 * 1024,
                 cuobjdump=tool,
-                max_cuobjdump_files=8,
-                max_artifact_bytes=1024 * 1024,
             )
 
         self.assertEqual(scan.cuobjdump_files_analyzed, 3)
@@ -916,8 +860,6 @@ class ImageInspectionTests(unittest.TestCase):
             files_seen=2,
             bytes_scanned=2048,
             metadata_bytes_scanned=0,
-            truncated=False,
-            metadata_truncated=False,
             cuda_candidate_files=2,
             cuda_artifacts=artifacts,
             cuobjdump_available=True,
@@ -929,9 +871,7 @@ class ImageInspectionTests(unittest.TestCase):
             marker_only_files=0,
             skipped_no_cuobjdump=0,
             skipped_non_runtime=0,
-            skipped_scan_budget=0,
-            skipped_artifact_limit=0,
-            skipped_file_limit=0,
+            skipped_temporary_space=0,
             kernel_catalogs=(
                 KernelCatalogEvidence(
                     group=str(group),
@@ -960,9 +900,6 @@ class ImageInspectionTests(unittest.TestCase):
             self.profiles["gb300"],
             ("13.4",),
             exceptions=exceptions,
-            max_scan_bytes=1024 * 1024,
-            max_cuobjdump_files=None,
-            max_artifact_bytes=1024 * 1024,
             cuobjdump_timeout_seconds=30,
         )
         finding_ids = {finding.id for finding in findings}
@@ -1015,21 +952,6 @@ class ImageInspectionTests(unittest.TestCase):
             ),
         )
 
-    def test_bounded_role_excluded_marker_read_is_not_budget_exhaustion(self) -> None:
-        stream = io.BytesIO()
-        data = b"sm_90 marker payload"
-        with tarfile.open(fileobj=stream, mode="w") as archive:
-            info = tarfile.TarInfo("opt/tests/sample_cuda.so")
-            info.size = len(data)
-            archive.addfile(info, io.BytesIO(data))
-        stream.seek(0)
-
-        with patch("gpu_preflight.image.BINARY_FILE_LIMIT_BYTES", 4):
-            scan = scan_rootfs_tar(stream, max_scan_bytes=1024)
-
-        self.assertFalse(scan.truncated)
-        self.assertEqual(scan.skipped_scan_budget, 0)
-
     def test_incompatible_runtime_artifact_requires_review_despite_aggregate_native_target(
         self,
     ) -> None:
@@ -1044,8 +966,6 @@ class ImageInspectionTests(unittest.TestCase):
             files_seen=3,
             bytes_scanned=3072,
             metadata_bytes_scanned=0,
-            truncated=False,
-            metadata_truncated=False,
             cuda_candidate_files=3,
             cuda_artifacts=(
                 CudaArtifactEvidence(
@@ -1082,9 +1002,7 @@ class ImageInspectionTests(unittest.TestCase):
             marker_only_files=0,
             skipped_no_cuobjdump=0,
             skipped_non_runtime=0,
-            skipped_scan_budget=0,
-            skipped_artifact_limit=0,
-            skipped_file_limit=0,
+            skipped_temporary_space=0,
         )
         pulled = PulledImageFacts(
             platform="linux/arm64",
@@ -1243,8 +1161,6 @@ class ImageInspectionTests(unittest.TestCase):
             files_seen=incompatible_count,
             bytes_scanned=incompatible_count * 1024,
             metadata_bytes_scanned=0,
-            truncated=False,
-            metadata_truncated=False,
             cuda_candidate_files=incompatible_count,
             cuda_artifacts=artifacts,
             cuobjdump_available=True,
@@ -1256,9 +1172,7 @@ class ImageInspectionTests(unittest.TestCase):
             marker_only_files=0,
             skipped_no_cuobjdump=0,
             skipped_non_runtime=0,
-            skipped_scan_budget=0,
-            skipped_artifact_limit=0,
-            skipped_file_limit=0,
+            skipped_temporary_space=0,
         )
         pulled = PulledImageFacts(
             platform="linux/arm64",
@@ -1304,7 +1218,7 @@ class ImageInspectionTests(unittest.TestCase):
         self.assertIn("Complete CUDA compatibility inventory (12 binary file records)", html_report)
         self.assertNotIn("Additional artifacts or catalogs not shown", text_report)
 
-    def test_bounded_cuda_scan_explains_incomplete_inspection_and_rerun_flags(self) -> None:
+    def test_an_incomplete_inspection_explains_itself_and_names_a_rerun_flag(self) -> None:
         facts = image_facts()
         arm64 = manifest("linux/arm64", "arm64")
         rootfs = RootfsScan(
@@ -1316,8 +1230,6 @@ class ImageInspectionTests(unittest.TestCase):
             files_seen=303215,
             bytes_scanned=2048 * 1024 * 1024,
             metadata_bytes_scanned=0,
-            truncated=True,
-            metadata_truncated=False,
             cuda_candidate_files=588,
             cuda_artifacts=(
                 CudaArtifactEvidence(
@@ -1349,14 +1261,12 @@ class ImageInspectionTests(unittest.TestCase):
             marker_only_files=43,
             skipped_no_cuobjdump=0,
             skipped_non_runtime=185,
-            skipped_scan_budget=325,
-            skipped_artifact_limit=0,
-            skipped_file_limit=0,
+            skipped_temporary_space=0,
             skipped_cuda_candidates=(
                 SkippedCudaCandidate(
                     path="/usr/lib/liboptional_cuda.so",
                     size_bytes=12 * 1024 * 1024,
-                    reason="scan-budget",
+                    reason="temporary-space",
                 ),
             ),
         )
@@ -1379,8 +1289,6 @@ class ImageInspectionTests(unittest.TestCase):
             (self.profiles["gb300"],),
             scan_mode="filesystem",
             client=FakeImageClient((arm64,), pulled=pulled),
-            max_scan_bytes=2048 * 1024 * 1024,
-            max_cuobjdump_files=256,
         )
 
         findings = {finding.id: finding for finding in report.targets[0].findings}
@@ -1398,33 +1306,26 @@ class ImageInspectionTests(unittest.TestCase):
         self.assertEqual(coverage_details["Observed CUDA candidates"], 588)
         self.assertEqual(coverage_details["Inspected with cuobjdump"], 78)
         self.assertEqual(coverage_details["Role-excluded"], 185)
-        self.assertEqual(coverage_details["Not inspected: scan budget"], 325)
         self.assertEqual(coverage_details["Incomplete cuobjdump inspections"], 1)
-        self.assertIn("--max-scan-mb 8192", coverage.remediation)
-        self.assertIn("--max-cuobjdump-files 512", coverage.remediation)
-        self.assertNotIn("--max-artifact-mb", coverage.remediation)
+        self.assertNotIn("TMPDIR", coverage.remediation)
 
         high_coverage_rootfs = replace(
             rootfs,
             cuobjdump_files_analyzed=376,
             cuobjdump_incomplete=0,
-            skipped_scan_budget=24,
-            skipped_artifact_limit=1,
+            skipped_temporary_space=1,
         )
         high_coverage_findings = artifact_findings(
             high_coverage_rootfs,
             self.profiles["gb300"],
             ("13.4",),
-            max_scan_bytes=8192 * 1024 * 1024,
-            max_cuobjdump_files=512,
-            max_artifact_bytes=1536 * 1024 * 1024,
             cuobjdump_timeout_seconds=30,
         )
         high_coverage = next(
             finding for finding in high_coverage_findings if finding.id == "GPF-CUDA-014"
         )
-        self.assertIn("93.8%", high_coverage.remediation)
-        self.assertNotIn("--max-scan-mb", high_coverage.remediation)
+        # 376 of 377: only the one artifact refused for its size is unresolved.
+        self.assertIn("99.7%", high_coverage.remediation)
 
         text_report = render_text(report)
         self.assertIn(
@@ -1443,14 +1344,13 @@ class ImageInspectionTests(unittest.TestCase):
         self.assertIn("incomplete: timeout", html_report)
         self.assertIn("unverified target-like strings", html_report)
         self.assertIn("      - Role-excluded: 185", text_report)
-        self.assertIn("      - Not inspected: scan budget: 325", text_report)
         self.assertIn(
-            "/usr/lib/liboptional_cuda.so (candidate-content budget; 12.0 MiB)",
+            "/usr/lib/liboptional_cuda.so (temporary filesystem space; 12.0 MiB)",
             text_report,
         )
         self.assertIn("CUDA candidate outcomes", html_report)
-        self.assertIn("candidate-content budget", html_report)
-        self.assertIn("Artifact-size limit", html_report)
+        self.assertIn("temporary filesystem space", html_report)
+        self.assertIn("Temporary filesystem space", html_report)
         self.assertIn(
             "    Terms:\n"
             "      - Embedded CUDA targets: cuobjdump enumerated at least one cubin or PTX "
@@ -1464,8 +1364,6 @@ class ImageInspectionTests(unittest.TestCase):
             "    Notes:\n"
             "      - Role-excluded: path heuristics classified the files as tests, tooling, or "
             "host-side runtime.\n"
-            "      - Candidate-content budget: cumulative 2048 MiB read cap; this is not the "
-            "image size or host-memory limit.\n"
             "      - Unverified target-string records: subset of observed candidates, not "
             "additional files.",
             text_report,
@@ -1483,8 +1381,6 @@ class ImageInspectionTests(unittest.TestCase):
             files_seen=1,
             bytes_scanned=1024,
             metadata_bytes_scanned=0,
-            truncated=False,
-            metadata_truncated=False,
             cuda_candidate_files=1,
             cuda_artifacts=(
                 CudaArtifactEvidence(
@@ -1505,9 +1401,7 @@ class ImageInspectionTests(unittest.TestCase):
             marker_only_files=0,
             skipped_no_cuobjdump=0,
             skipped_non_runtime=0,
-            skipped_scan_budget=0,
-            skipped_artifact_limit=0,
-            skipped_file_limit=0,
+            skipped_temporary_space=0,
         )
         pulled = PulledImageFacts(
             platform="linux/arm64",
@@ -1684,9 +1578,6 @@ class ImageInspectionTests(unittest.TestCase):
                 profile,
                 ("13.3", "13.3.0"),
                 exceptions=exceptions,
-                max_scan_bytes=1024,
-                max_cuobjdump_files=None,
-                max_artifact_bytes=1024,
                 cuobjdump_timeout_seconds=30,
             )
         }
@@ -1696,7 +1587,7 @@ class ImageInspectionTests(unittest.TestCase):
         self.assertIn("GPF-CUDA-009", findings)
         self.assertNotIn("GPF-CUDA-010", findings)
 
-    def test_core_framework_library_bypasses_scan_budget(self) -> None:
+    def test_an_unbudgeted_scan_inspects_the_core_library_and_its_neighbour(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / "cuobjdump"
             executable.write_text(
@@ -1721,13 +1612,15 @@ class ImageInspectionTests(unittest.TestCase):
                     info.size = len(data)
                     archive.addfile(info, io.BytesIO(data))
             stream.seek(0)
-            scan = scan_rootfs_tar(stream, max_scan_bytes=1, cuobjdump=tool)
+            scan = scan_rootfs_tar(stream, cuobjdump=tool)
 
-        self.assertEqual(scan.cuobjdump_files_analyzed, 1)
-        self.assertEqual(scan.skipped_scan_budget, 1)
+        self.assertEqual(scan.cuobjdump_files_analyzed, 2)
         self.assertEqual(
             [artifact.path for artifact in scan.cuda_artifacts],
-            ["/usr/local/lib/python3.12/dist-packages/torch/lib/libtorch_cuda.so"],
+            [
+                "/usr/lib/libcustom_cuda.so",
+                "/usr/local/lib/python3.12/dist-packages/torch/lib/libtorch_cuda.so",
+            ],
         )
         self.assertEqual(scan.cuda_artifacts[0].targets, ("compute_100", "sm_100"))
 
@@ -1737,7 +1630,7 @@ class ImageInspectionTests(unittest.TestCase):
                 SkippedCudaCandidate(
                     path="/usr/local/lib/python3.10/dist-packages/torch/lib/libtorch_cuda.so",
                     size_bytes=1400 * 1024 * 1024,
-                    reason="artifact-limit",
+                    reason="temporary-space",
                 ),
             )
         )
@@ -1747,9 +1640,6 @@ class ImageInspectionTests(unittest.TestCase):
                 rootfs,
                 self.profiles["h100"],
                 ("12.3",),
-                max_scan_bytes=1024,
-                max_cuobjdump_files=None,
-                max_artifact_bytes=768 * 1024 * 1024,
                 cuobjdump_timeout_seconds=30,
             )
         }
@@ -1758,7 +1648,7 @@ class ImageInspectionTests(unittest.TestCase):
             core.details[0].label,
             "/usr/local/lib/python3.10/dist-packages/torch/lib/libtorch_cuda.so",
         )
-        self.assertIn("artifact-limit", core.details[0].context or "")
+        self.assertIn("temporary-space", core.details[0].context or "")
 
     def test_core_library_analyzer_error_points_at_the_analyzer_not_a_size_limit(self) -> None:
         rootfs = rootfs_with(
@@ -1781,24 +1671,21 @@ class ImageInspectionTests(unittest.TestCase):
                 rootfs,
                 self.profiles["b300"],
                 ("12.9",),
-                max_scan_bytes=1024,
-                max_cuobjdump_files=None,
-                max_artifact_bytes=2048 * 1024 * 1024,
                 cuobjdump_timeout_seconds=30,
             )
         }
         core = findings["GPF-CUDA-019"]
         self.assertEqual(core.severity, "warning")
         self.assertIn("--cuobjdump-fallback", core.remediation)
-        self.assertNotIn("--max-artifact-mb", core.remediation)
+        self.assertNotIn("TMPDIR", core.remediation)
 
-    def test_core_library_skipped_for_size_still_points_at_the_size_limit(self) -> None:
+    def test_core_library_skipped_for_space_still_points_at_the_space_it_needs(self) -> None:
         rootfs = rootfs_with(
             skipped=(
                 SkippedCudaCandidate(
                     path="/usr/local/lib/python3.10/dist-packages/torch/lib/libtorch_cuda.so",
                     size_bytes=1400 * 1024 * 1024,
-                    reason="artifact-limit",
+                    reason="temporary-space",
                 ),
             )
         )
@@ -1808,13 +1695,10 @@ class ImageInspectionTests(unittest.TestCase):
                 rootfs,
                 self.profiles["h100"],
                 ("12.3",),
-                max_scan_bytes=1024,
-                max_cuobjdump_files=None,
-                max_artifact_bytes=768 * 1024 * 1024,
                 cuobjdump_timeout_seconds=30,
             )
         }
-        self.assertIn("--max-artifact-mb", findings["GPF-CUDA-019"].remediation)
+        self.assertIn("TMPDIR", findings["GPF-CUDA-019"].remediation)
         self.assertNotIn("--cuobjdump-fallback", findings["GPF-CUDA-019"].remediation)
 
     def test_shared_platform_is_reported_for_multi_target_runs(self) -> None:
@@ -1855,9 +1739,6 @@ class ImageInspectionTests(unittest.TestCase):
                 rootfs,
                 self.profiles["b300"],
                 ("12.3",),
-                max_scan_bytes=1024,
-                max_cuobjdump_files=None,
-                max_artifact_bytes=2048 * 1024 * 1024,
                 cuobjdump_timeout_seconds=30,
             )
         }
@@ -1871,9 +1752,6 @@ class ImageInspectionTests(unittest.TestCase):
                 rootfs,
                 self.profiles["h100"],
                 ("12.3",),
-                max_scan_bytes=1024,
-                max_cuobjdump_files=None,
-                max_artifact_bytes=2048 * 1024 * 1024,
                 cuobjdump_timeout_seconds=30,
             )
         }
@@ -1916,10 +1794,7 @@ class MarkerScanSkipTests(unittest.TestCase):
             )
             scan = scan_rootfs_tar(
                 self._rootfs(b"payload mentioning sm_80 in plain text"),
-                max_scan_bytes=1024 * 1024,
                 cuobjdump=tool,
-                max_cuobjdump_files=4,
-                max_artifact_bytes=1024 * 1024,
             )
 
         self.assertEqual(scan.cuobjdump_files_analyzed, 1)
@@ -1946,10 +1821,7 @@ class MarkerScanSkipTests(unittest.TestCase):
             )
             scan = scan_rootfs_tar(
                 self._rootfs(b"opaque payload carrying sm_90a deep inside"),
-                max_scan_bytes=1024 * 1024,
                 cuobjdump=tool,
-                max_cuobjdump_files=4,
-                max_artifact_bytes=1024 * 1024,
             )
 
         self.assertEqual(scan.cuobjdump_incomplete, 1)
@@ -2015,10 +1887,7 @@ class CudaCandidateGateTests(unittest.TestCase):
             )
             return scan_rootfs_tar(
                 self._rootfs(name),
-                max_scan_bytes=1024 * 1024,
                 cuobjdump=tool,
-                max_cuobjdump_files=8,
-                max_artifact_bytes=1024 * 1024,
             )
 
     def test_cuda_only_suffixes_are_inspected_without_a_path_marker(self) -> None:
@@ -2122,48 +1991,10 @@ class UnbudgetedScanTests(unittest.TestCase):
             )
             scan = scan_rootfs_tar(
                 self._rootfs(40, 4096),
-                max_scan_bytes=None,
                 cuobjdump=tool,
-                max_cuobjdump_files=None,
-                max_artifact_bytes=None,
             )
         self.assertEqual(scan.cuobjdump_files_analyzed, 40)
-        self.assertEqual(scan.skipped_scan_budget, 0)
-        self.assertEqual(scan.skipped_file_limit, 0)
-        self.assertEqual(scan.skipped_artifact_limit, 0)
-        self.assertFalse(scan.truncated)
-
-    def test_each_budget_still_binds_when_asked_for(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            tool = resolve_cuobjdump(
-                self._cuobjdump(directory), timeout_seconds=5, fallback_mode="off"
-            )
-            capped = scan_rootfs_tar(
-                self._rootfs(40, 4096),
-                max_scan_bytes=None,
-                cuobjdump=tool,
-                max_cuobjdump_files=5,
-                max_artifact_bytes=None,
-            )
-            budgeted = scan_rootfs_tar(
-                self._rootfs(40, 4096),
-                max_scan_bytes=8192,
-                cuobjdump=tool,
-                max_cuobjdump_files=None,
-                max_artifact_bytes=None,
-            )
-            sized = scan_rootfs_tar(
-                self._rootfs(40, 4096),
-                max_scan_bytes=None,
-                cuobjdump=tool,
-                max_cuobjdump_files=None,
-                max_artifact_bytes=1024,
-            )
-        self.assertEqual(capped.cuobjdump_files_analyzed, 5)
-        self.assertTrue(capped.skipped_file_limit)
-        self.assertTrue(budgeted.skipped_scan_budget)
-        self.assertEqual(sized.cuobjdump_files_analyzed, 0)
-        self.assertEqual(sized.skipped_artifact_limit, 40)
+        self.assertEqual(scan.skipped_temporary_space, 0)
 
     def test_an_artifact_larger_than_free_space_is_refused(self) -> None:
         with (
@@ -2176,14 +2007,13 @@ class UnbudgetedScanTests(unittest.TestCase):
             )
             scan = scan_rootfs_tar(
                 self._rootfs(1, 256 * 1024 * 1024),
-                max_scan_bytes=None,
                 cuobjdump=tool,
-                max_cuobjdump_files=None,
-                max_artifact_bytes=None,
             )
         self.assertEqual(scan.cuobjdump_files_analyzed, 0)
-        self.assertEqual(scan.skipped_artifact_limit, 1)
-        self.assertEqual([item.reason for item in scan.skipped_cuda_candidates], ["artifact-limit"])
+        self.assertEqual(scan.skipped_temporary_space, 1)
+        self.assertEqual(
+            [item.reason for item in scan.skipped_cuda_candidates], ["temporary-space"]
+        )
 
     def test_a_small_artifact_never_consults_the_filesystem(self) -> None:
         with (
@@ -2195,10 +2025,7 @@ class UnbudgetedScanTests(unittest.TestCase):
             )
             scan = scan_rootfs_tar(
                 self._rootfs(5, 4096),
-                max_scan_bytes=None,
                 cuobjdump=tool,
-                max_cuobjdump_files=None,
-                max_artifact_bytes=None,
             )
         self.assertEqual(scan.cuobjdump_files_analyzed, 5)
         disk_usage.assert_not_called()
@@ -2212,15 +2039,9 @@ class InspectionScopeMessageTests(unittest.TestCase):
     real run while the whole unit suite passed.
     """
 
-    def test_the_default_scan_names_no_numeric_bound(self) -> None:
-        client = DockerImageClient()
-        self.assertIsNone(client.max_cuobjdump_files)
-        self.assertIsNone(client.max_artifact_bytes)
-        scope = client.inspection_scope()
+    def test_the_scan_announces_that_it_reads_everything(self) -> None:
         self.assertEqual(
-            scope, "all eligible inspection units and artifacts bounded by free temporary space"
+            DockerImageClient().inspection_scope(),
+            "every eligible inspection unit, read in full; "
+            "only free temporary space refuses an artifact",
         )
-
-    def test_requested_bounds_appear_in_the_message(self) -> None:
-        client = DockerImageClient(max_cuobjdump_files=512, max_artifact_bytes=2048 * 1024 * 1024)
-        self.assertEqual(client.inspection_scope(), "up to 512 files and 2048 MiB per artifact")
