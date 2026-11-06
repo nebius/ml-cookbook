@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import re
 import shutil
@@ -517,6 +518,26 @@ def _cuda_targets_bytes(data: bytes) -> set[str]:
         f"{int(match.group('number').decode())}{match.group('suffix').decode().lower()}"
         for match in CUDA_TARGET_BYTES_RE.finditer(data)
     }
+
+
+def _conda_metadata(data: bytes) -> dict[str, object]:
+    """Parse one conda-meta record, whatever state the installer left it in.
+
+    dklabjan/keras-gpu holds gzip-compressed records under conda-meta. json.loads on
+    those bytes raises UnicodeDecodeError, not JSONDecodeError, which escaped the scan
+    and aborted the whole image. Decompress what announces itself as gzip, so the
+    package inventory survives, and let anything still unreadable be nothing at all.
+    """
+    if data[:2] == b"\x1f\x8b":
+        try:
+            data = gzip.decompress(data)
+        except (OSError, EOFError):
+            return {}
+    try:
+        document = json.loads(data)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return document if isinstance(document, dict) else {}
 
 
 def _version_sort_key(value: str) -> tuple[int, ...]:
@@ -1069,11 +1090,8 @@ def scan_rootfs_tar(
                     new_inventory.update(_apk_packages(data))
                     inventory_source = "system-package"
                 elif is_conda_metadata:
-                    try:
-                        conda = json.loads(data)
-                    except json.JSONDecodeError:
-                        conda = {}
-                    if isinstance(conda, dict) and conda.get("name"):
+                    conda = _conda_metadata(data)
+                    if conda.get("name"):
                         package = str(conda["name"])
                         if conda.get("version"):
                             package += f"=={conda['version']}"

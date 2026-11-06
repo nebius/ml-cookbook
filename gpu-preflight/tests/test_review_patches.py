@@ -8,6 +8,10 @@ the GPU, a deliberately corrupt file a packaging tool ships on purpose.
 
 from __future__ import annotations
 
+import gzip
+import io
+import json
+import tarfile
 import unittest
 from unittest.mock import patch
 
@@ -17,6 +21,7 @@ from gpu_preflight.image import (
     ImageInspectionError,
     PlatformManifest,
     PulledImageFacts,
+    scan_rootfs_tar,
 )
 
 
@@ -122,3 +127,42 @@ class GpuCodeObjectTests(unittest.TestCase):
     def test_host_architectures_are_still_read(self) -> None:
         self.assertEqual(elf_architecture(elf_bytes(machine=0x3E)), "amd64")
         self.assertEqual(elf_architecture(elf_bytes(machine=0xB7)), "arm64")
+
+
+def tar_of(members: tuple[tuple[str, bytes], ...]) -> io.BytesIO:
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w") as archive:
+        for name, data in members:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+    stream.seek(0)
+    return stream
+
+
+class CondaMetadataTests(unittest.TestCase):
+    """dklabjan/keras-gpu stores gzip-compressed records under conda-meta.
+
+    json.loads raises UnicodeDecodeError on those bytes, not JSONDecodeError, so the
+    exception escaped the scan and the image produced no report at all.
+    """
+
+    def _packages(self, data: bytes) -> tuple[str, ...]:
+        scan = scan_rootfs_tar(
+            tar_of((("root/miniconda/conda-meta/keras-2.2.4-py36_0.json", data),)),
+            None,
+            cuobjdump=None,
+        )
+        return scan.installed_packages
+
+    def test_a_gzipped_record_is_read_rather_than_crashing(self) -> None:
+        record = json.dumps({"name": "keras", "version": "2.2.4"}).encode()
+        self.assertEqual(self._packages(gzip.compress(record)), ("keras==2.2.4",))
+
+    def test_a_plain_record_is_still_read(self) -> None:
+        record = json.dumps({"name": "keras", "version": "2.2.4"}).encode()
+        self.assertEqual(self._packages(record), ("keras==2.2.4",))
+
+    def test_an_unreadable_record_is_skipped_without_aborting_the_scan(self) -> None:
+        for data in (b"\x1f\x8bnot really gzip", b"\xa3\xff\x00 not utf-8", b"{"):
+            self.assertEqual(self._packages(data), (), data)
