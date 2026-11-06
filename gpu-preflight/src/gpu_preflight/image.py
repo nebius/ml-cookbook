@@ -3007,9 +3007,13 @@ def inspect_with_image(
     nccl_evidence_observations: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
     ucx_evidence_observations: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
     image_ucx_evidence: set[UcxEvidence] = set()
-    cuda_artifacts: list[dict[str, object]] = []
+    # Keyed by (platform, path), not appended to a list: every profile that selects the same
+    # platform manifest walks the same scanned content, so a list collects one record per
+    # profile and double-counts every artifact. The neighbouring observations -- kernel
+    # catalogs, NCCL and UCX evidence -- are already dicts keyed this way.
+    cuda_artifact_observations: dict[tuple[str, str], dict[str, object]] = {}
     cuda_compatibility_exceptions: list[dict[str, object]] = []
-    skipped_cuda_candidates: list[dict[str, object]] = []
+    skipped_cuda_candidate_observations: dict[tuple[str, str], dict[str, object]] = {}
     kernel_catalog_observations: dict[tuple[str, str], dict[str, object]] = {}
     rootfs_statistics: dict[str, dict[str, object]] = {}
     cuda_target_summaries: dict[str, dict[str, object]] = {}
@@ -3194,20 +3198,16 @@ def inspect_with_image(
                     "skipped_non_runtime": content.rootfs.skipped_non_runtime,
                     "skipped_temporary_space": content.rootfs.skipped_temporary_space,
                 }
-                cuda_artifacts.extend(
-                    {
+                for artifact in content.rootfs.cuda_artifacts:
+                    cuda_artifact_observations[(content.platform, artifact.path)] = {
                         "platform": content.platform,
                         **asdict(artifact),
                     }
-                    for artifact in content.rootfs.cuda_artifacts
-                )
-                skipped_cuda_candidates.extend(
-                    {
+                for candidate in content.rootfs.skipped_cuda_candidates:
+                    skipped_cuda_candidate_observations[(content.platform, candidate.path)] = {
                         "platform": content.platform,
                         **asdict(candidate),
                     }
-                    for candidate in content.rootfs.skipped_cuda_candidates
-                )
                 for catalog in content.rootfs.kernel_catalogs:
                     kernel_catalog_observations[(content.platform, catalog.group)] = {
                         "platform": content.platform,
@@ -3359,12 +3359,17 @@ def inspect_with_image(
         "ucx_evidence": [
             ucx_evidence_observations[key] for key in sorted(ucx_evidence_observations)
         ],
-        "cuda_artifacts": cuda_artifacts,
+        "cuda_artifacts": [
+            cuda_artifact_observations[key] for key in sorted(cuda_artifact_observations)
+        ],
         "cuda_compatibility_exceptions": sorted_cuda_compatibility_exceptions,
         "cuda_compatibility_exception_groups": _cuda_compatibility_exception_groups(
             sorted_cuda_compatibility_exceptions
         ),
-        "skipped_cuda_candidates": skipped_cuda_candidates,
+        "skipped_cuda_candidates": [
+            skipped_cuda_candidate_observations[key]
+            for key in sorted(skipped_cuda_candidate_observations)
+        ],
         "kernel_catalogs": [
             kernel_catalog_observations[key] for key in sorted(kernel_catalog_observations)
         ],

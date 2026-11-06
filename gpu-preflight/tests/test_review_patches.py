@@ -36,6 +36,7 @@ from gpu_preflight.image import (
     ImageManifestSet,
     PlatformManifest,
     PulledImageFacts,
+    SkippedCudaCandidate,
     _nccl_path_evidence,
     _select_manifest,
     inspect_image_reference,
@@ -46,7 +47,7 @@ from gpu_preflight.image import (
 from gpu_preflight.inspection import _target_findings
 from gpu_preflight.profiles import load_profiles
 from gpu_preflight.render import NCCL_SOURCE_LABEL
-from tests.test_image import artifact_findings, rootfs_with
+from tests.test_image import FakeImageClient, artifact_findings, manifest, rootfs_with
 
 
 def unresolved_facts(final_platform: str | None = None) -> ImageFacts:
@@ -1395,3 +1396,106 @@ class ReportWriteFailureTests(unittest.TestCase):
         self.assertEqual(left, [])
         self.assertIn("the assessment completed", stderr)
         self.assertIn(f"[Errno {errno.EROFS}]", stderr)
+
+
+class ObservationsAreNotRepeatedPerProfileTests(unittest.TestCase):
+    """Every artifact record in every corpus report appeared once per target.
+
+    nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc3.dev202611040008 listed 602 artifact
+    records for 301 paths, byte-identical in pairs; lmsysorg/sglang:v0.5.23 listed 7492 for
+    3746. 42 of the 42 corpus reports that carried artifacts at all were duplicated at
+    exactly the target count, because the observation loop runs once per profile and both
+    h100 and b300 select the same linux/amd64 content. Anything that counts the list -- a
+    coverage figure, an artifact census, the size of report.json itself -- doubled.
+
+    The neighbouring observations (kernel catalogs, NCCL and UCX evidence) were already
+    keyed by (platform, ...) dicts for this reason. These two stayed lists.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.profiles = load_profiles()
+
+    def report_observations(self, profile_names: tuple[str, ...]) -> dict:
+        amd64 = manifest("linux/amd64", "amd64")
+        artifacts = (
+            CudaArtifactEvidence(
+                path="/usr/lib/libtensorrt_llm.so",
+                size_bytes=2026851312,
+                role="runtime",
+                method="cuobjdump",
+                targets=("sm_90a", "sm_100"),
+                complete=True,
+                incomplete_reason=None,
+                diagnostic=None,
+            ),
+            CudaArtifactEvidence(
+                path="/usr/lib/libth_common.so",
+                size_bytes=523962312,
+                role="runtime",
+                method="cuobjdump",
+                targets=("sm_103a",),
+                complete=True,
+                incomplete_reason=None,
+                diagnostic=None,
+            ),
+        )
+        skipped = (SkippedCudaCandidate(path="/usr/lib/huge.so", size_bytes=1, reason="size"),)
+        pulled = PulledImageFacts(
+            platform="linux/amd64",
+            digest=amd64.digest,
+            environment={},
+            known_packages=(),
+            installed_packages=(),
+            cuda_targets=(),
+            cuda_versions=(),
+            nccl_versions=(),
+            user=None,
+            entrypoint=(),
+            command=(),
+            rootfs=rootfs_with(artifacts, skipped=skipped),
+        )
+        report = inspect_image_reference(
+            "nvcr.io/nvidia/tensorrt-llm/release:1",
+            tuple(self.profiles[name] for name in profile_names),
+            platform="linux/amd64",
+            scan_mode="filesystem",
+            client=FakeImageClient((amd64,), pulled=pulled),
+        )
+        return report.observations
+
+    def test_two_targets_do_not_double_the_artifact_list(self) -> None:
+        observations = self.report_observations(("h100", "b300"))
+        records = observations["cuda_artifacts"]
+        paths = [record["path"] for record in records]
+        self.assertEqual(len(records), 2, f"expected 2 records, got {len(records)}")
+        self.assertEqual(len(paths), len(set(paths)))
+
+    def test_two_targets_do_not_double_the_skipped_list(self) -> None:
+        observations = self.report_observations(("h100", "b300"))
+        records = observations["skipped_cuda_candidates"]
+        self.assertEqual(len(records), 1, f"expected 1 record, got {len(records)}")
+
+    def test_one_target_still_lists_every_artifact(self) -> None:
+        """The dedup must not be a one-record-per-path-ever rule: a single profile has
+        always been correct and has to stay correct."""
+        observations = self.report_observations(("h100",))
+        self.assertEqual(len(observations["cuda_artifacts"]), 2)
+        self.assertEqual(len(observations["skipped_cuda_candidates"]), 1)
+
+    def test_the_record_contents_survive_the_dedup(self) -> None:
+        observations = self.report_observations(("h100", "b300"))
+        by_path = {record["path"]: record for record in observations["cuda_artifacts"]}
+        common = by_path["/usr/lib/libth_common.so"]
+        self.assertEqual(common["platform"], "linux/amd64")
+        self.assertEqual(common["role"], "runtime")
+        self.assertEqual(common["method"], "cuobjdump")
+        self.assertEqual(list(common["targets"]), ["sm_103a"])
+        self.assertTrue(common["complete"])
+
+    def test_the_list_is_ordered_by_path(self) -> None:
+        """A list built from a dict keyed by (platform, path) is emitted in sorted key
+        order, so the report stays byte-comparable between runs of the same image."""
+        observations = self.report_observations(("h100", "b300"))
+        paths = [record["path"] for record in observations["cuda_artifacts"]]
+        self.assertEqual(paths, sorted(paths))
