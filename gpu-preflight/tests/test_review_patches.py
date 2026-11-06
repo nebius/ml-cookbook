@@ -15,10 +15,12 @@ import json
 import tarfile
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from gpu_preflight.cli import main as cli_main
 from gpu_preflight.compatibility import evaluate_cuda_target, summarize_compatibility
 from gpu_preflight.cuda_inspection import (
     classify_artifact_role,
@@ -36,6 +38,7 @@ from gpu_preflight.image import (
     PulledImageFacts,
     _nccl_path_evidence,
     _select_manifest,
+    inspect_image_reference,
     merge_discovered_observations,
     scan_rootfs_tar,
     verified_targets,
@@ -1290,3 +1293,105 @@ class NoDeviceCodeIsAnAnswerTests(unittest.TestCase):
         )
         self.assertIn("GPF-CUDA-011", found)
         self.assertIn("4 artifact(s) were not read in full", found["GPF-CUDA-011"])
+
+
+class ReportWriteFailureTests(unittest.TestCase):
+    """A finished assessment must not be reported as a scan that failed.
+
+    nvcr.io/nvidia/ai-workbench/python-cuda117:1.0.8 read all 26374 of its files and
+    completed all 1023 cuobjdump inspections, then printed "[Errno 28] No space left on
+    device" and exited 1. The message named neither the report nor the fact that the
+    analysis had already succeeded, so the only reading available to an operator was that
+    the scanner had broken.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.profiles = load_profiles()
+
+    def report(self):
+        return inspect_image_reference(
+            "registry.example/pytorch:1",
+            (self.profiles["h100"],),
+            platform="linux/amd64",
+            scan_mode="none",
+        )
+
+    def run_bundle(self, output_dir: Path, failing: str, err: int = errno.ENOSPC):
+        """Run the CLI with the bundle write failing on one report file."""
+        report = self.report()
+        real_write_text = Path.write_text
+
+        def write_text(self_path, *args, **kwargs):
+            if self_path.name == failing:
+                raise OSError(err, "No space left on device")
+            return real_write_text(self_path, *args, **kwargs)
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            patch("gpu_preflight.cli.inspect_image_reference", return_value=report),
+            patch.object(Path, "write_text", write_text),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            code = cli_main(
+                [
+                    "inspect",
+                    "registry.example/pytorch:1",
+                    "--target",
+                    "h100",
+                    "--output-dir",
+                    str(output_dir),
+                    "--fail-on",
+                    "never",
+                ]
+            )
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_the_message_names_the_report_and_says_the_assessment_finished(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "reports"
+            code, _, stderr = self.run_bundle(out, "report.json")
+        self.assertEqual(code, 1)
+        self.assertIn("the assessment completed", stderr)
+        self.assertIn("report.json", stderr)
+        self.assertIn(str(out), stderr)
+        self.assertIn("No space left on device", stderr)
+
+    def test_the_errno_survives_the_rewrapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, stderr = self.run_bundle(Path(tmp) / "reports", "report.json")
+        self.assertIn(f"[Errno {errno.ENOSPC}]", stderr)
+
+    def test_no_partial_bundle_is_left_for_the_harness_to_count(self) -> None:
+        # report.txt is written before report.json. The sweep harness decides an image
+        # succeeded by testing for report.json alone, so a half-written bundle has to go.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "reports"
+            self.run_bundle(out, "report.json")
+            left = sorted(path.name for path in out.iterdir()) if out.exists() else []
+        self.assertEqual(left, [])
+
+    def test_a_failure_on_the_last_file_also_clears_the_earlier_two(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "reports"
+            self.run_bundle(out, "report.html")
+            left = sorted(path.name for path in out.iterdir()) if out.exists() else []
+        self.assertEqual(left, [])
+
+    def test_the_completed_assessment_still_reaches_stdout(self) -> None:
+        # stdout can be a terminal, a pipe or another filesystem. Reading on past a full
+        # disk exists so the scan is not lost; discarding it at the last step undoes that.
+        with tempfile.TemporaryDirectory() as tmp:
+            _, stdout, _ = self.run_bundle(Path(tmp) / "reports", "report.txt")
+        self.assertIn("registry.example/pytorch:1", stdout)
+
+    def test_a_write_failure_that_is_not_about_space_is_reported_the_same_way(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "reports"
+            code, _, stderr = self.run_bundle(out, "report.json", err=errno.EROFS)
+            left = sorted(path.name for path in out.iterdir()) if out.exists() else []
+        self.assertEqual(code, 1)
+        self.assertEqual(left, [])
+        self.assertIn("the assessment completed", stderr)
+        self.assertIn(f"[Errno {errno.EROFS}]", stderr)

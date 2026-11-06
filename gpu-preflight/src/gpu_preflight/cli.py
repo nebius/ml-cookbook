@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import re
 import sys
 from datetime import UTC, datetime
@@ -208,8 +209,25 @@ def _write_report_bundle(
         (paths[2], render_html(report)),
     )
     output_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
     for path, content in rendered:
-        path.write_text(content, encoding="utf-8")
+        try:
+            path.write_text(content, encoding="utf-8")
+        except OSError as error:
+            # The assessment is finished by the time this runs, so a failed write must not
+            # be reported as though the scan failed.
+            #
+            # The partial files go with it: a truncated report.json is worse than none,
+            # because anything testing for the file takes it for a finished report.
+            for partial in (*written, path):
+                with contextlib.suppress(OSError):
+                    partial.unlink(missing_ok=True)
+            raise OSError(
+                error.errno,
+                f"the assessment completed, but writing {path.name} to {output_dir} "
+                f"failed: {error.strerror or error}",
+            ) from error
+        written.append(path)
     return paths
 
 
@@ -272,7 +290,13 @@ def main(argv: list[str] | None = None) -> int:
                 tuple(profile.id for profile in selected),
                 report.generated_at,
             )
-            paths = _write_report_bundle(report, output_dir, overwrite=args.overwrite)
+            try:
+                paths = _write_report_bundle(report, output_dir, overwrite=args.overwrite)
+            except OSError:
+                # A completed assessment can still reach the operator when it cannot be
+                # stored: stdout may be a terminal, a pipe, or another filesystem.
+                sys.stdout.write(render_text(report))
+                raise
             sys.stdout.write(render_text(report))
             print("\nGenerated report bundle:", file=sys.stderr)
             for path in paths:
