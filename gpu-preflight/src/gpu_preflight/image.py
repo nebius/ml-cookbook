@@ -2790,6 +2790,35 @@ def _cuda_artifact_findings(
     return tuple(findings)
 
 
+DISCOVERED_OBSERVATION_KEYS = (
+    ("cuda_targets", "image_cuda_targets"),
+    ("cuda_versions", "image_cuda_versions"),
+    ("nccl_versions", "image_nccl_versions"),
+)
+
+
+def merge_discovered_observations(observations: dict[str, object]) -> None:
+    """Carry what the filesystem scan found into the keys that name it without a prefix.
+
+    The base report is built from the registry manifest and the image configuration. A
+    filesystem scan files its findings under the image_ prefix and leaves the unprefixed
+    key at whatever the configuration said, which for an image that declares no
+    TORCH_CUDA_ARCH_LIST is nothing. Every report in the replay corpus therefore said
+    cuda_targets: [] -- including one holding 34 verified targets under the other key.
+    Reading the empty one is how a reader, or a tool keying on the shorter name,
+    concludes an image carries no CUDA at all.
+    """
+    for plain, prefixed in DISCOVERED_OBSERVATION_KEYS:
+        found = observations.get(prefixed) or []
+        if not isinstance(found, list) or not found:
+            continue
+        existing = observations.get(plain) or []
+        merged = set(existing if isinstance(existing, list) else ()) | set(found)
+        observations[plain] = (
+            sorted(merged, key=_version_sort_key) if "versions" in plain else sorted(merged)
+        )
+
+
 def verified_targets(
     artifacts: Sequence[CudaArtifactEvidence], *, analyzer_matches_image: bool
 ) -> tuple[str, ...]:
@@ -3330,6 +3359,7 @@ def inspect_with_image(
         "rootfs_statistics": rootfs_statistics,
         "cuda_target_summaries": cuda_target_summaries,
     }
+    merge_discovered_observations(observations)
     selected_platforms = {str(item["platform"]) for item in selected_observations.values()}
     if len(selected_platforms) == 1:
         observations["final_platform"] = next(iter(selected_platforms))

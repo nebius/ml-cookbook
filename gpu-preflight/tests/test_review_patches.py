@@ -36,6 +36,7 @@ from gpu_preflight.image import (
     PulledImageFacts,
     _nccl_path_evidence,
     _select_manifest,
+    merge_discovered_observations,
     scan_rootfs_tar,
     verified_targets,
 )
@@ -1174,3 +1175,57 @@ class NcclEvidenceSourceContractTests(unittest.TestCase):
         enum = set(self.schema()["$defs"]["ncclEvidence"]["properties"]["source"]["enum"])
         self.assertIn(source, enum)
         self.assertIn(source, NCCL_SOURCE_LABEL)
+
+
+class MergedObservationTests(unittest.TestCase):
+    """Every report in the corpus said cuda_targets: [] -- all 25 of them.
+
+    The base report is built from the registry manifest and the image configuration. A
+    filesystem scan files what it finds under image_cuda_targets and leaves the unprefixed
+    key at whatever the config said, which is nothing for an image that declares no
+    TORCH_CUDA_ARCH_LIST. nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubi10 reported 34 verified
+    targets under one key and none under the other, and reading the empty one is how a
+    reader concludes an image carries no CUDA at all.
+    """
+
+    def test_the_unprefixed_key_carries_what_the_filesystem_found(self) -> None:
+        observations: dict[str, object] = {
+            "cuda_targets": [],
+            "cuda_versions": [],
+            "nccl_versions": [],
+            "image_cuda_targets": ["sm_103", "sm_90"],
+            "image_cuda_versions": ["13.3"],
+            "image_nccl_versions": ["2.30.7"],
+        }
+        merge_discovered_observations(observations)
+        self.assertEqual(observations["cuda_targets"], ["sm_103", "sm_90"])
+        self.assertEqual(observations["cuda_versions"], ["13.3"])
+        self.assertEqual(observations["nccl_versions"], ["2.30.7"])
+
+    def test_a_configuration_declaration_is_kept_alongside_it(self) -> None:
+        observations: dict[str, object] = {
+            "cuda_targets": ["sm_80"],
+            "image_cuda_targets": ["sm_90"],
+        }
+        merge_discovered_observations(observations)
+        self.assertEqual(observations["cuda_targets"], ["sm_80", "sm_90"])
+
+    def test_versions_keep_numeric_order_rather_than_string_order(self) -> None:
+        observations: dict[str, object] = {
+            "nccl_versions": [],
+            "image_nccl_versions": ["2.9.9", "2.30.7", "2.17.1"],
+        }
+        merge_discovered_observations(observations)
+        self.assertEqual(observations["nccl_versions"], ["2.9.9", "2.17.1", "2.30.7"])
+
+    def test_an_image_with_no_cuda_still_reports_none(self) -> None:
+        observations: dict[str, object] = {"cuda_targets": [], "image_cuda_targets": []}
+        merge_discovered_observations(observations)
+        self.assertEqual(observations["cuda_targets"], [])
+
+    def test_a_missing_prefixed_key_leaves_the_plain_one_alone(self) -> None:
+        """Static mode never builds the image_ keys, and its unprefixed values are already
+        the effective ones."""
+        observations: dict[str, object] = {"cuda_targets": ["sm_90"]}
+        merge_discovered_observations(observations)
+        self.assertEqual(observations["cuda_targets"], ["sm_90"])
