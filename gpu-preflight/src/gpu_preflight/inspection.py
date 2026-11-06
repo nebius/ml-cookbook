@@ -37,6 +37,13 @@ UNRESOLVED_FINDINGS = {
 ASSESSMENT_INVALIDATING_FINDINGS = {
     "GPF-CUDA-019",
 }
+# Compatibility warnings that ask a reader to look at a named list rather than naming
+# something to fix. Static inspection cannot prove the workload loads any of these, so they
+# reach REVIEW_REQUIRED and stop there. Any other warning names something to act on.
+REVIEW_ONLY_FINDINGS = {
+    "GPF-CPU-006",
+    "GPF-CUDA-016",
+}
 PASSED_CHECK_FINDINGS = {
     "GPF-CPU-002",
     "GPF-CUDA-003",
@@ -68,6 +75,7 @@ FINDING_DISPLAY_ORDER = {
     "GPF-CPU-004": 31,
     "GPF-CPU-005": 31,
     "GPF-CPU-006": 31,
+    "GPF-CPU-007": 31,
     "GPF-CUDA-006": 40,
     "GPF-CUDA-007": 40,
     "GPF-CUDA-008": 40,
@@ -390,10 +398,11 @@ def _library_architecture_findings(
         return "; ".join(parts)
 
     foreign_count = sum(item.count for item in foreign)
+    findings: list[Finding] = []
     bearing = [item for item in foreign if item.device_code_count]
     if bearing:
         kernels = sum(item.device_code_count for item in bearing)
-        return [
+        findings.append(
             Finding(
                 id="GPF-CPU-004",
                 severity="warning",
@@ -412,26 +421,74 @@ def _library_architecture_findings(
                     "target."
                 ),
             )
-        ]
-    return [
-        Finding(
-            id="GPF-CPU-006",
-            severity="info",
-            category="evidence",
-            title="Foreign-architecture binaries carry no device code",
-            evidence=(
-                f"{foreign_count} of {inspected} inspected binaries are built for another CPU "
-                f"architecture, and none of them carries CUDA device code: {summarize(foreign)}. "
-                "Toolchains ship these deliberately -- multilib compiler runtimes, 32-bit "
-                "interceptors -- and no GPU work depends on them."
-            ),
-            remediation=(
-                "No action for this hardware. Confirm the workload does not load them if the "
-                "image is expected to contain only "
-                f"{declared_architecture} objects."
-            ),
         )
-    ]
+
+    # The middle tier. A foreign binary with no device code is usually a spare build the
+    # loader never opens. Two conditions together make one undismissable: nothing of that
+    # name exists for this CPU, and it sits where the loader looks, so a program asking for
+    # that SONAME reaches this one. Static inspection cannot tell whether the workload asks,
+    # which makes it a review rather than an action.
+    reachable = [item for item in foreign if item.review_paths]
+    if reachable:
+        review_paths = [path for item in reachable for path in item.review_paths]
+        findings.append(
+            Finding(
+                id="GPF-CPU-006",
+                severity="warning",
+                category="compatibility",
+                title="A foreign-architecture library is the only one of its name",
+                evidence=(
+                    f"{len(review_paths)} of {inspected} inspected binaries are built for "
+                    f"another CPU architecture, carry no CUDA device code, and are the only "
+                    f"copy of their file name in a directory the dynamic loader searches: "
+                    + "; ".join(
+                        f"{path} ({item.architecture})"
+                        for item in reachable
+                        for path in item.review_paths
+                    )
+                    + ". A program asking for that name would reach a binary this CPU cannot "
+                    "load."
+                ),
+                remediation=(
+                    "Open each path and establish whether the workload loads it. If it does, "
+                    f"install the {declared_architecture} build of the package that provides "
+                    "it; if it does not, nothing is required for this hardware."
+                ),
+                details=tuple(
+                    FindingDetail(label=path, value=item.architecture)
+                    for item in reachable
+                    for path in item.review_paths
+                ),
+            )
+        )
+
+    dismissed = (
+        foreign_count
+        - sum(item.device_code_count for item in bearing)
+        - len([path for item in foreign for path in item.review_paths])
+    )
+    if dismissed > 0:
+        findings.append(
+            Finding(
+                id="GPF-CPU-007",
+                severity="info",
+                category="evidence",
+                title="Foreign-architecture binaries carry no device code",
+                evidence=(
+                    f"{dismissed} of {inspected} inspected binaries are built for another CPU "
+                    f"architecture, carry no CUDA device code, and are not the only copy of "
+                    f"their name in a directory the loader searches: {summarize(foreign)}. "
+                    "Toolchains and packagers ship these deliberately -- multilib compiler "
+                    "runtimes, per-platform profiler payloads, spare builds beside the one "
+                    "this CPU uses -- and no GPU work depends on them."
+                ),
+                remediation=(
+                    "No action for this hardware. Confirm the workload does not load them if "
+                    f"the image is expected to contain only {declared_architecture} objects."
+                ),
+            )
+        )
+    return findings
 
 
 def _architecture_from_platform(platform: str | None) -> str | None:
@@ -1075,7 +1132,7 @@ def compatibility_status_for(findings: tuple[Finding, ...]) -> str:
         for finding in findings
         if finding.severity == "warning" and finding.category == "compatibility"
     )
-    if any(finding.id != "GPF-CUDA-016" for finding in compatibility_warnings):
+    if any(finding.id not in REVIEW_ONLY_FINDINGS for finding in compatibility_warnings):
         return "ACTION_REQUIRED"
     if compatibility_warnings:
         return "REVIEW_REQUIRED"

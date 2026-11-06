@@ -446,9 +446,9 @@ class LibraryArchitectureFindingTests(unittest.TestCase):
         self.assertIn("/opt/app/_ext.so", found["GPF-CPU-004"])
         self.assertIn("2 of 2002", found["GPF-CPU-004"])
         self.assertNotIn("GPF-CPU-005", found)
-        self.assertNotIn("GPF-CPU-006", found)
+        self.assertNotIn("GPF-CPU-007", found)
 
-    def test_foreign_binaries_without_kernels_are_only_evidence(self) -> None:
+    def test_foreign_binaries_the_loader_cannot_reach_are_only_evidence(self) -> None:
         # The TensorRT-LLM case: 278 i386 compiler-rt runtimes, no device code,
         # nothing for this GPU to be wrong about.
         found = self._ids(
@@ -457,11 +457,43 @@ class LibraryArchitectureFindingTests(unittest.TestCase):
                 "i386", 278, ("/usr/lib/llvm-18/lib/clang/18/lib/linux/libclang_rt.asan-i386.so",)
             ),
         )
-        self.assertIn("GPF-CPU-006", found)
-        self.assertIn("278 of 2347", found["GPF-CPU-006"])
+        self.assertIn("GPF-CPU-007", found)
+        self.assertIn("278 of 2347", found["GPF-CPU-007"])
         self.assertNotIn("GPF-CPU-004", found)
+        self.assertNotIn("GPF-CPU-006", found)
 
-    def test_one_bearing_group_outranks_a_harmless_one(self) -> None:
+    def test_a_sole_copy_in_a_loader_directory_is_a_review(self) -> None:
+        found = self._ids(
+            LibraryArchitectureEvidence("arm64", 2069, ("/usr/lib/libtorch_cuda.so",), 150),
+            LibraryArchitectureEvidence(
+                "i386",
+                3,
+                ("/usr/lib/libodd.so",),
+                0,
+                review_paths=("/usr/lib/libodd.so",),
+            ),
+        )
+        self.assertIn("GPF-CPU-006", found)
+        self.assertIn("/usr/lib/libodd.so", found["GPF-CPU-006"])
+        self.assertIn("1 of 2072", found["GPF-CPU-006"])
+        # The other two in that group are still dismissed, and separately.
+        self.assertIn("GPF-CPU-007", found)
+        self.assertIn("2 of 2072", found["GPF-CPU-007"])
+
+    def test_a_review_stops_at_review_required(self) -> None:
+        facts = image_facts(
+            platform="linux/arm64",
+            library_architectures=(
+                LibraryArchitectureEvidence("arm64", 20, ("/usr/lib/a.so",), 5),
+                LibraryArchitectureEvidence(
+                    "amd64", 1, ("/usr/lib/libodd.so",), 0, review_paths=("/usr/lib/libodd.so",)
+                ),
+            ),
+        )
+        report = inspect(facts, (load_profiles()["gb300"],)).targets[0]
+        self.assertEqual(report.compatibility_status, "REVIEW_REQUIRED")
+
+    def test_device_code_still_outranks_a_review(self) -> None:
         found = self._ids(
             LibraryArchitectureEvidence("arm64", 100, ("/usr/lib/a.so",), 50),
             LibraryArchitectureEvidence("i386", 278, ("/usr/lib/rt-i386.so",)),
@@ -471,12 +503,15 @@ class LibraryArchitectureFindingTests(unittest.TestCase):
         # The warning names the binary that matters, not the 278 that do not.
         self.assertIn("/opt/app/_ext.so", found["GPF-CPU-004"])
         self.assertNotIn("rt-i386", found["GPF-CPU-004"])
+        # Both groups are reported now: the earlier code returned on the first.
+        self.assertIn("GPF-CPU-007", found)
 
     def test_a_uniform_image_passes(self) -> None:
         found = self._ids(LibraryArchitectureEvidence("arm64", 2000, ("/usr/lib/a.so",), 80))
         self.assertIn("GPF-CPU-005", found)
         self.assertNotIn("GPF-CPU-004", found)
         self.assertNotIn("GPF-CPU-006", found)
+        self.assertNotIn("GPF-CPU-007", found)
 
     def test_the_declared_architecture_decides_what_is_foreign(self) -> None:
         # The same binaries are native on an amd64 image and foreign on an arm64 one.

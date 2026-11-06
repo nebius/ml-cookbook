@@ -375,12 +375,14 @@ class FilesystemReportSchemaTests(unittest.TestCase):
                     "count": 3,
                     "sample_paths": ["/usr/lib/libtorch_cuda.so"],
                     "device_code_count": 2,
+                    "review_paths": [],
                 },
                 {
                     "architecture": "amd64",
                     "count": 1,
                     "sample_paths": ["/opt/app/_ext.so"],
                     "device_code_count": 1,
+                    "review_paths": [],
                 },
             ],
         )

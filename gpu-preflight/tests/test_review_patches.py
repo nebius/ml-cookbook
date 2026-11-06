@@ -19,7 +19,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from gpu_preflight.compatibility import evaluate_cuda_target, summarize_compatibility
-from gpu_preflight.cuda_inspection import read_ptx_declaration, resolve_cuobjdump
+from gpu_preflight.cuda_inspection import (
+    classify_artifact_role,
+    read_ptx_declaration,
+    resolve_cuobjdump,
+)
 from gpu_preflight.facts import ImageFacts, elf_architecture, is_gpu_firmware
 from gpu_preflight.image import (
     DockerImageClient,
@@ -535,3 +539,62 @@ def silent_cuobjdump(directory: str) -> object:
     )
     executable.chmod(0o755)
     return resolve_cuobjdump(str(executable), timeout_seconds=10, fallback_mode="off")
+
+
+class HostArchitectureCensusTests(unittest.TestCase):
+    """A wrong-CPU binary with no device code is usually a spare build, not a defect.
+
+    nvcr.io/nvidia/pytorch:26.10 has two out of 2,701; RAPIDS' devcontainer has 274.
+    Calling every one of them a problem is the false alarm this separates out.
+    """
+
+    def _groups(self, members, native="amd64", library_path=()):
+        with tempfile.TemporaryDirectory() as directory:
+            scan = scan_rootfs_tar(
+                tar_of(members),
+                cuobjdump=silent_cuobjdump(directory),
+                native_architecture=native,
+                library_path=library_path,
+            )
+        return {item.architecture: item for item in scan.library_architectures}
+
+    def test_a_sole_foreign_library_in_a_loader_directory_is_held_for_review(self) -> None:
+        groups = self._groups((("usr/lib/libodd.so", elf_bytes(machine=0xB7)),))
+        self.assertEqual(groups["arm64"].review_paths, ("/usr/lib/libodd.so",))
+
+    def test_a_native_copy_of_the_same_name_settles_it(self) -> None:
+        groups = self._groups(
+            (
+                ("usr/lib/libodd.so", elf_bytes(machine=0xB7)),
+                ("usr/lib/x86_64-linux-gnu/libodd.so", elf_bytes(machine=0x3E)),
+            )
+        )
+        self.assertEqual(groups["arm64"].review_paths, ())
+
+    def test_a_private_directory_is_not_somewhere_the_loader_looks(self) -> None:
+        groups = self._groups((("opt/app/vendor/payloads/libodd.so", elf_bytes(machine=0xB7)),))
+        self.assertEqual(groups["arm64"].review_paths, ())
+
+    def test_the_images_own_library_path_counts_as_searched(self) -> None:
+        groups = self._groups(
+            (("opt/app/vendor/libodd.so", elf_bytes(machine=0xB7)),),
+            library_path=("/opt/app/vendor",),
+        )
+        self.assertEqual(groups["arm64"].review_paths, ("/opt/app/vendor/libodd.so",))
+
+    def test_multilib_directories_are_not_a_64_bit_workloads_dependency(self) -> None:
+        for name in ("usr/lib32/libfoo.so", "usr/lib/i386-linux-gnu/libbar.so"):
+            self.assertEqual(self._groups(((name, elf_bytes(machine=0x03)),)), {}, name)
+
+    def test_cross_platform_payloads_are_tooling_not_host_libraries(self) -> None:
+        for path in (
+            "/opt/nvidia/nsight-compute/2026.3.1/target/linux-desktop-t210-a64/libcuda-injection.so",
+            "/usr/lib/llvm-18/lib/clang/18/lib/linux/libclang_rt.asan-aarch64.so",
+            "/usr/local/lib/python3.12/dist-packages/debugpy/_vendored/pydevd"
+            "/pydevd_attach_to_process/attach_linux_amd64.so",
+        ):
+            self.assertEqual(classify_artifact_role(path), "tooling", path)
+
+    def test_a_private_copy_outside_those_roots_still_answers_for_itself(self) -> None:
+        self.assertEqual(classify_artifact_role("/opt/app/vendor/libclang_rt_x.so"), "runtime")
+        self.assertEqual(classify_artifact_role("/opt/app/target/libfoo.so"), "runtime")

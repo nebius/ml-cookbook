@@ -66,6 +66,21 @@ VALID_SCAN_MODES = {"none", "manifest", "pull", "filesystem"}
 # ordinary for cluster images that take their command from the job spec. The export
 # container is never started, so any path satisfies the check.
 NEVER_EXECUTED_ENTRYPOINT = "/__gpu_preflight_never_executed__"
+# An x86-64 distribution installs its 32-bit set in directories the loader consults only
+# for a 32-bit process. They are not dependencies of a 64-bit workload, and an i386 copy
+# anywhere else still answers for itself.
+MULTILIB_PREFIXES = ("usr/lib32/", "lib32/", "usr/lib/i386-linux-gnu/", "lib/i386-linux-gnu/")
+# Where the dynamic loader looks when a program asks for a library by SONAME. A foreign
+# binary here can be reached by name; one buried in a package's private directory is
+# reached only if that package goes looking for it.
+DEFAULT_LOADER_DIRECTORIES = (
+    "/lib/",
+    "/lib64/",
+    "/usr/lib/",
+    "/usr/lib64/",
+    "/usr/local/lib/",
+    "/usr/local/lib64/",
+)
 CUDA_TARGET_BYTES_RE = re.compile(
     rb"(?<![A-Za-z0-9])(?P<kind>sm|compute)[_-]?(?P<number>\d{2,3})"
     rb"(?P<suffix>[af]?)(?![A-Za-z0-9])",
@@ -707,6 +722,8 @@ def scan_rootfs_tar(
     stream: BinaryIO,
     *,
     cuobjdump: CuobjdumpTool | None = None,
+    native_architecture: str | None = None,
+    library_path: tuple[str, ...] = (),
     progress: Callable[[int, int, int], None] | None = None,
 ) -> RootfsScan:
     """Inspect a merged rootfs tar stream without extracting it."""
@@ -723,6 +740,10 @@ def scan_rootfs_tar(
     tree_releases: dict[str, str] = {}
     # (library path, tree, distribution, version) for every toolkit library a wheel owns.
     wheel_libraries: list[tuple[str, str, str, str]] = []
+    # Whether a foreign binary is the only copy of its name can only be settled once the
+    # whole stream has been read, so the question is deferred rather than answered early.
+    native_basenames: set[str] = set()
+    foreign_binaries: list[tuple[str, str, bool]] = []
     metadata_bytes_scanned = 0
     cuda_candidate_files = 0
     cuda_artifacts: list[CudaArtifactEvidence] = []
@@ -915,6 +936,12 @@ def scan_rootfs_tar(
                         )
                         if census_architecture and is_gpu_firmware(name, census_architecture):
                             census_architecture = None
+                        if (
+                            native_architecture == "amd64"
+                            and census_architecture == "i386"
+                            and name.startswith(MULTILIB_PREFIXES)
+                        ):
+                            census_architecture = None
                         complete_file = read_size == member.size
 
                         if planned_cuobjdump and complete_file and temporary_path:
@@ -944,6 +971,12 @@ def scan_rootfs_tar(
                                 elif carries_device_code:
                                     samples.insert(0, f"/{name}")
                                     del samples[-1]
+                                if census_architecture == native_architecture:
+                                    native_basenames.add(PurePosixPath(name).name)
+                                elif native_architecture:
+                                    foreign_binaries.append(
+                                        (f"/{name}", census_architecture, carries_device_code)
+                                    )
                             if catalog:
                                 catalog.samples_inspected += 1
                                 if artifact.complete:
@@ -1121,6 +1154,21 @@ def scan_rootfs_tar(
         catalog.kind == "architecture-module" for catalog in retained_catalogs.values()
     )
 
+    # A foreign binary that no 64-bit program can reach by name is a spare build; one that
+    # answers a SONAME in a loader directory is a dependency until someone shows otherwise.
+    searched = tuple(DEFAULT_LOADER_DIRECTORIES) + tuple(
+        f"{entry.rstrip('/')}/" for entry in library_path if entry.strip()
+    )
+    review_paths: dict[str, list[str]] = {}
+    for path, architecture, carries_device_code in foreign_binaries:
+        if carries_device_code:
+            continue
+        if PurePosixPath(path).name in native_basenames:
+            continue
+        if not path.startswith(searched):
+            continue
+        review_paths.setdefault(architecture, []).append(path)
+
     return RootfsScan(
         library_architectures=tuple(
             LibraryArchitectureEvidence(
@@ -1128,6 +1176,7 @@ def scan_rootfs_tar(
                 count=count,
                 sample_paths=tuple(library_architectures.get(architecture, ())),
                 device_code_count=library_architecture_device_code.get(architecture, 0),
+                review_paths=tuple(sorted(review_paths.get(architecture, ()))),
             )
             for architecture, count in sorted(
                 library_architecture_counts.items(), key=lambda item: (-item[1], item[0])
@@ -1382,6 +1431,12 @@ class DockerImageClient:
             rootfs = scan_rootfs_tar(
                 process.stdout,
                 cuobjdump=self.cuobjdump,
+                native_architecture=_architecture(manifest.platform),
+                library_path=tuple(
+                    entry
+                    for entry in config.environment.get("LD_LIBRARY_PATH", "").split(":")
+                    if entry.startswith("/")
+                ),
                 progress=lambda files, size, analyzed: print(
                     f"gpu-preflight: filesystem scan progress: {files} files observed, "
                     f"{size / (1024**2):.1f} MiB candidate content read, "
@@ -3079,6 +3134,7 @@ def inspect_with_image(
                 "count": item.count,
                 "sample_paths": list(item.sample_paths),
                 "device_code_count": item.device_code_count,
+                "review_paths": list(item.review_paths),
             }
             for item in (content.rootfs.library_architectures if content and content.rootfs else ())
         ],

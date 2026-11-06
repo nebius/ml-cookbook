@@ -71,6 +71,17 @@ CORE_FRAMEWORK_LIBRARY_RE = re.compile(
     r"|libtransformer_engine[^/]*\.so|transformer_engine[^/]*\.so)$",
     re.IGNORECASE,
 )
+# Nsight ships one payload per target platform so a profiler on one machine can attach to
+# a process on another. The directory names the platform it is for, and only the one
+# matching the host is ever loaded.
+CROSS_PLATFORM_TOOLING_RE = re.compile(
+    r"/nsight-(?:compute|systems)/[^/]+/(?:target|host)/[^/]+/", re.IGNORECASE
+)
+# Clang's compiler-rt runtimes are build inputs, named for the architecture they will be
+# linked into, not libraries the container's own processes load.
+COMPILER_RESOURCE_RE = re.compile(r"/lib/clang/[^/]+/lib/|/libclang_rt\.", re.IGNORECASE)
+# debugpy ships one attach helper per platform and picks at run time by file name.
+DEBUGGER_PAYLOAD_RE = re.compile(r"/pydevd_attach_to_process/", re.IGNORECASE)
 FLASHINFER_JIT_CACHE_ROOT = "/flashinfer_jit_cache/"
 FLASHINFER_JIT_CACHE_SEGMENT = "/jit_cache/"
 FLASHINFER_PROVIDER_RE = re.compile(
@@ -366,9 +377,14 @@ def classify_artifact_role(image_path: str) -> str:
             "/compute-sanitizer/",
             "/nvvm/",
         )
-    ) or basename.startswith(("libaccinj", "libcuinj")):
+    ) or (
+        basename.startswith(("libaccinj", "libcuinj"))
         # libaccinj64/libcuinj64 are CUDA Toolkit profiler-injection libraries; they carry a
         # single placeholder cubin and are only loaded by profiling tools.
+        or CROSS_PLATFORM_TOOLING_RE.search(normalized)
+        or COMPILER_RESOURCE_RE.search(normalized)
+        or DEBUGGER_PAYLOAD_RE.search(normalized)
+    ):
         return "tooling"
     if (
         "/compat/" in normalized

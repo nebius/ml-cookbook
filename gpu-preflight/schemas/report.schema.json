@@ -120,12 +120,16 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["architecture", "count", "sample_paths", "device_code_count"],
+            "required": ["architecture", "count", "sample_paths", "device_code_count", "review_paths"],
             "properties": {
               "architecture": {"type": "string"},
               "count": {"type": "integer", "minimum": 1},
               "sample_paths": {"type": "array", "items": {"type": "string"}},
-              "device_code_count": {"type": "integer", "minimum": 0}
+              "device_code_count": {"type": "integer", "minimum": 0},
+              "review_paths": {
+                "description": "Foreign binaries with no device code that are the only copy of their name in a directory the loader searches. Named in full, not sampled.",
+                "type": "array", "items": {"type": "string"}
+              }
             }
           }
         },

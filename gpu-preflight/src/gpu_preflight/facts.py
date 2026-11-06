@@ -162,6 +162,10 @@ class LibraryArchitectureEvidence:
     count: int
     sample_paths: tuple[str, ...]
     device_code_count: int = 0
+    # Foreign binaries that carry no device code and still cannot be dismissed: the only
+    # copy of their name, in a directory the loader searches, so a program asking for that
+    # SONAME would reach this one. Named in full, because a reviewer has to open them.
+    review_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
