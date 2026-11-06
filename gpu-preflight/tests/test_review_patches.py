@@ -12,9 +12,12 @@ import gzip
 import io
 import json
 import tarfile
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
+from gpu_preflight.cuda_inspection import resolve_cuobjdump
 from gpu_preflight.facts import elf_architecture, is_gpu_firmware
 from gpu_preflight.image import (
     DockerImageClient,
@@ -163,3 +166,62 @@ class CondaMetadataTests(unittest.TestCase):
     def test_an_unreadable_record_is_skipped_without_aborting_the_scan(self) -> None:
         for data in (b"\x1f\x8bnot really gzip", b"\xa3\xff\x00 not utf-8", b"{"):
             self.assertEqual(self._packages(data), (), data)
+
+
+def listing_cuobjdump(directory: str, capture: Path | None = None) -> object:
+    """A cuobjdump stand-in reporting one sm_103 image, optionally saving its input."""
+    executable = Path(directory) / "cuobjdump"
+    # The analyzer is invoked with flags first and the file last.
+    copy = (
+        f'for a in "$@"; do last=$a; done; cp "$last" "{capture}"\n' if capture is not None else ""
+    )
+    executable.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then '
+        "echo 'Cuda compilation tools, release 13.4, V13.4.92'; exit 0; fi\n"
+        f"{copy}"
+        "echo 'ELF file    1: payload.1.sm_103.cubin'\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    return resolve_cuobjdump(str(executable), timeout_seconds=10, fallback_mode="off")
+
+
+class ElfDiscoveryTests(unittest.TestCase):
+    """tensorflow/serving keeps its whole workload in /usr/bin/tensorflow_model_server.
+
+    An executable carries no suffix to recognize it by, so a name-only candidate gate
+    never saw the one file in that image that actually runs.
+    """
+
+    def _scan(self, name: str, data: bytes, directory: str):
+        return scan_rootfs_tar(tar_of(((name, data),)), cuobjdump=listing_cuobjdump(directory))
+
+    def test_an_extensionless_executable_is_discovered_by_its_header(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scan = self._scan("usr/bin/tensorflow_model_server", elf_bytes(), directory)
+        self.assertEqual(scan.cuda_candidate_files, 1)
+        self.assertEqual(
+            [a.path for a in scan.cuda_artifacts], ["/usr/bin/tensorflow_model_server"]
+        )
+
+    def test_a_file_that_is_not_elf_is_still_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scan = self._scan("usr/share/doc/readme", b"just text, no header at all", directory)
+        self.assertEqual(scan.cuda_candidate_files, 0)
+
+    def test_a_file_too_short_to_hold_a_header_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scan = self._scan("usr/bin/tiny", b"\x7fELF", directory)
+        self.assertEqual(scan.cuda_candidate_files, 0)
+
+    def test_a_discovered_artifact_reaches_the_analyzer_whole(self) -> None:
+        """The probe consumes bytes a tar stream cannot give back, so they must replay."""
+        payload = bytes(range(256)) * 40
+        with tempfile.TemporaryDirectory() as directory:
+            captured = Path(directory) / "captured.bin"
+            tool = listing_cuobjdump(directory, capture=captured)
+            scan_rootfs_tar(
+                tar_of((("usr/bin/server", elf_bytes(payload=payload)),)), cuobjdump=tool
+            )
+            self.assertEqual(captured.read_bytes(), elf_bytes(payload=payload))

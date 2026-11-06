@@ -13,9 +13,9 @@ Container images usually do not have one directory per operation or GPU architec
 - `compute_XX` is PTX virtual code that a compatible NVIDIA driver may JIT-compile for a newer GPU.
 - Architecture-specific targets such as `sm_90a` require that exact architecture family and do not carry forward like baseline PTX.
 
-GPU Preflight uses file paths and names only to find candidates and estimate their role. It then uses `cuobjdump` to inspect the contents of each selected artifact. Therefore, **CUDA artifact** or **CUDA binary** is the correct term for a reported `.so`; **kernel** refers to one GPU entry point inside it.
+GPU Preflight uses file paths and names only to estimate an artifact's role. It then uses `cuobjdump` to inspect the contents of each selected artifact. Therefore, **CUDA artifact** or **CUDA binary** is the correct term for a reported `.so`; **kernel** refers to one GPU entry point inside it.
 
-A file is a candidate if its suffix is one only CUDA produces — `.cubin`, `.fatbin`, `.ptx` — wherever it sits, so an application's own kernels, a Triton JIT cache entry and a dispatch catalog under a vendor-neutral directory are all inspected. The generic binary suffixes `.so`, `.a` and `.bin` identify nothing on their own, and an image carries thousands of them, so one of those is a candidate only where the path names a CUDA-bearing project: `cuda`, `flash`, `jax`, `nccl`, `nvidia`, `nvshmem` or `torch`. A CUDA extension built into a `.so` under a path mentioning none of those is therefore not inspected, and not counted against coverage either. If an image ships device code that way, give the path or the file name one of those names, or inspect it separately.
+Candidates are found by reading bytes, not by matching names. A suffix only CUDA produces — `.cubin`, `.fatbin`, `.ptx` — makes a file a candidate wherever it sits; everything else is settled by its first twenty bytes, so anything carrying the ELF magic number is a candidate whatever it is called. Host binaries become candidates too and `cuobjdump` answers "no device code" for each, which costs roughly a tenth of the scan's time.
 
 Report terms:
 

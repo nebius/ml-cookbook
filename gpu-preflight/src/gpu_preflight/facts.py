@@ -106,6 +106,9 @@ class UcxModuleGroup:
 # EM_CUDA. A .cubin is an ELF object whose machine is CUDA because it holds device
 # code, so it matches no CPU architecture by design and the dynamic loader never sees
 # it -- the driver does, so it is not evidence about the host architecture.
+ELF_MAGIC = b"\x7fELF"
+# e_machine lives at offset 18, so 20 bytes classify any ELF.
+ELF_HEADER_PROBE_BYTES = 20
 ELF_MACHINE_CUDA = 0xBE
 ELF_MACHINE_AMDGPU = 0xE0
 GPU_ELF_MACHINES = frozenset({ELF_MACHINE_CUDA, ELF_MACHINE_AMDGPU})
@@ -131,7 +134,7 @@ ELF_MACHINES = {
 
 def elf_architecture(header: bytes) -> str | None:
     """Read the CPU architecture out of an ELF header, or None if this is not an ELF."""
-    if len(header) < 20 or header[:4] != b"\x7fELF":
+    if len(header) < ELF_HEADER_PROBE_BYTES or not header.startswith(ELF_MAGIC):
         return None
     byteorder = "little" if header[5] == 1 else "big"
     machine = int.from_bytes(header[18:20], byteorder)

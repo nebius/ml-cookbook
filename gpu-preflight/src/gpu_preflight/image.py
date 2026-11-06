@@ -34,6 +34,8 @@ from gpu_preflight.cuda_inspection import (
     resolve_cuobjdump,
 )
 from gpu_preflight.facts import (
+    ELF_HEADER_PROBE_BYTES,
+    ELF_MAGIC,
     ImageFacts,
     LibraryArchitectureEvidence,
     UcxModuleGroup,
@@ -646,9 +648,16 @@ def _stream_cuda_member(
     destination: BinaryIO | None = None,
     *,
     scan_markers: bool = True,
-) -> tuple[int, tuple[str, ...]]:
-    """Stream bounded CUDA candidate bytes, optionally to a cuobjdump input file."""
-    file_object = archive.extractfile(member)
+    file_object: BinaryIO | None = None,
+    head: bytes = b"",
+) -> tuple[int, tuple[str, ...], str | None]:
+    """Stream bounded CUDA candidate bytes, optionally to a cuobjdump input file.
+
+    ``head`` is bytes the ELF probe already took off ``file_object``. A tar stream
+    cannot seek backwards, so they are replayed here rather than read again.
+    """
+    if file_object is None:
+        file_object = archive.extractfile(member)
     if file_object is None:
         return 0, (), None
     remaining = member.size
@@ -657,11 +666,14 @@ def _stream_cuda_member(
     architecture: str | None = None
     targets: set[str] = set()
     while remaining:
-        chunk = file_object.read(min(1024 * 1024, remaining))
+        if head:
+            chunk, head = head[:remaining], head[remaining:]
+        else:
+            chunk = file_object.read(min(1024 * 1024, remaining))
         if not chunk:
             break
         if not bytes_read:
-            architecture = elf_architecture(chunk[:20])
+            architecture = elf_architecture(chunk[:ELF_HEADER_PROBE_BYTES])
         if destination:
             destination.write(chunk)
         if scan_markers:
@@ -771,6 +783,8 @@ def scan_rootfs_tar(
                     lower_name.endswith(AMBIGUOUS_BINARY_SUFFIXES)
                     or bool(VERSIONED_SO_RE.search(lower_name))
                 )
+                candidate_stream: BinaryIO | None = None
+                candidate_head = b""
                 if not (
                     is_python_metadata
                     or is_system_inventory
@@ -780,7 +794,16 @@ def scan_rootfs_tar(
                     or is_hpcx_version_file
                     or is_nccl_header
                 ):
-                    continue
+                    if member.size < ELF_HEADER_PROBE_BYTES:
+                        continue
+                    candidate_stream = archive.extractfile(member)
+                    if candidate_stream is None:
+                        continue
+                    candidate_head = candidate_stream.read(ELF_HEADER_PROBE_BYTES)
+                    if not candidate_head.startswith(ELF_MAGIC):
+                        candidate_stream.close()
+                        continue
+                    is_cuda_candidate = True
 
                 if is_cuda_candidate:
                     cuda_candidate_files += 1
@@ -865,11 +888,15 @@ def scan_rootfs_tar(
                                     member,
                                     temporary,
                                     scan_markers=False,
+                                    file_object=candidate_stream,
+                                    head=candidate_head,
                                 )
                         else:
                             read_size, marker_targets, architecture = _stream_cuda_member(
                                 archive,
                                 member,
+                                file_object=candidate_stream,
+                                head=candidate_head,
                             )
                         bytes_scanned += read_size
                         census_architecture = (
