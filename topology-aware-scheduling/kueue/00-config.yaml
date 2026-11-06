@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tas-kueue
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: Topology
+metadata:
+  name: nebius-gb300-kueue
+spec:
+  levels:
+    - nodeLabel: topology.nebius.com/gpu-cluster-id
+    - nodeLabel: topology.nebius.com/nvl-instance-group-id
+    - nodeLabel: kubernetes.io/hostname
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: gb300-kueue
+spec:
+  nodeLabels:
+    node.kubernetes.io/instance-type: gpu-gb300
+  topologyName: nebius-gb300-kueue
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: gb300-tas-kueue
+spec:
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: tas-kueue
+  resourceGroups:
+    - coveredResources:
+        - cpu
+        - memory
+        - nvidia.com/gpu
+      flavors:
+        - name: gb300-kueue
+          resources:
+            - name: cpu
+              nominalQuota: "3456"
+            - name: memory
+              nominalQuota: 23040Gi
+            - name: nvidia.com/gpu
+              nominalQuota: "128"
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: gb300
+  namespace: tas-kueue
+spec:
+  clusterQueue: gb300-tas-kueue
