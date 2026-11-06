@@ -2596,12 +2596,24 @@ def _cuda_artifact_findings(
                 ),
             )
         )
-    if not rootfs.cuobjdump_available or not inspected_with_targets:
-        reason = (
-            "cuobjdump was not available on the GPU Preflight host"
-            if not rootfs.cuobjdump_available
-            else "cuobjdump did not successfully enumerate targets in any CUDA artifacts"
-        )
+    # An image can hold no device code at all, and reading every candidate without finding a
+    # kernel is a complete answer rather than a missing one. GPF-CUDA-001 states that no
+    # targets were found; this finding is for the case where the scan could not look.
+    scan_could_not_look = (
+        not rootfs.cuobjdump_available
+        or rootfs.cuobjdump_files_analyzed == 0
+        or rootfs.cuobjdump_incomplete > 0
+    )
+    if scan_could_not_look and not inspected_with_targets:
+        if not rootfs.cuobjdump_available:
+            reason = "cuobjdump was not available on the GPU Preflight host"
+        elif rootfs.cuobjdump_files_analyzed == 0:
+            reason = "cuobjdump inspected no CUDA artifacts"
+        else:
+            reason = (
+                f"cuobjdump did not enumerate targets in any CUDA artifact, and "
+                f"{rootfs.cuobjdump_incomplete} artifact(s) were not read in full"
+            )
         findings.append(
             Finding(
                 id="GPF-CUDA-011",

@@ -1229,3 +1229,64 @@ class MergedObservationTests(unittest.TestCase):
         observations: dict[str, object] = {"cuda_targets": ["sm_90"]}
         merge_discovered_observations(observations)
         self.assertEqual(observations["cuda_targets"], ["sm_90"])
+
+
+class NoDeviceCodeIsAnAnswerTests(unittest.TestCase):
+    """nvcr.io/nvidia/k8s-device-plugin:v0.20.1 is a Go binary that talks to the kubelet.
+
+    The scan read all 288 of its CUDA candidates with cuobjdump and none held a kernel, and
+    the report still said "Per-artifact CUDA evidence is incomplete" because "cuobjdump did
+    not successfully enumerate targets in any CUDA artifacts". cuobjdump did succeed; the
+    image has no device code. Reporting a tool failure that did not happen sends a reader
+    looking for a scan problem instead of reading GPF-CUDA-001, which already says plainly
+    that no targets were found.
+    """
+
+    def _findings(self, **overrides: object) -> dict[str, str]:
+        profile = load_profiles()["h100"]
+        rootfs = replace(rootfs_with(), **overrides)
+        return {
+            f.id: f.evidence
+            for f in artifact_findings(rootfs, profile, cuobjdump_timeout_seconds=30)
+        }
+
+    def test_a_clean_scan_that_found_no_kernels_reports_no_tool_failure(self) -> None:
+        found = self._findings(
+            cuda_candidate_files=288,
+            cuobjdump_files_analyzed=288,
+            cuobjdump_targets_found=0,
+            cuobjdump_no_device_code=288,
+            cuobjdump_incomplete=0,
+        )
+        self.assertNotIn("GPF-CUDA-011", found)
+
+    def test_a_missing_analyzer_is_still_an_evidence_gap(self) -> None:
+        found = self._findings(
+            cuobjdump_available=False,
+            cuda_candidate_files=288,
+            cuobjdump_files_analyzed=0,
+            cuobjdump_targets_found=0,
+        )
+        self.assertIn("GPF-CUDA-011", found)
+        self.assertIn("not available", found["GPF-CUDA-011"])
+
+    def test_an_analyzer_that_read_nothing_is_still_an_evidence_gap(self) -> None:
+        found = self._findings(
+            cuda_candidate_files=288,
+            cuobjdump_files_analyzed=0,
+            cuobjdump_targets_found=0,
+        )
+        self.assertIn("GPF-CUDA-011", found)
+        self.assertIn("inspected no CUDA artifacts", found["GPF-CUDA-011"])
+
+    def test_an_artifact_read_only_in_part_is_still_an_evidence_gap(self) -> None:
+        """This is the case the finding is for: something was unreadable, so the absence of
+        targets cannot be trusted."""
+        found = self._findings(
+            cuda_candidate_files=288,
+            cuobjdump_files_analyzed=288,
+            cuobjdump_targets_found=0,
+            cuobjdump_incomplete=4,
+        )
+        self.assertIn("GPF-CUDA-011", found)
+        self.assertIn("4 artifact(s) were not read in full", found["GPF-CUDA-011"])
