@@ -969,3 +969,47 @@ class CoverageGuidanceTests(unittest.TestCase):
         )
         self.assertNotIn("bounded", finding.title)
         self.assertNotIn("bounded", finding.evidence)
+
+
+class DeadLibraryQuestionTests(unittest.TestCase):
+    """The PR review asked it directly: is a library nothing loads still flagged?
+
+    Yes, and the report has to say why that is the honest answer rather than leave a
+    reader to work it out. A CUDA extension is imported by path, not resolved by
+    SONAME, so neither the loader search path nor its absence establishes deadness --
+    which is exactly why this reaches review and stops there.
+    """
+
+    def _finding(self):
+        artifact = CudaArtifactEvidence(
+            path="/opt/build/stale/libcustom_op.so",
+            size_bytes=4096,
+            targets=("sm_70",),
+            method="cuobjdump",
+            complete=True,
+            role="runtime",
+        )
+        findings = {
+            finding.id: finding
+            for finding in artifact_findings(
+                rootfs_with((artifact,)),
+                load_profiles()["b300"],
+                ("12.8",),
+                cuobjdump_timeout_seconds=30,
+            )
+        }
+        return findings["GPF-CUDA-016"]
+
+    def test_an_unreachable_artifact_is_still_reported(self) -> None:
+        self.assertEqual(self._finding().severity, "warning")
+
+    def test_it_stops_at_review_rather_than_demanding_a_change(self) -> None:
+        from gpu_preflight.inspection import REVIEW_ONLY_FINDINGS
+
+        self.assertIn("GPF-CUDA-016", REVIEW_ONLY_FINDINGS)
+
+    def test_the_report_says_why_deadness_cannot_be_established(self) -> None:
+        remediation = self._finding().remediation
+        self.assertIn("imported by path", remediation)
+        self.assertIn("/proc/<pid>/maps", remediation)
+        self.assertIn("needs no action", remediation)

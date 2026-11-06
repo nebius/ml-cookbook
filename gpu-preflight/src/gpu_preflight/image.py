@@ -2468,10 +2468,17 @@ def _cuda_artifact_findings(
                     "artifact or selects a catalog path."
                 ),
                 remediation=(
-                    "Prioritize likely runtime gaps, then establish whether workload-specific "
-                    "extensions are loaded. Use the complete JSON inventory or expandable HTML "
-                    "appendix for paths. Select a target-supported vendor release or rebuild "
-                    "application-owned extensions with a native cubin or compatible retained PTX."
+                    "This list includes artifacts the workload may never load, and the scan "
+                    "cannot tell which: a CUDA extension is usually imported by path rather "
+                    "than resolved by SONAME, so neither the loader search path nor the "
+                    "absence of one establishes that a library is dead. Resolve it on "
+                    "hardware by capturing what the workload actually loads -- "
+                    "/proc/<pid>/maps, or ldd on the entrypoint -- and compare that against "
+                    "these paths; the complete inventory is in the JSON and the HTML "
+                    "appendix. For an artifact the workload does load, select a "
+                    "target-supported vendor release or rebuild it with a native cubin or "
+                    "compatible retained PTX. An artifact nothing loads needs no action, "
+                    "which is why this is a review rather than a required change."
                 ),
                 details=incompatible_details,
             )
