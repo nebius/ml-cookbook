@@ -11,7 +11,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from gpu_preflight.facts import is_gpu_firmware
+from gpu_preflight.facts import elf_architecture, is_gpu_firmware
 from gpu_preflight.image import (
     DockerImageClient,
     ImageInspectionError,
@@ -92,3 +92,33 @@ class GpuFirmwareTests(unittest.TestCase):
 
     def test_the_path_alone_does_not_excuse_another_architecture(self) -> None:
         self.assertFalse(is_gpu_firmware("/lib/firmware/nvidia/615.71.09/gsp_ga10x.bin", "amd64"))
+
+
+def elf_bytes(machine: int = 0x3E, payload: bytes = b"") -> bytes:
+    """Build a minimal 64-bit little-endian ELF header plus optional payload."""
+    header = bytearray(64)
+    header[0:4] = b"\x7fELF"
+    header[4] = 2
+    header[5] = 1
+    header[6] = 1
+    header[16:18] = (3).to_bytes(2, "little")
+    header[18:20] = machine.to_bytes(2, "little")
+    return bytes(header) + payload
+
+
+class GpuCodeObjectTests(unittest.TestCase):
+    """nvcr.io/nvidia/pytorch:26.10 ships 5,623 AITER .co objects for AMD GPUs.
+
+    They are ELF, but EM_AMDGPU, so the host CPU never loads them. Read as host
+    libraries they drowned the two files that really were built for another CPU.
+    """
+
+    def test_amd_device_code_is_not_a_host_architecture(self) -> None:
+        self.assertIsNone(elf_architecture(elf_bytes(machine=0xE0)))
+
+    def test_cuda_device_code_is_not_a_host_architecture(self) -> None:
+        self.assertIsNone(elf_architecture(elf_bytes(machine=0xBE)))
+
+    def test_host_architectures_are_still_read(self) -> None:
+        self.assertEqual(elf_architecture(elf_bytes(machine=0x3E)), "amd64")
+        self.assertEqual(elf_architecture(elf_bytes(machine=0xB7)), "arm64")

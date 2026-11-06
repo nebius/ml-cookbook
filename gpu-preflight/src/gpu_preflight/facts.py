@@ -107,6 +107,8 @@ class UcxModuleGroup:
 # code, so it matches no CPU architecture by design and the dynamic loader never sees
 # it -- the driver does, so it is not evidence about the host architecture.
 ELF_MACHINE_CUDA = 0xBE
+ELF_MACHINE_AMDGPU = 0xE0
+GPU_ELF_MACHINES = frozenset({ELF_MACHINE_CUDA, ELF_MACHINE_AMDGPU})
 ELF_MACHINE_RISCV64 = 0xF3
 # GSP firmware runs on a RISC-V processor inside the GPU, not on the host CPU, so it is
 # not evidence about the image's architecture. The exception is confined to the driver's
@@ -133,7 +135,7 @@ def elf_architecture(header: bytes) -> str | None:
         return None
     byteorder = "little" if header[5] == 1 else "big"
     machine = int.from_bytes(header[18:20], byteorder)
-    if machine == ELF_MACHINE_CUDA:
+    if machine in GPU_ELF_MACHINES:
         return None
     return ELF_MACHINES.get(machine, f"elf-machine-0x{machine:x}")
 
