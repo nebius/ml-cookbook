@@ -107,6 +107,15 @@ class UcxModuleGroup:
 # code, so it matches no CPU architecture by design and the dynamic loader never sees
 # it -- the driver does, so it is not evidence about the host architecture.
 ELF_MACHINE_CUDA = 0xBE
+ELF_MACHINE_RISCV64 = 0xF3
+# GSP firmware runs on a RISC-V processor inside the GPU, not on the host CPU, so it is
+# not evidence about the image's architecture. The exception is confined to the driver's
+# documented layout: an ordinary RISC-V library, or a copy of this firmware anywhere
+# else, still answers the host architecture question for itself.
+NVIDIA_GSP_FIRMWARE_RE = re.compile(
+    r"^/?(?:usr/)?lib/firmware/nvidia/[0-9]+(?:\.[0-9]+)+/gsp_[a-z0-9]+\.bin$",
+    re.IGNORECASE,
+)
 ELF_MACHINES = {
     0x03: "i386",
     0x28: "arm",
@@ -127,6 +136,17 @@ def elf_architecture(header: bytes) -> str | None:
     if machine == ELF_MACHINE_CUDA:
         return None
     return ELF_MACHINES.get(machine, f"elf-machine-0x{machine:x}")
+
+
+def is_gpu_firmware(path: str, architecture: str | None) -> bool:
+    """Return whether a binary is GPU firmware rather than a host CPU dependency.
+
+    Kept separate from :func:`elf_architecture` so that reading an ELF header stays a
+    function of the bytes alone; only the census, which knows the path, needs this.
+    """
+    return architecture == ELF_MACHINES[ELF_MACHINE_RISCV64] and bool(
+        NVIDIA_GSP_FIRMWARE_RE.fullmatch(path)
+    )
 
 
 @dataclass(frozen=True)

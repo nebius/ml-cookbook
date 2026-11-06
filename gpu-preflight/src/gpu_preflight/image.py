@@ -43,6 +43,7 @@ from gpu_preflight.facts import (
     detect_packages,
     detect_ucx_versions,
     elf_architecture,
+    is_gpu_firmware,
 )
 from gpu_preflight.inspection import (
     Finding,
@@ -907,6 +908,8 @@ def scan_rootfs_tar(
                         census_architecture = (
                             architecture if artifact_role in {"runtime", "kernel-catalog"} else None
                         )
+                        if census_architecture and is_gpu_firmware(name, census_architecture):
+                            census_architecture = None
                         complete_file = read_size == member.size
                         if (
                             not complete_file

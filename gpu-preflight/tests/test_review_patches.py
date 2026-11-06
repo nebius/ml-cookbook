@@ -11,6 +11,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from gpu_preflight.facts import is_gpu_firmware
 from gpu_preflight.image import (
     DockerImageClient,
     ImageInspectionError,
@@ -65,3 +66,29 @@ class CommandlessImageTests(unittest.TestCase):
         entrypoint = arguments[arguments.index("--entrypoint") + 1]
         self.assertTrue(entrypoint.startswith("/"))
         self.assertIn("never_executed", entrypoint)
+
+
+class GpuFirmwareTests(unittest.TestCase):
+    """nvcr.io/nvidia/driver ships RISC-V GSP firmware under /lib/firmware/nvidia.
+
+    It runs on a processor inside the GPU, so counting it as a host CPU dependency
+    put an architecture the host never executes into the report.
+    """
+
+    def test_driver_firmware_is_not_a_host_dependency(self) -> None:
+        for path in (
+            "/lib/firmware/nvidia/615.71.09/gsp_ga10x.bin",
+            "usr/lib/firmware/nvidia/580.65.06/gsp_tu10x.bin",
+        ):
+            self.assertTrue(is_gpu_firmware(path, "riscv64"), path)
+
+    def test_an_ordinary_riscv_binary_still_answers_for_itself(self) -> None:
+        for path in (
+            "/usr/lib/riscv64-linux-gnu/libfoo.so",
+            "/opt/vendor/gsp_ga10x.bin",
+            "/lib/firmware/nvidia/615.71.09/notgsp.bin",
+        ):
+            self.assertFalse(is_gpu_firmware(path, "riscv64"), path)
+
+    def test_the_path_alone_does_not_excuse_another_architecture(self) -> None:
+        self.assertFalse(is_gpu_firmware("/lib/firmware/nvidia/615.71.09/gsp_ga10x.bin", "amd64"))
