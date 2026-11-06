@@ -13,6 +13,7 @@ from gpu_preflight.compatibility import (
     summarize_compatibility,
 )
 from gpu_preflight.facts import (
+    TARGET_OPERATING_SYSTEM,
     ImageFacts,
     LibraryArchitectureEvidence,
     normalize_package_name,
@@ -498,6 +499,18 @@ def _architecture_from_platform(platform: str | None) -> str | None:
     return {"aarch64": "arm64", "x86_64": "amd64"}.get(architecture, architecture)
 
 
+def _operating_system_from_platform(platform: str | None) -> str | None:
+    """Return the OS half of a resolved platform, or None when it carries none.
+
+    A bare "amd64" is Linux by convention, and so is an unresolved platform; only an
+    explicit, different OS is worth refusing.
+    """
+    if not platform:
+        return None
+    head, separator, _ = platform.rpartition("/")
+    return head.lower() if separator else None
+
+
 def _version_tuple(value: str) -> tuple[int, ...]:
     return tuple(int(part) for part in value.split("."))
 
@@ -799,19 +812,28 @@ def _target_findings(facts: ImageFacts, profile: HardwareProfile) -> tuple[Findi
     findings.extend(_runtime_package_findings(facts, profile))
 
     declared_architecture = _architecture_from_platform(facts.final_platform)
-    if declared_architecture and declared_architecture not in profile.cpu_architectures:
+    declared_operating_system = _operating_system_from_platform(facts.final_platform)
+    # A Windows image is as unrunnable here as a foreign CPU, so the OS is matched as well
+    # as the architecture.
+    wrong_platform = (
+        declared_architecture and declared_architecture not in profile.cpu_architectures
+    ) or (
+        declared_operating_system is not None
+        and declared_operating_system != TARGET_OPERATING_SYSTEM
+    )
+    if declared_architecture and wrong_platform:
         findings.append(
             Finding(
                 id="GPF-CPU-001",
                 severity="blocker",
                 category="compatibility",
-                title="Final image platform conflicts with target CPU architecture",
+                title="Final image platform conflicts with the target platform",
                 evidence=(
                     f"Resolved image platform is {facts.final_platform}; {profile.display_name} expects "
-                    f"{', '.join(profile.cpu_architectures)}."
+                    f"{TARGET_OPERATING_SYSTEM}/{', '.join(profile.cpu_architectures)}."
                 ),
                 remediation=(
-                    "Publish a native image variant for the target architecture or a multi-platform "
+                    "Publish a native image variant for the target platform or a multi-platform "
                     "image index."
                 ),
             )

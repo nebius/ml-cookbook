@@ -38,6 +38,7 @@ from gpu_preflight.cuda_inspection import (
 from gpu_preflight.facts import (
     ELF_HEADER_PROBE_BYTES,
     ELF_MAGIC,
+    TARGET_OPERATING_SYSTEM,
     ImageFacts,
     LibraryArchitectureEvidence,
     UcxModuleGroup,
@@ -1506,6 +1507,15 @@ def _architecture(platform: str) -> str:
     return platform.rsplit("/", maxsplit=1)[-1]
 
 
+def _operating_system(platform: str) -> str:
+    """Return the OS half of an OCI platform string, defaulting to Linux.
+
+    A bare "amd64" carries no OS; every registry that omits it means Linux.
+    """
+    head, separator, _ = platform.rpartition("/")
+    return head.lower() if separator else TARGET_OPERATING_SYSTEM
+
+
 def _major_minor(value: str) -> tuple[int, int] | None:
     match = re.search(r"(?<!\d)(\d+)\.(\d+)", value)
     return (int(match.group(1)), int(match.group(2))) if match else None
@@ -2661,11 +2671,16 @@ def _select_manifest(
             (item for item in manifests.platforms if item.platform == facts.final_platform),
             None,
         )
+    # The OS has to match as well as the CPU. Docker Hub publishes Windows manifests
+    # in the same index -- docker-model-backend-llamacpp lists windows/amd64 ahead of
+    # linux/amd64 -- and every GPU profile is Linux hardware, so a non-Linux manifest is
+    # never the one to scan.
     return next(
         (
             item
             for item in manifests.platforms
             if _architecture(item.platform) in profile.cpu_architectures
+            and _operating_system(item.platform) == TARGET_OPERATING_SYSTEM
         ),
         None,
     )
@@ -2874,6 +2889,7 @@ def inspect_with_image(
                     title="No compatible image platform manifest",
                     evidence=(
                         f"Available platforms: {available}; {profile.display_name} expects "
+                        f"{TARGET_OPERATING_SYSTEM}/"
                         f"{', '.join(profile.cpu_architectures)}."
                     ),
                     remediation="Publish a native image variant for the target CPU architecture.",

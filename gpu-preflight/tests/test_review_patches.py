@@ -28,8 +28,10 @@ from gpu_preflight.facts import ImageFacts, elf_architecture, is_gpu_firmware
 from gpu_preflight.image import (
     DockerImageClient,
     ImageInspectionError,
+    ImageManifestSet,
     PlatformManifest,
     PulledImageFacts,
+    _select_manifest,
     scan_rootfs_tar,
 )
 from gpu_preflight.inspection import _target_findings
@@ -598,3 +600,61 @@ class HostArchitectureCensusTests(unittest.TestCase):
     def test_a_private_copy_outside_those_roots_still_answers_for_itself(self) -> None:
         self.assertEqual(classify_artifact_role("/opt/app/vendor/libclang_rt_x.so"), "runtime")
         self.assertEqual(classify_artifact_role("/opt/app/target/libfoo.so"), "runtime")
+
+
+class WindowsManifestTests(unittest.TestCase):
+    """docker-model-backend-llamacpp:v0.0.34-cuda.
+
+    Its index lists windows/amd64 before linux/amd64. Selecting on the architecture
+    alone took the Windows image, scanned its 26 files, found no CUDA anywhere and
+    called the result insufficient evidence -- while reporting the CPU architecture as
+    a match. A clean bill of health for an image that was never looked at.
+    """
+
+    @staticmethod
+    def _manifests(*platforms: str) -> ImageManifestSet:
+        return ImageManifestSet(
+            reference="example/multi:latest",
+            platforms=tuple(
+                PlatformManifest(
+                    platform=platform,
+                    digest=f"sha256:{index:064d}",
+                    config_digest=None,
+                    compressed_size_bytes=1,
+                )
+                for index, platform in enumerate(platforms)
+            ),
+        )
+
+    @staticmethod
+    def _profile():
+        return load_profiles()["h100"]
+
+    def test_the_linux_manifest_is_taken_even_when_windows_is_listed_first(self) -> None:
+        selected = _select_manifest(
+            self._manifests("windows/amd64", "linux/amd64", "linux/arm64"),
+            unresolved_facts(),
+            self._profile(),
+        )
+        assert selected is not None
+        self.assertEqual(selected.platform, "linux/amd64")
+
+    def test_a_windows_only_image_matches_nothing(self) -> None:
+        self.assertIsNone(
+            _select_manifest(self._manifests("windows/amd64"), unresolved_facts(), self._profile())
+        )
+
+    def test_an_os_less_platform_is_read_as_linux(self) -> None:
+        selected = _select_manifest(self._manifests("amd64"), unresolved_facts(), self._profile())
+        assert selected is not None
+        self.assertEqual(selected.platform, "amd64")
+
+    def test_a_resolved_windows_platform_is_not_reported_as_a_match(self) -> None:
+        findings = {
+            finding.id
+            for finding in _target_findings(
+                unresolved_facts(final_platform="windows/amd64"), self._profile()
+            )
+        }
+        self.assertIn("GPF-CPU-001", findings)
+        self.assertNotIn("GPF-CPU-002", findings)

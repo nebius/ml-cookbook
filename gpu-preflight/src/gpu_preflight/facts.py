@@ -106,6 +106,10 @@ class UcxModuleGroup:
 # EM_CUDA. A .cubin is an ELF object whose machine is CUDA because it holds device
 # code, so it matches no CPU architecture by design and the dynamic loader never sees
 # it -- the driver does, so it is not evidence about the host architecture.
+# Every Nebius GPU profile is Linux hardware. No profile declares an OS because none
+# of them has a choice to make.
+TARGET_OPERATING_SYSTEM = "linux"
+
 ELF_MAGIC = b"\x7fELF"
 # e_machine lives at offset 18, so 20 bytes classify any ELF.
 ELF_HEADER_PROBE_BYTES = 20
