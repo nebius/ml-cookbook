@@ -14,11 +14,13 @@ import json
 import tarfile
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from gpu_preflight.cuda_inspection import resolve_cuobjdump
-from gpu_preflight.facts import elf_architecture, is_gpu_firmware
+from gpu_preflight.compatibility import evaluate_cuda_target, summarize_compatibility
+from gpu_preflight.cuda_inspection import read_ptx_declaration, resolve_cuobjdump
+from gpu_preflight.facts import ImageFacts, elf_architecture, is_gpu_firmware
 from gpu_preflight.image import (
     DockerImageClient,
     ImageInspectionError,
@@ -26,6 +28,21 @@ from gpu_preflight.image import (
     PulledImageFacts,
     scan_rootfs_tar,
 )
+from gpu_preflight.inspection import _target_findings
+from gpu_preflight.profiles import load_profiles
+
+
+def unresolved_facts(final_platform: str | None = None) -> ImageFacts:
+    return ImageFacts(
+        path="",
+        reference="example/image:latest",
+        final_platform=final_platform,
+        cuda_targets=(),
+        cuda_versions=(),
+        nccl_versions=(),
+        detected_packages=(),
+        environment={},
+    )
 
 
 def commandless_facts() -> tuple[PlatformManifest, PulledImageFacts]:
@@ -225,3 +242,190 @@ class ElfDiscoveryTests(unittest.TestCase):
                 tar_of((("usr/bin/server", elf_bytes(payload=payload)),)), cuobjdump=tool
             )
             self.assertEqual(captured.read_bytes(), elf_bytes(payload=payload))
+
+
+class StandalonePtxTests(unittest.TestCase):
+    """chrstnhntschl/gpu_burn ships /root/compare.ptx, which it compiles at run time.
+
+    cuobjdump finds no embedded device code in PTX source, which is the expected answer
+    and establishes nothing. The module declares its own architecture at the top.
+    """
+
+    def _declare(self, text: str) -> tuple[tuple[str, ...], str | None]:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "compare.ptx"
+            source.write_text(text, encoding="utf-8")
+            return read_ptx_declaration(source)
+
+    def test_a_target_becomes_a_jit_compilable_virtual_architecture(self) -> None:
+        targets, version = self._declare("//\n.version 6.5\n.target sm_52\n.address_size 64\n")
+        self.assertEqual(targets, ("compute_52",))
+        self.assertEqual(version, "6.5")
+
+    def test_options_in_the_target_list_are_not_architectures(self) -> None:
+        targets, _ = self._declare(".version 7.0\n.target sm_70, debug, map_f64_to_f32\n")
+        self.assertEqual(targets, ("compute_70",))
+
+    def test_an_architecture_conditional_target_keeps_its_suffix(self) -> None:
+        targets, _ = self._declare(".version 8.3\n.target sm_90a\n")
+        self.assertEqual(targets, ("compute_90a",))
+
+    def test_several_architectures_are_all_reported(self) -> None:
+        targets, _ = self._declare(".version 8.3\n.target sm_80, sm_90\n")
+        self.assertEqual(targets, ("compute_80", "compute_90"))
+
+    def test_a_module_without_a_target_declares_nothing(self) -> None:
+        targets, version = self._declare(".version 6.5\n// no target directive here\n")
+        self.assertEqual(targets, ())
+        self.assertEqual(version, "6.5")
+
+    def test_an_older_target_is_compatible_with_a_newer_gpu(self) -> None:
+        """PTX is the one artifact where an older target is good news, not a shortfall."""
+        profile = load_profiles()["b300"]
+        summary = summarize_compatibility(("compute_52",), profile.compute_capability_number)
+        self.assertTrue(summary.compatible)
+
+    def test_an_architecture_conditional_target_does_not_carry_forward(self) -> None:
+        profile = load_profiles()["b300"]
+        summary = summarize_compatibility(("compute_90a",), profile.compute_capability_number)
+        self.assertFalse(summary.compatible)
+
+    def test_a_ptx_file_in_an_image_yields_verified_evidence(self) -> None:
+        source = b".version 6.5\n.target sm_52\n.address_size 64\n.visible .entry burn()\n"
+        with tempfile.TemporaryDirectory() as directory:
+            scan = scan_rootfs_tar(
+                tar_of((("root/compare.ptx", source),)),
+                cuobjdump=listing_cuobjdump(directory),
+            )
+        self.assertEqual(len(scan.cuda_artifacts), 1)
+        artifact = scan.cuda_artifacts[0]
+        self.assertEqual(artifact.path, "/root/compare.ptx")
+        self.assertEqual(artifact.method, "ptx-source")
+        self.assertTrue(artifact.complete)
+        self.assertEqual(artifact.targets, ("compute_52",))
+        self.assertIn("compiles it at run time", artifact.diagnostic)
+
+    def test_unreadable_ptx_is_an_evidence_gap_not_a_clean_negative(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "cuobjdump"
+            executable.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = "--version" ]; then '
+                "echo 'Cuda compilation tools, release 13.4, V13.4.92'; exit 0; fi\n"
+                "echo 'does not contain device code' >&2; exit 1\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            tool = resolve_cuobjdump(str(executable), timeout_seconds=10, fallback_mode="off")
+            scan = scan_rootfs_tar(
+                tar_of((("root/opaque.ptx", b"// nothing a parser can use\n" * 4),)),
+                cuobjdump=tool,
+            )
+        self.assertEqual(len(scan.cuda_artifacts), 1)
+        artifact = scan.cuda_artifacts[0]
+        self.assertFalse(artifact.complete)
+        self.assertEqual(artifact.incomplete_reason, "analyzer-error")
+        self.assertIn("uncompiled source", artifact.diagnostic)
+
+
+class PtxPreambleReadTests(unittest.TestCase):
+    """A file named .ptx is not always PTX, and the reader has to cope either way."""
+
+    def _declaration(self, body: str) -> tuple[tuple[str, ...], str | None]:
+        with tempfile.TemporaryDirectory() as directory:
+            module = Path(directory) / "kernel.ptx"
+            module.write_text(body, encoding="utf-8")
+            return read_ptx_declaration(module)
+
+    def test_the_declaration_is_read_from_the_preamble(self) -> None:
+        self.assertEqual(
+            self._declaration(".version 8.5\n.target sm_90\n.address_size 64\n"),
+            (("compute_90",), "8.5"),
+        )
+
+    def test_the_read_stops_once_the_module_body_starts(self) -> None:
+        """Without a stop, a .ptx declaring no target is read to its last byte.
+
+        berkeleydsep/datahub-scipy-ml-notebook ships eighteen of them.
+        """
+        body = ".version 8.5\n.visible .entry k()\n" + "add.s32 %r1, %r2, %r3;\n" * 50000
+        targets, version = self._declaration(body)
+        self.assertEqual(targets, ())
+        self.assertEqual(version, "8.5")
+
+    def test_a_file_that_is_not_ptx_at_all_declares_nothing(self) -> None:
+        self.assertEqual(self._declaration("\x7fELF not really ptx\n" * 100), ((), None))
+
+    def test_an_architecture_conditional_target_keeps_its_suffix(self) -> None:
+        self.assertEqual(self._declaration(".target sm_90a\n")[0], ("compute_90a",))
+
+    def test_several_targets_on_one_directive_are_all_read(self) -> None:
+        self.assertEqual(
+            self._declaration(".target sm_80, sm_90\n")[0], ("compute_80", "compute_90")
+        )
+
+
+class PtxJitFloorTests(unittest.TestCase):
+    """gpu-burn ships /root/compare.ptx declaring .target sm_20.
+
+    Reading it was the point of the standalone-PTX work, and having read it the scan
+    called compute_20 JIT-compatible with sm_103 and asked only for a native build.
+    No driver that runs a B300 can assemble compute_20: CUDA 12.8's Virtual
+    Architecture Feature List begins at compute_50 and CUDA 13's at compute_75.
+    """
+
+    def test_fermi_ptx_cannot_jit_on_hardware_no_toolkit_pairs_it_with(self) -> None:
+        for target in ("compute_20", "compute_21", "compute_30", "compute_35"):
+            evaluation = evaluate_cuda_target(target, 103)
+            self.assertFalse(evaluation.compatible, target)
+            self.assertEqual(evaluation.classification, "incompatible", target)
+
+    def test_the_band_only_cuda_12_assembles_is_not_a_clean_pass(self) -> None:
+        for target in ("compute_50", "compute_61", "compute_70"):
+            evaluation = evaluate_cuda_target(target, 103)
+            self.assertTrue(evaluation.compatible, target)
+            self.assertEqual(evaluation.classification, "ptx-jit-driver-dependent", target)
+
+    def test_ptx_both_toolkits_assemble_is_unchanged(self) -> None:
+        self.assertEqual(
+            evaluate_cuda_target("compute_75", 103).classification, "ptx-jit-compatible"
+        )
+        self.assertEqual(
+            evaluate_cuda_target("compute_90", 103).classification, "ptx-jit-compatible"
+        )
+
+    def test_a_newer_virtual_architecture_is_still_refused(self) -> None:
+        self.assertFalse(evaluate_cuda_target("compute_120", 103).compatible)
+
+    def test_an_image_whose_only_ptx_is_fermi_is_incompatible(self) -> None:
+        summary = summarize_compatibility(("compute_20",), 103)
+        assert summary is not None
+        self.assertFalse(summary.compatible)
+        self.assertEqual(summary.classification, "incompatible")
+
+    def test_a_native_cubin_still_outranks_a_driver_dependent_jit(self) -> None:
+        summary = summarize_compatibility(("compute_52", "sm_103"), 103)
+        assert summary is not None
+        self.assertEqual(summary.classification, "native")
+
+
+class DriverDependentPtxFindingTests(unittest.TestCase):
+    """The action for PTX a CUDA 13 driver refuses is not "add a native build"."""
+
+    @staticmethod
+    def _findings(targets: tuple[str, ...]) -> dict[str, object]:
+        facts = unresolved_facts(final_platform="linux/amd64")
+        facts = replace(facts, cuda_targets=targets)
+        return {finding.id: finding for finding in _target_findings(facts, load_profiles()["b300"])}
+
+    def test_the_driver_release_is_the_thing_to_establish(self) -> None:
+        finding = self._findings(("compute_61",))["GPF-CUDA-004"]
+        self.assertIn("CUDA 13", finding.remediation)
+        self.assertIn("compute_75", finding.remediation)
+        self.assertIn("older driver", finding.title)
+
+    def test_an_ordinary_jit_still_asks_only_for_a_native_build(self) -> None:
+        finding = self._findings(("compute_90",))["GPF-CUDA-004"]
+        self.assertNotIn("CUDA 13", finding.remediation)
+        self.assertIn("native", finding.remediation)
+        self.assertEqual(finding.title, "CUDA code is compatible but not native")

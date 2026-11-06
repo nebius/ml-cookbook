@@ -288,7 +288,7 @@
         "path": {"type": "string"},
         "size_bytes": {"type": "integer", "minimum": 0},
         "targets": {"type": "array", "items": {"type": "string"}},
-        "method": {"enum": ["cuobjdump", "marker-scan"]},
+        "method": {"enum": ["cuobjdump", "marker-scan", "ptx-source"]},
         "complete": {"type": "boolean"},
         "role": {"enum": ["runtime", "kernel-catalog", "host-runtime", "test", "tooling"]},
         "diagnostic": {"type": ["string", "null"]},

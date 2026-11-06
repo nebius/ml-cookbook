@@ -8,7 +8,10 @@ from datetime import UTC, datetime
 from functools import lru_cache
 
 from gpu_preflight import __version__
-from gpu_preflight.compatibility import summarize_compatibility
+from gpu_preflight.compatibility import (
+    UNIVERSAL_JIT_VIRTUAL_ARCHITECTURE,
+    summarize_compatibility,
+)
 from gpu_preflight.facts import (
     ImageFacts,
     LibraryArchitectureEvidence,
@@ -839,21 +842,46 @@ def _target_findings(facts: ImageFacts, profile: HardwareProfile) -> tuple[Findi
         compatible_suffix = (
             f", plus {len(compatible_targets) - 12} more" if len(compatible_targets) > 12 else ""
         )
+        # A JIT the host driver may refuse is a different problem from a JIT that only
+        # costs startup time, so the remediation names the first.
+        driver_dependent = compatibility.classification == "ptx-jit-driver-dependent"
+        reason = next(
+            (
+                item.reason
+                for item in compatibility.evaluations
+                if item.compatible and item.classification == compatibility.classification
+            ),
+            "",
+        )
         findings.append(
             Finding(
                 id="GPF-CUDA-004",
                 severity="warning",
                 category="compatibility",
-                title="CUDA code is compatible but not native",
+                title=(
+                    "The only CUDA code for this GPU is PTX an older driver assembles"
+                    if driver_dependent
+                    else "CUDA code is compatible but not native"
+                ),
                 evidence=(
                     f"Best match for sm_{profile.compute_capability_number} is "
                     f"{compatibility.classification}; compatible target evidence: "
                     f"{compatible_preview}{compatible_suffix}. "
                     f"{len(facts.cuda_targets)} total target(s) were detected."
+                    + (f" {reason[:1].upper()}{reason[1:]}." if driver_dependent and reason else "")
                 ),
                 remediation=(
-                    f"Add a native {profile.native_sm_targets[0]} build for predictable startup and "
-                    "performance, then validate on hardware."
+                    (
+                        f"Establish the CUDA release of the driver on the target hosts; a CUDA 13 "
+                        f"driver will not compile this PTX at all. Rebuild for "
+                        f"{profile.native_sm_targets[0]}, or retain PTX at "
+                        f"compute_{UNIVERSAL_JIT_VIRTUAL_ARCHITECTURE} or later."
+                    )
+                    if driver_dependent
+                    else (
+                        f"Add a native {profile.native_sm_targets[0]} build for predictable "
+                        "startup and performance, then validate on hardware."
+                    )
                 ),
             )
         )

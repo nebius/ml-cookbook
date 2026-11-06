@@ -25,6 +25,25 @@ CUOBJDUMP_LISTING_TARGET_RE = re.compile(
     r"\.sm_(?P<number>\d{2,3})(?P<suffix>[af]?)\.(?:cubin|ptx)$",
     re.IGNORECASE,
 )
+# A standalone .ptx file is PTX source, not a container with device code embedded in it,
+# so cuobjdump has nothing to list and its empty answer says nothing about the file. The
+# module declares its own architecture: the PTX ISA requires .version and then .target
+# before any statement, so the answer sits at the top of the file and can be read without
+# compiling anything.
+PTX_VERSION_RE = re.compile(r"^[ \t]*\.version[ \t]+(?P<version>\d+\.\d+)", re.MULTILINE)
+PTX_TARGET_RE = re.compile(r"^[ \t]*\.target[ \t]+(?P<targets>[^\n]+)", re.MULTILINE)
+# A target list is comma-separated and mixes architectures with options such as "debug"
+# or "map_f64_to_f32", which are not targets.
+PTX_TARGET_TOKEN_RE = re.compile(r"^sm_(?P<number>\d{2,3})(?P<suffix>[af]?)$", re.IGNORECASE)
+# The first directive that can only belong to a module body. Reaching one means the
+# preamble is over and no .target is coming.
+PTX_BODY_RE = re.compile(
+    r"^[ \t]*\.(?:visible|extern|weak|entry|func|global|const|shared|local|tex|reg|"
+    r"maxntid|minnctapersm|reqntid|pragma)\b"
+)
+# Methods whose targets are the file's own account of itself rather than a guess from
+# surrounding bytes. Both are evidence a compatibility verdict may rest on.
+VERIFIED_ANALYSIS_METHODS = frozenset({"cuobjdump", "ptx-source"})
 # cuobjdump 13.1+ rejects some fat binaries built by CUDA 12.x toolchains with "Invalid ELF"
 # and lists only part of the file. 13.0 lists them completely and still understands CUDA 13
 # targets, so it is the auto-discovered fallback for analyzer errors.
@@ -94,6 +113,10 @@ class CuobjdumpTool:
     fallback: CuobjdumpTool | None = None
 
     def inspect(self, path: Path, image_path: str, size_bytes: int) -> CudaArtifactEvidence:
+        if image_path.lower().endswith(".ptx"):
+            declared = self._ptx_source_evidence(path, image_path, size_bytes)
+            if declared is not None:
+                return declared
         try:
             result = subprocess.run(  # noqa: S603 - explicit argv; shell is disabled
                 (self.executable, "--list-elf", "--list-ptx", str(path)),
@@ -128,6 +151,23 @@ class CuobjdumpTool:
         output = f"{result.stdout}\n{result.stderr}".replace(str(path), image_path)
         targets = cuda_targets_from_listing(output)
         if result.returncode and NO_DEVICE_CODE_RE.search(output):
+            if image_path.lower().endswith(".ptx"):
+                # Source with no readable .target. cuobjdump finding no embedded device
+                # code in it is the expected answer for PTX and establishes nothing, so
+                # this is a gap in the evidence rather than a clean negative result.
+                return CudaArtifactEvidence(
+                    path=image_path,
+                    size_bytes=size_bytes,
+                    targets=(),
+                    method="cuobjdump",
+                    complete=False,
+                    role=classify_artifact_role(image_path),
+                    diagnostic=(
+                        "standalone PTX source declares no readable .target directive, and "
+                        "cuobjdump cannot establish the architecture of uncompiled source"
+                    ),
+                    incomplete_reason="analyzer-error",
+                )
             return CudaArtifactEvidence(
                 path=image_path,
                 size_bytes=size_bytes,
@@ -167,6 +207,70 @@ class CuobjdumpTool:
             complete=True,
             role=classify_artifact_role(image_path),
         )
+
+    def _ptx_source_evidence(
+        self, path: Path, image_path: str, size_bytes: int
+    ) -> CudaArtifactEvidence | None:
+        """Read a standalone PTX module's own target declaration, or None if it has none."""
+        targets, version = read_ptx_declaration(path)
+        if not targets:
+            return None
+        # The ISA version bounds the driver that can JIT this module, and the driver is
+        # not in the image, so it is reported as context and never as a verdict.
+        isa = f"; PTX ISA {version}, which the installed driver must support" if version else ""
+        return CudaArtifactEvidence(
+            path=image_path,
+            size_bytes=size_bytes,
+            targets=targets,
+            method="ptx-source",
+            complete=True,
+            role=classify_artifact_role(image_path),
+            diagnostic=(
+                f"PTX source declares .target {', '.join(targets)}; the driver compiles it at "
+                f"run time, so a newer GPU runs it unless the target is architecture-"
+                f"conditional{isa}"
+            ),
+        )
+
+
+def read_ptx_declaration(path: Path) -> tuple[tuple[str, ...], str | None]:
+    """Return the targets and ISA version a PTX module declares for itself.
+
+    Reading stops at the .target directive rather than at a size bound: the PTX ISA puts
+    .version and .target before any statement, so once .target is seen the rest of the
+    file cannot change the answer.
+
+    Targets become ``compute_<NN>`` because PTX is virtual-architecture code the driver
+    compiles at load time, so an older target still runs on a newer GPU. The exception is
+    an architecture-conditional target (the ``a`` suffix), which runs only on the chip it
+    names; the suffix is carried through so the compatibility rules can say so.
+    """
+    version: str | None = None
+    target_match = None
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                # Per line, not against the whole text read so far: both directives live
+                # on a line of their own, and re-searching a growing buffer costs time
+                # quadratic in the size of a file that declares neither.
+                if target_match := PTX_TARGET_RE.search(line):
+                    break
+                if version is None and (version_match := PTX_VERSION_RE.search(line)):
+                    version = version_match.group("version")
+                if PTX_BODY_RE.match(line):
+                    # The ISA puts .version and .target before any statement, so a
+                    # module body means there is no declaration left to find.
+                    break
+    except OSError:
+        return (), None
+    if target_match is None:
+        return (), version
+    targets = set()
+    for token in target_match.group("targets").split(","):
+        if token_match := PTX_TARGET_TOKEN_RE.match(token.strip()):
+            number = int(token_match.group("number"))
+            targets.add(f"compute_{number}{token_match.group('suffix').lower()}")
+    return tuple(sorted(targets)), version
 
 
 # cuobjdump exits non-zero for two different situations, and only one is a failure.

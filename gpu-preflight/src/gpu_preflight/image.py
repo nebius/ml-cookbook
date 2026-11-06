@@ -23,6 +23,7 @@ from gpu_preflight.compatibility import (
     summarize_compatibility,
 )
 from gpu_preflight.cuda_inspection import (
+    VERIFIED_ANALYSIS_METHODS,
     CudaArtifactEvidence,
     CuobjdumpTool,
     classify_artifact_role,
@@ -987,7 +988,11 @@ def scan_rootfs_tar(
                     if artifact is not None and (artifact.targets or not artifact.complete):
                         cuda_artifacts.append(artifact)
                     if artifact_role in {"runtime", "kernel-catalog"}:
-                        if artifact and artifact.method == "cuobjdump" and artifact.complete:
+                        if (
+                            artifact
+                            and artifact.method in VERIFIED_ANALYSIS_METHODS
+                            and artifact.complete
+                        ):
                             cuda_targets.update(artifact.targets)
                         else:
                             cuda_targets.update(marker_targets)
@@ -1728,7 +1733,7 @@ def _cuda_compatibility_exceptions(
     for artifact in sorted(rootfs.cuda_artifacts, key=lambda item: item.path):
         if not (
             artifact.role == "runtime"
-            and artifact.method == "cuobjdump"
+            and artifact.method in VERIFIED_ANALYSIS_METHODS
             and artifact.complete
             and artifact.targets
         ):
@@ -1950,7 +1955,7 @@ def _cuda_artifact_findings(
     inspected_with_targets = tuple(
         artifact
         for artifact in rootfs.cuda_artifacts
-        if artifact.method == "cuobjdump" and artifact.complete and artifact.targets
+        if artifact.method in VERIFIED_ANALYSIS_METHODS and artifact.complete and artifact.targets
     )
     incompatible_runtime: list[CudaArtifactEvidence] = []
     incompatible_non_runtime: list[CudaArtifactEvidence] = []
@@ -2673,7 +2678,7 @@ def inspect_with_image(
                         content.rootfs.cuda_artifacts if content and content.rootfs else ()
                     )
                     if analyzer_matches_image
-                    and artifact.method == "cuobjdump"
+                    and artifact.method in VERIFIED_ANALYSIS_METHODS
                     and artifact.complete
                     for target in artifact.targets
                 }

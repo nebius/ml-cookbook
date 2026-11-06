@@ -18,12 +18,20 @@ FAMILY_COMPATIBILITY = {
     120: {120, 121},
     121: {121},
 }
+# The lowest virtual architecture any CUDA toolkit that supports current hardware can
+# assemble. CUDA 12.8's Virtual Architecture Feature List begins at compute_50 and
+# CUDA 13's begins at compute_75, so PTX below compute_50 has no driver left that will
+# JIT it, and PTX between compute_50 and compute_74 depends on which of the two the
+# host driver came from.
+MINIMUM_JIT_VIRTUAL_ARCHITECTURE = 50
+UNIVERSAL_JIT_VIRTUAL_ARCHITECTURE = 75
 CLASSIFICATION_RANK = {
     "incompatible": 0,
-    "ptx-jit-compatible": 1,
-    "binary-compatible": 2,
-    "family-compatible": 3,
-    "native": 4,
+    "ptx-jit-driver-dependent": 1,
+    "ptx-jit-compatible": 2,
+    "binary-compatible": 3,
+    "family-compatible": 4,
+    "native": 5,
 }
 CODE_PATH_RANK = {
     "incompatible": 0,
@@ -99,11 +107,39 @@ def evaluate_cuda_target(value: str, hardware_number: int) -> TargetEvaluation:
         )
 
     if target.kind == "compute":
-        compatible = hardware_number >= target.number
+        if target.number < MINIMUM_JIT_VIRTUAL_ARCHITECTURE:
+            return TargetEvaluation(
+                target=target.raw,
+                classification="incompatible",
+                compatible=False,
+                reason=(
+                    "no CUDA toolkit that supports current hardware assembles a virtual "
+                    f"architecture below compute_{MINIMUM_JIT_VIRTUAL_ARCHITECTURE}, so no "
+                    "driver will JIT this PTX"
+                ),
+            )
+        if hardware_number < target.number:
+            return TargetEvaluation(
+                target=target.raw,
+                classification="incompatible",
+                compatible=False,
+                reason="retained PTX can JIT on the same or a later compute capability",
+            )
+        if target.number < UNIVERSAL_JIT_VIRTUAL_ARCHITECTURE:
+            return TargetEvaluation(
+                target=target.raw,
+                classification="ptx-jit-driver-dependent",
+                compatible=True,
+                reason=(
+                    "a CUDA 12 driver assembles this virtual architecture and a CUDA 13 "
+                    f"driver does not, whose list begins at "
+                    f"compute_{UNIVERSAL_JIT_VIRTUAL_ARCHITECTURE}"
+                ),
+            )
         return TargetEvaluation(
             target=target.raw,
-            classification="ptx-jit-compatible" if compatible else "incompatible",
-            compatible=compatible,
+            classification="ptx-jit-compatible",
+            compatible=True,
             reason="retained PTX can JIT on the same or a later compute capability",
         )
 

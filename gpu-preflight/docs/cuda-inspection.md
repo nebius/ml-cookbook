@@ -10,7 +10,7 @@ Back to the [GPU Preflight README](../README.md).
 Container images usually do not have one directory per operation or GPU architecture. Frameworks and libraries install **CUDA artifacts** such as shared libraries (`.so`), Python native extensions, executables, and fat binaries. One artifact can contain CPU-side code plus many GPU **kernels** (device functions launched on the GPU), packaged as one or more architecture-specific target images:
 
 - `sm_XX` is a native cubin containing GPU machine code for that SM target.
-- `compute_XX` is PTX virtual code that a compatible NVIDIA driver may JIT-compile for a newer GPU.
+- `compute_XX` is PTX virtual code that a compatible NVIDIA driver may JIT-compile for a newer GPU. "Compatible" has a floor as well as a ceiling: CUDA 12.8 assembles `compute_50` and later, CUDA 13 assembles `compute_75` and later, and the driver's JIT assembles what its own release does. PTX below `compute_50` therefore runs nowhere on current hardware, and `compute_50` through `compute_74` depends on which CUDA release the host driver came from -- something the image cannot tell you.
 - Architecture-specific targets such as `sm_90a` require that exact architecture family and do not carry forward like baseline PTX.
 
 GPU Preflight uses file paths and names only to estimate an artifact's role. It then uses `cuobjdump` to inspect the contents of each selected artifact. Therefore, **CUDA artifact** or **CUDA binary** is the correct term for a reported `.so`; **kernel** refers to one GPU entry point inside it.
