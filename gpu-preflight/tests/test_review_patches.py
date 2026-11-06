@@ -253,6 +253,97 @@ class ElfDiscoveryTests(unittest.TestCase):
             self.assertEqual(captured.read_bytes(), elf_bytes(payload=payload))
 
 
+class ReviewedDiscoveryGapTests(unittest.TestCase):
+    """The libraries the PR review found by inspecting images independently.
+
+    Five CUDA-bearing TRT-LLM libraries and two vLLM extensions were absent from the
+    scan while it reported 100% coverage, because a generic .so was a candidate only
+    where the path mentioned a CUDA-bearing project. libth_common.so carries native
+    sm_103a. The review asked for regression fixtures with CUDA-bearing libraries
+    under neutral paths, so these are named for the files that were missed.
+    """
+
+    OMITTED = (
+        "opt/tensorrt_llm/lib/libtensorrt_llm.so",
+        "opt/tensorrt_llm/lib/libth_common.so",
+        "usr/local/lib/python3.12/dist-packages/vllm/_deepselect_C.abi3.so",
+        "usr/local/lib/python3.12/dist-packages/vllm/_qutlass_C.abi3.so",
+    )
+
+    def test_every_library_the_review_found_is_discovered(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scan = scan_rootfs_tar(
+                tar_of(tuple((name, elf_bytes()) for name in self.OMITTED)),
+                cuobjdump=listing_cuobjdump(directory),
+            )
+        self.assertEqual(scan.cuda_candidate_files, len(self.OMITTED))
+        self.assertEqual(
+            sorted(a.path for a in scan.cuda_artifacts),
+            sorted(f"/{name}" for name in self.OMITTED),
+        )
+
+    def test_their_targets_reach_the_image_inventory(self) -> None:
+        """Discovery is only half of it: an omitted sm_103a build has to be reported."""
+        with tempfile.TemporaryDirectory() as directory:
+            scan = scan_rootfs_tar(
+                tar_of((("opt/tensorrt_llm/lib/libth_common.so", elf_bytes()),)),
+                cuobjdump=listing_cuobjdump(directory),
+            )
+        self.assertIn("sm_103", scan.cuda_targets)
+
+
+class ForeignExtensionFixtureTests(unittest.TestCase):
+    """The review's own suggested fixture: an arm64 image with an x86-64 extension.
+
+    It noted this as a code-level gap rather than an observed false pass, because the
+    CPU check compared the manifest platform with the profile and never looked at an
+    individual library's ELF machine type.
+    """
+
+    @staticmethod
+    def _census(name: str, machine: int, directory: str):
+        scan = scan_rootfs_tar(
+            tar_of(((name, elf_bytes(machine=machine)),)),
+            cuobjdump=silent_cuobjdump(directory),
+            native_architecture="arm64",
+            library_path=(),
+        )
+        return {item.architecture: item for item in scan.library_architectures}
+
+    def test_an_x86_64_extension_in_an_arm64_image_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            groups = self._census(
+                "usr/lib/python3.12/site-packages/pkg/_ext.abi3.so", 0x3E, directory
+            )
+        self.assertIn("amd64", groups)
+        self.assertEqual(groups["amd64"].count, 1)
+
+    def test_a_native_extension_is_the_images_own_architecture(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            groups = self._census(
+                "usr/lib/python3.12/site-packages/pkg/_ext.abi3.so", 0xB7, directory
+            )
+        self.assertEqual(sorted(groups), ["arm64"])
+
+    def test_a_deep_extension_is_not_a_loader_dependency(self) -> None:
+        """ld.so searches /usr/lib; it does not walk site-packages beneath it.
+
+        A prefix test put every foreign binary under any loader root into the review
+        tier, which is the over-flagging the tier exists to avoid. An extension that
+        deep is imported by path, not resolved by SONAME.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            groups = self._census(
+                "usr/lib/python3.12/site-packages/pkg/_ext.abi3.so", 0x3E, directory
+            )
+        self.assertEqual(groups["amd64"].review_paths, ())
+
+    def test_a_library_in_the_loader_directory_itself_still_reaches_review(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            groups = self._census("usr/lib/libodd.so", 0x3E, directory)
+        self.assertEqual(groups["amd64"].review_paths, ("/usr/lib/libodd.so",))
+
+
 class StandalonePtxTests(unittest.TestCase):
     """chrstnhntschl/gpu_burn ships /root/compare.ptx, which it compiles at run time.
 

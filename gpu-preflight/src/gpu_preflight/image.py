@@ -1169,7 +1169,10 @@ def scan_rootfs_tar(
             continue
         if PurePosixPath(path).name in native_basenames:
             continue
-        if not path.startswith(searched):
+        # The directory itself, not its subtree. ld.so searches /usr/lib; it does not
+        # walk /usr/lib/python3.12/site-packages/pkg/. A Python extension that deep is
+        # imported by path, not resolved by SONAME, so it is not a loader dependency.
+        if f"{PurePosixPath(path).parent}/" not in searched:
             continue
         review_paths.setdefault(architecture, []).append(path)
 
