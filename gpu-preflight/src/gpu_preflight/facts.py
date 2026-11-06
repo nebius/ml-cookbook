@@ -105,8 +105,7 @@ class UcxModuleGroup:
 # shows up instead of being silently treated as native.
 # EM_CUDA. A .cubin is an ELF object whose machine is CUDA because it holds device
 # code, so it matches no CPU architecture by design and the dynamic loader never sees
-# it -- the driver does. Counting one as a foreign-architecture host binary claimed
-# that vLLM's FlashInfer cubins were unloadable, which is the opposite of true.
+# it -- the driver does, so it is not evidence about the host architecture.
 ELF_MACHINE_CUDA = 0xBE
 ELF_MACHINES = {
     0x03: "i386",

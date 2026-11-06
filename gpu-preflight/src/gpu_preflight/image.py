@@ -56,6 +56,10 @@ from gpu_preflight.inspection import (
 from gpu_preflight.profiles import HardwareProfile
 
 VALID_SCAN_MODES = {"none", "manifest", "pull", "filesystem"}
+# docker create refuses an image that declares neither CMD nor ENTRYPOINT, which is
+# ordinary for cluster images that take their command from the job spec. The export
+# container is never started, so any path satisfies the check.
+NEVER_EXECUTED_ENTRYPOINT = "/__gpu_preflight_never_executed__"
 CUDA_TARGET_BYTES_RE = re.compile(
     rb"(?<![A-Za-z0-9])(?P<kind>sm|compute)[_-]?(?P<number>\d{2,3})"
     rb"(?P<suffix>[af]?)(?![A-Za-z0-9])",
@@ -1362,7 +1366,14 @@ class DockerImageClient:
             flush=True,
         )
         container_id = self._run(
-            ("create", "--platform", manifest.platform, exact_reference)
+            (
+                "create",
+                "--platform",
+                manifest.platform,
+                "--entrypoint",
+                NEVER_EXECUTED_ENTRYPOINT,
+                exact_reference,
+            )
         ).strip()
         if not container_id:
             raise ImageInspectionError("docker create did not return a container ID")

@@ -29,10 +29,8 @@ UNRESOLVED_FINDINGS = {
     "GPF-UCX-006",
 }
 # Evidence gaps that leave the assessment unsupported whatever else was found. A library every
-# GPU job loads carries the compatibility answer for the image, so when one of them has no target
-# listing the other findings cannot be the headline: the unread artifact may hold a blocker that
-# the readable ones do not show, and reporting a warning-level label in that state reads as "fix
-# these and ship". Only a confirmed blocker outranks this.
+# GPU job loads carries the compatibility answer for the image, so an unread one may hold a
+# blocker the readable artifacts do not show. Only a confirmed blocker outranks this.
 ASSESSMENT_INVALIDATING_FINDINGS = {
     "GPF-CUDA-019",
 }
