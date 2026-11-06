@@ -188,6 +188,47 @@ class UcxEvidence:
 UCX_RUNTIME_LIBRARY_RE = re.compile(r"(?:^|/)(?P<name>lib(?:ucp|uct|ucs|ucm)\.so)(?:\.\d+)*$")
 UCX_TRANSPORT_MODULE_RE = re.compile(r"(?:^|.*/)ucx/(?P<name>lib[a-z0-9_]+\.so)(?:\.\d+)*$")
 HPCX_BUNDLE_DIR_RE = re.compile(r"^(?P<root>.*?hpcx[-_]v?(?P<version>\d+\.\d+(?:\.\d+)*)[^/]*)/")
+# libnccl.so.2.30.7 states its release in its own name. The package regex cannot read it:
+# that one needs a "==", "=", "-" or "_" between the name and the version, and a SONAME uses
+# dots, so an image that ships the library without a header or a package record has no other
+# on-disk source for the release. A bare libnccl.so.2 is deliberately not a match: a major
+# alone cannot be compared against a three-part baseline.
+# Every source an NcclVersionEvidence can carry. The report schema constrains this field
+# to an enum and both renderers look the value up in a label table, so a new source has to
+# reach three places at once. The tests below hold the schema and the label table against
+# this set.
+NCCL_EVIDENCE_SOURCES = frozenset(
+    {
+        "image-config",
+        "system-package",
+        "python-package",
+        "conda-package",
+        "header",
+        "library-soname",
+    }
+)
+
+NCCL_LIBRARY_SONAME_RE = re.compile(
+    r"(?:^|/)libnccl(?:_static)?\.so\.(?P<version>\d+\.\d+\.\d+)$",
+    re.IGNORECASE,
+)
+
+
+def _nccl_path_evidence(path: str) -> set[NcclVersionEvidence]:
+    """Return NCCL evidence implied by one image path, without reading the file."""
+    if "libnccl" not in path.lower():
+        return set()
+    match = NCCL_LIBRARY_SONAME_RE.search(path)
+    if match is None:
+        return set()
+    return {
+        NcclVersionEvidence(
+            version=match.group("version"),
+            source="library-soname",
+            name=PurePosixPath(path).name,
+            path=f"/{path.lstrip('/')}",
+        )
+    }
 
 
 def _ucx_path_evidence(path: str) -> set[UcxEvidence]:
@@ -792,6 +833,9 @@ def scan_rootfs_tar(
                 known_packages.update(detect_packages(name))
                 cuda_targets.update(detect_cuda_targets(name))
                 ucx_evidence.update(_ucx_path_evidence(name))
+                for signal in _nccl_path_evidence(name):
+                    nccl_versions.add(signal.version)
+                    nccl_evidence.add(signal)
 
                 basename = PurePosixPath(name).name
                 is_python_metadata = basename in PACKAGE_METADATA_NAMES and (

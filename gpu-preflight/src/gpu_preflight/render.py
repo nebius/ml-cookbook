@@ -59,6 +59,7 @@ NCCL_SOURCE_LABEL = {
     "python-package": "Python package",
     "conda-package": "Conda package",
     "header": "Development header",
+    "library-soname": "Library SONAME",
 }
 
 EXCEPTION_CLASSIFICATION_LABEL = {

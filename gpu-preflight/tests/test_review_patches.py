@@ -27,18 +27,21 @@ from gpu_preflight.cuda_inspection import (
 )
 from gpu_preflight.facts import ImageFacts, elf_architecture, is_gpu_firmware
 from gpu_preflight.image import (
+    NCCL_EVIDENCE_SOURCES,
     CudaArtifactEvidence,
     DockerImageClient,
     ImageInspectionError,
     ImageManifestSet,
     PlatformManifest,
     PulledImageFacts,
+    _nccl_path_evidence,
     _select_manifest,
     scan_rootfs_tar,
     verified_targets,
 )
 from gpu_preflight.inspection import _target_findings
 from gpu_preflight.profiles import load_profiles
+from gpu_preflight.render import NCCL_SOURCE_LABEL
 from tests.test_image import artifact_findings, rootfs_with
 
 
@@ -1088,3 +1091,86 @@ class DiskFullDuringCopyTests(unittest.TestCase):
         self.assertEqual(scan.skipped_temporary_space, 1)
         self.assertEqual([a.path for a in scan.cuda_artifacts], ["/usr/lib/libsecond.so"])
         self.assertEqual(scan.cuda_targets, ("sm_103",))
+
+
+class NcclSonameTests(unittest.TestCase):
+    """nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubi10 ships libnccl.so.2.30.7 and nothing else.
+
+    No nccl.h, no package record, no NCCL_VERSION in the config -- so the scan reported that
+    no NCCL version was established, and because that finding is an unresolved one the whole
+    assessment fell to INSUFFICIENT_EVIDENCE. The image's own CUDA evidence was complete and
+    positive at the time: sm_90 and sm_103 both present, 100% coverage, nothing incomplete.
+    The version was in the filename of a file the scan had already opened for cuobjdump.
+    """
+
+    DCGM = "usr/libexec/datacenter-gpu-manager-4/cuda12/lib/libnccl.so.2.30.7"
+    OLLAMA = "usr/lib/ollama/mlx_cuda_v13/libnccl.so.2.32.3"
+
+    def _scan(self, name: str):
+        return scan_rootfs_tar(tar_of(((name, elf_bytes()),)), cuobjdump=None)
+
+    def test_the_version_in_the_library_name_is_read(self) -> None:
+        for path, version in ((self.DCGM, "2.30.7"), (self.OLLAMA, "2.32.3")):
+            with self.subTest(path=path):
+                scan = self._scan(path)
+                self.assertEqual(scan.nccl_versions, (version,))
+
+    def test_the_evidence_names_the_file_it_came_from(self) -> None:
+        scan = self._scan(self.DCGM)
+        signal = next(e for e in scan.nccl_evidence if e.version == "2.30.7")
+        self.assertEqual(signal.source, "library-soname")
+        self.assertEqual(signal.name, "libnccl.so.2.30.7")
+        self.assertEqual(signal.path, f"/{self.DCGM}")
+
+    def test_a_major_only_soname_is_not_guessed_at(self) -> None:
+        """libnccl.so.2 cannot be compared against a three-part baseline. Reporting the gap
+        is correct; inventing a minor to clear the baseline would not be."""
+        for name in ("usr/lib/libnccl.so.2", "usr/lib/libnccl.so", "usr/lib/libnccl.so.2.30"):
+            with self.subTest(name=name):
+                self.assertEqual(self._scan(name).nccl_versions, ())
+
+    def test_an_unrelated_library_is_not_read_as_nccl(self) -> None:
+        for name in ("usr/lib/libncclx.so.2.30.7", "usr/lib/libnvidia-ml.so.1.2.3"):
+            with self.subTest(name=name):
+                self.assertEqual(self._scan(name).nccl_versions, ())
+
+    def test_the_static_archive_sibling_is_read_too(self) -> None:
+        scan = self._scan("usr/lib/libnccl_static.so.2.30.7")
+        self.assertEqual(scan.nccl_versions, ("2.30.7",))
+
+
+class NcclEvidenceSourceContractTests(unittest.TestCase):
+    """A new NCCL evidence source has to reach the schema and the renderers too.
+
+    "library-soname" reached neither. The scanner emitted it, 35 reports in the corpus
+    failed schema validation against an enum that did not list it, and the text and HTML
+    renderers fell back to printing the raw slug next to "System package". The 342 tests
+    passing at the time is the point: nothing tied the values the code produces to the two
+    tables that have to accept them.
+    """
+
+    def schema(self) -> dict:
+        path = Path(__file__).resolve().parents[1] / "schemas" / "report.schema.json"
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_the_schema_enum_matches_the_sources_the_scanner_emits(self) -> None:
+        enum = set(self.schema()["$defs"]["ncclEvidence"]["properties"]["source"]["enum"])
+        self.assertEqual(enum, set(NCCL_EVIDENCE_SOURCES))
+
+    def test_every_source_has_a_renderer_label(self) -> None:
+        missing = sorted(NCCL_EVIDENCE_SOURCES - set(NCCL_SOURCE_LABEL))
+        self.assertEqual(missing, [], f"no label for {missing}; reports print the raw slug")
+
+    def test_no_label_names_a_source_that_cannot_occur(self) -> None:
+        extra = sorted(set(NCCL_SOURCE_LABEL) - NCCL_EVIDENCE_SOURCES)
+        self.assertEqual(extra, [])
+
+    def test_the_soname_reader_emits_a_source_the_schema_accepts(self) -> None:
+        # Ties the two together at the one site that exposed the gap, so the contract is
+        # not just two tables agreeing with a third list that nothing produces.
+        evidence = _nccl_path_evidence("usr/lib/x86_64-linux-gnu/libnccl.so.2.30.7")
+        self.assertEqual(len(evidence), 1)
+        source = next(iter(evidence)).source
+        enum = set(self.schema()["$defs"]["ncclEvidence"]["properties"]["source"]["enum"])
+        self.assertIn(source, enum)
+        self.assertIn(source, NCCL_SOURCE_LABEL)

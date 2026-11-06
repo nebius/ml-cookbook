@@ -310,7 +310,7 @@
         "platform": {"type": "string"},
         "version": {"type": "string"},
         "source": {
-          "enum": ["image-config", "system-package", "python-package", "conda-package", "header"]
+          "enum": ["image-config", "system-package", "python-package", "conda-package", "header", "library-soname"]
         },
         "name": {"type": "string"},
         "path": {"type": ["string", "null"]}
