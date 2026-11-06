@@ -72,6 +72,7 @@ def image_facts(reference: str = "registry.example/pytorch:1") -> ImageFacts:
 def rootfs_with(
     artifacts: tuple[CudaArtifactEvidence, ...] = (),
     skipped: tuple[SkippedCudaCandidate, ...] = (),
+    wheel_toolkit_releases: tuple[tuple[str, str], ...] = (),
 ) -> RootfsScan:
     return RootfsScan(
         known_packages=(),
@@ -82,6 +83,7 @@ def rootfs_with(
         files_seen=len(artifacts) + len(skipped),
         bytes_scanned=0,
         metadata_bytes_scanned=0,
+        wheel_toolkit_releases=wheel_toolkit_releases,
         cuda_candidate_files=len(artifacts) + len(skipped),
         cuda_artifacts=artifacts,
         cuobjdump_available=True,
@@ -1493,22 +1495,21 @@ class ImageInspectionTests(unittest.TestCase):
         self.assertIn("<raw bytes omitted>", str(error))
         self.assertLess(len(str(error)), 200)
 
-    def test_toolkit_release_comes_from_path_then_wheel_then_image(self) -> None:
+    def test_toolkit_release_comes_from_the_path_or_the_owning_wheel(self) -> None:
+        wheel = "/opt/venv/lib/python3.12/site-packages/nvidia/cufft/lib/libcufft.so.12"
         self.assertEqual(
             _toolkit_release(
-                "/usr/local/cuda-12.3/targets/x86_64-linux/lib/libcufftw.so.11.0.12.1", ()
+                "/usr/local/cuda-12.3/targets/x86_64-linux/lib/libcufftw.so.11.0.12.1", {}
             ),
             "12.3",
         )
-        self.assertEqual(
-            _toolkit_release(
-                "/opt/venv/lib/python3.12/site-packages/nvidia/cu13/lib/libcufft.so.12",
-                ("13.3", "13.3.0"),
-            ),
-            "13.3",
-        )
-        self.assertEqual(_toolkit_release("/usr/lib/libnppc.so.12", ("12.8", "12.8.0.038")), "12.8")
-        self.assertIsNone(_toolkit_release("/usr/lib/libnppc.so.12", ("12.8", "13.0")))
+        self.assertEqual(_toolkit_release(wheel, {wheel: "13.3"}), "13.3")
+        self.assertIsNone(_toolkit_release(wheel, {}))
+
+    def test_a_library_no_wheel_owns_inherits_nothing_from_the_image(self) -> None:
+        # jrottenberg/ffmpeg: NPP copies in /usr/local/lib, cleared by a CUDA 12.6
+        # installation elsewhere in the image that had nothing to do with them.
+        self.assertIsNone(_toolkit_release("/usr/local/lib/libnppc.so.12", {}))
 
     def test_toolkit_libraries_are_judged_by_cuda_release(self) -> None:
         path = "/usr/local/cuda-12.3/targets/x86_64-linux/lib/libcufftw.so.11.0.12.1"
@@ -1560,7 +1561,13 @@ class ImageInspectionTests(unittest.TestCase):
                     complete=True,
                     role="runtime",
                 ),
-            )
+            ),
+            wheel_toolkit_releases=(
+                (
+                    "/opt/venv/lib/python3.12/site-packages/nvidia/cu13/lib/libcufft.so.12",
+                    "13.3",
+                ),
+            ),
         )
         profile = self.profiles["b300"]
         exceptions = _cuda_compatibility_exceptions(

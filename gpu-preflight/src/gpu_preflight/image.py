@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import gzip
 import json
 import re
@@ -11,7 +12,7 @@ import sys
 import tarfile
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path, PurePosixPath
@@ -307,6 +308,7 @@ class RootfsScan:
     skipped_no_cuobjdump: int
     skipped_non_runtime: int
     skipped_temporary_space: int
+    wheel_toolkit_releases: tuple[tuple[str, str], ...] = ()
     skipped_cuda_candidates: tuple[SkippedCudaCandidate, ...] = ()
     kernel_catalogs: tuple[KernelCatalogEvidence, ...] = ()
     kernel_catalog_members: int = 0
@@ -717,6 +719,10 @@ def scan_rootfs_tar(
     ucx_evidence: set[UcxEvidence] = set()
     files_seen = 0
     bytes_scanned = 0
+    # site-packages tree -> CUDA release, from the wheels whose version states one.
+    tree_releases: dict[str, str] = {}
+    # (library path, tree, distribution, version) for every toolkit library a wheel owns.
+    wheel_libraries: list[tuple[str, str, str, str]] = []
     metadata_bytes_scanned = 0
     cuda_candidate_files = 0
     cuda_artifacts: list[CudaArtifactEvidence] = []
@@ -780,6 +786,9 @@ def scan_rootfs_tar(
                 is_conda_metadata = "/conda-meta/" in f"/{lower_name}" and lower_name.endswith(
                     ".json"
                 )
+                # RECORD traces an installed library back to the package that put it there,
+                # which is the only on-disk link between a library and its CUDA release.
+                is_wheel_record = basename == "RECORD" and ".dist-info/" in lower_name
                 is_cuda_candidate = lower_name.endswith(CUDA_ONLY_SUFFIXES) or (
                     lower_name.endswith(AMBIGUOUS_BINARY_SUFFIXES)
                     or bool(VERSIONED_SO_RE.search(lower_name))
@@ -790,6 +799,7 @@ def scan_rootfs_tar(
                     is_python_metadata
                     or is_system_inventory
                     or is_conda_metadata
+                    or is_wheel_record
                     or is_cuda_candidate
                     or is_cuda_version_file
                     or is_hpcx_version_file
@@ -1043,6 +1053,14 @@ def scan_rootfs_tar(
                 elif lower_name == "lib/apk/db/installed":
                     new_inventory.update(_apk_packages(data))
                     inventory_source = "system-package"
+                elif is_wheel_record:
+                    if entries := _wheel_record_entries(name, data):
+                        tree, distribution, version, libraries = entries
+                        if release := _cuda_release_from_wheel(distribution, version):
+                            tree_releases[tree] = release
+                        wheel_libraries.extend(
+                            (library, tree, distribution, version) for library in libraries
+                        )
                 elif is_conda_metadata:
                     conda = _conda_metadata(data)
                     if conda.get("name"):
@@ -1135,6 +1153,20 @@ def scan_rootfs_tar(
         skipped_no_cuobjdump=skipped_no_cuobjdump,
         skipped_non_runtime=skipped_non_runtime,
         skipped_temporary_space=skipped_temporary_space,
+        wheel_toolkit_releases=tuple(
+            sorted(
+                (library, release)
+                for library, tree, distribution, version in wheel_libraries
+                # The wheel's own version first. Failing that, the release pinned by
+                # an authoritative wheel installed beside it: pip resolves a CUDA wheel
+                # set together, so the release belongs to the set, not to each
+                # component's private version number.
+                if (
+                    release := _cuda_release_from_wheel(distribution, version)
+                    or tree_releases.get(tree)
+                )
+            )
+        ),
         skipped_cuda_candidates=tuple(skipped_cuda_candidates),
         kernel_catalogs=tuple(
             KernelCatalogEvidence(
@@ -1460,39 +1492,92 @@ CUDA_TOOLKIT_LIBRARY_PREFIXES = (
 )
 
 
+# A wheel whose version *is* the CUDA toolkit release. NVIDIA versions these with the
+# toolkit itself, so nvidia-cuda-runtime-cu12 12.4.127 means CUDA 12.4. Component wheels
+# carry their component's own version instead -- nvidia-cufft-cu12 is 11.2.1.3,
+# nvidia-curand-cu12 is 10.3.5.147, nvidia-cudnn-cu12 is 9.1.0 -- so reading a CUDA
+# release out of one of those would invent a release that never existed.
+CUDA_RELEASE_WHEEL_RE = re.compile(
+    r"^nvidia[-_](?:cuda[-_](?:runtime|nvrtc|cupti|nvcc|opencl|crt|nvvm|cuobjdump|cuxxfilt"
+    r"|nvdisasm|nvprune|sanitizer[-_]api|profiler[-_]api|nvml[-_]dev|gdb)"
+    r"|nvjitlink|nvtx)(?:[-_]cu\d+)?$",
+    re.IGNORECASE,
+)
+# The -cuNN suffix is optional because NVIDIA dropped it at CUDA 13: runpod's image
+# installs nvidia-cuda-runtime 13.0.48 and nvidia-cufft 12.0.0.15, with the release
+# moved into the module path (nvidia/cu13/lib/).
+# PEP 376 names the directory "{name}-{version}.dist-info", so it carries both without
+# reading METADATA.
+DIST_INFO_RE = re.compile(r"^(?P<name>.+)-(?P<version>[^-]+)\.dist-info$", re.IGNORECASE)
+
+
+def _cuda_release_from_wheel(distribution: str, version: str) -> str | None:
+    """Return the CUDA release a wheel's own version states, when its version states one."""
+    if not CUDA_RELEASE_WHEEL_RE.match(distribution):
+        return None
+    release = _major_minor(version)
+    return f"{release[0]}.{release[1]}" if release else None
+
+
+def _wheel_record_entries(name: str, data: bytes) -> tuple[str, str, str, tuple[str, ...]] | None:
+    """Read one wheel's RECORD: its tree, name, version, and the toolkit libraries in it.
+
+    RECORD lists every file the wheel installed, relative to the directory that holds the
+    .dist-info, which is how a library on disk is traced back to the package that put it
+    there. Only CUDA Toolkit libraries are kept; the rest of a wheel's file list is not
+    something this scan has any use for.
+    """
+    record = PurePosixPath(name)
+    distribution_directory = record.parent
+    tree = distribution_directory.parent
+    matched = DIST_INFO_RE.match(distribution_directory.name)
+    if matched is None:
+        return None
+    libraries: set[str] = set()
+    for line in data.decode("utf-8", errors="replace").splitlines():
+        entry = next(iter(csv.reader([line])), [])
+        if not entry or not entry[0]:
+            continue
+        installed = entry[0].strip().strip('"')
+        if installed.startswith("/") or ".." in PurePosixPath(installed).parts:
+            continue
+        absolute = f"/{tree / installed}"
+        if _is_cuda_toolkit_library(absolute):
+            libraries.add(absolute)
+    return str(tree), matched.group("name"), matched.group("version"), tuple(sorted(libraries))
+
+
 def _is_cuda_toolkit_library(path: str) -> bool:
     return PurePosixPath(path.lower()).name.startswith(CUDA_TOOLKIT_LIBRARY_PREFIXES)
 
 
-def _toolkit_release(path: str, image_cuda_versions: tuple[str, ...]) -> str | None:
+def _toolkit_release(path: str, wheel_releases: Mapping[str, str]) -> str | None:
     """Return the CUDA major.minor release that shipped a toolkit library, when knowable.
 
-    Uses the versioned toolkit directory (``/usr/local/cuda-12.8/...``) first, then the
-    CUDA-major wheel layout (``site-packages/nvidia/cu13/lib``) matched against the image's
-    CUDA versions, then the image's CUDA version when it is unambiguous.
+    Two sources, both of which name this file rather than describing the image. The
+    versioned install directory (``/usr/local/cuda-12.8/...``) says so in the path. A
+    pip-installed library is traced through its wheel's RECORD to the package that put it
+    there, and that package's version is read.
+
+    Anything else is unresolved, and the library's own code decides. The image's CUDA
+    version used to stand in here, and jrottenberg/ffmpeg shows what that was worth: four
+    NPP copies in /usr/local/lib, advertising sm_52 alone, cleared by a CUDA 12.6
+    installation elsewhere in the image that had nothing to do with them.
     """
     if match := re.search(r"/cuda-(\d+\.\d+)/", path):
         return match.group(1)
-    releases = {release for version in image_cuda_versions if (release := _major_minor(version))}
-    if match := re.search(r"/nvidia/cu(\d+)/", path):
-        major = int(match.group(1))
-        same_major = sorted(release for release in releases if release[0] == major)
-        return f"{same_major[-1][0]}.{same_major[-1][1]}" if same_major else f"{major}.0"
-    if len(releases) == 1:
-        release = next(iter(releases))
-        return f"{release[0]}.{release[1]}"
-    return None
+    return wheel_releases.get(path)
 
 
 def _toolkit_release_supports(
     path: str,
     profile: HardwareProfile,
-    image_cuda_versions: tuple[str, ...],
+    wheel_releases: Mapping[str, str],
 ) -> bool:
     """Return whether a CUDA Toolkit library ships with a release that supports the GPU."""
     if not _is_cuda_toolkit_library(path) or not profile.minimum_cuda_version:
         return False
-    release = _toolkit_release(path, image_cuda_versions)
+    release = _toolkit_release(path, wheel_releases)
     return bool(release) and _major_minor(release) >= _major_minor(profile.minimum_cuda_version)
 
 
@@ -1689,6 +1774,7 @@ def _cuda_compatibility_exceptions(
     image_cuda_versions: tuple[str, ...] = (),
 ) -> list[dict[str, object]]:
     """Return every verified runtime unit lacking a compatible target."""
+    wheel_releases = dict(rootfs.wheel_toolkit_releases)
     if not analyzer_matches_image:
         return []
     target = profile.compute_capability_number
@@ -1743,7 +1829,7 @@ def _cuda_compatibility_exceptions(
             component, classification, reason = _cuda_exception_assessment(
                 artifact.path,
                 "runtime-artifact",
-                toolkit_release=_toolkit_release(artifact.path, image_cuda_versions),
+                toolkit_release=_toolkit_release(artifact.path, wheel_releases),
                 minimum_cuda_version=profile.minimum_cuda_version,
                 targets=artifact.targets,
             )
@@ -1931,6 +2017,7 @@ def _cuda_artifact_findings(
     ``compatibility_exceptions`` is the unresolved-unit inventory for this rootfs and
     profile, as returned by :func:`_cuda_compatibility_exceptions`.
     """
+    wheel_releases = dict(rootfs.wheel_toolkit_releases)
     findings: list[Finding] = []
     analyzer_mismatch = _cuobjdump_is_older(rootfs.cuobjdump_version, image_cuda_versions)
     if analyzer_mismatch:
@@ -1968,7 +2055,7 @@ def _cuda_artifact_findings(
             if result and result.compatible:
                 if artifact.role == "runtime":
                     compatible_runtime.append(artifact)
-            elif _toolkit_release_supports(artifact.path, profile, image_cuda_versions):
+            elif _toolkit_release_supports(artifact.path, profile, wheel_releases):
                 # Assessed by CUDA release in GPF-CUDA-020, not by its cuobjdump listing.
                 continue
             elif artifact.role == "runtime":
@@ -1996,7 +2083,7 @@ def _cuda_artifact_findings(
     release_assessed = {
         artifact.path
         for artifact in inspected_with_targets
-        if _toolkit_release_supports(artifact.path, profile, image_cuda_versions)
+        if _toolkit_release_supports(artifact.path, profile, wheel_releases)
     }
     inspected_runtime_with_targets = tuple(
         artifact
@@ -2038,7 +2125,7 @@ def _cuda_artifact_findings(
     ]
     if toolkit_by_release:
         releases = {
-            str(item["path"]): _toolkit_release(str(item["path"]), image_cuda_versions) or "unknown"
+            str(item["path"]): _toolkit_release(str(item["path"]), wheel_releases) or "unknown"
             for item in toolkit_by_release
         }
         findings.append(

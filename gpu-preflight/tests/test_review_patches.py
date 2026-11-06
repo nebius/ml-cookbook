@@ -429,3 +429,109 @@ class DriverDependentPtxFindingTests(unittest.TestCase):
         self.assertNotIn("CUDA 13", finding.remediation)
         self.assertIn("native", finding.remediation)
         self.assertEqual(finding.title, "CUDA code is compatible but not native")
+
+
+class WheelToolkitProvenanceTests(unittest.TestCase):
+    """jrottenberg/ffmpeg cleared four NPP copies with a CUDA release found elsewhere.
+
+    A library's CUDA release has to come from something that names that library: its
+    versioned install directory, or the wheel whose RECORD lists it.
+    """
+
+    SITE = "usr/local/lib/python3.12/site-packages"
+
+    def _releases(self, members: tuple[tuple[str, bytes], ...]) -> dict[str, str]:
+        scan = scan_rootfs_tar(tar_of(members), cuobjdump=None)
+        return dict(scan.wheel_toolkit_releases)
+
+    def _record(self, distribution: str, version: str, *paths: str) -> tuple[str, bytes]:
+        body = "".join(f"{path},sha256=0,1\n" for path in paths)
+        return (
+            f"{self.SITE}/{distribution}-{version}.dist-info/RECORD",
+            (body + "x/__init__.py,,\n").encode(),
+        )
+
+    def test_a_wheel_versioned_as_the_toolkit_names_the_release(self) -> None:
+        releases = self._releases(
+            (
+                self._record(
+                    "nvidia_cuda_runtime_cu12",
+                    "12.4.127",
+                    "nvidia/cuda_runtime/lib/libcudart.so.12",
+                ),
+                self._record("nvidia_cublas_cu12", "12.4.5.8", "nvidia/cublas/lib/libcublas.so.12"),
+            )
+        )
+        self.assertEqual(releases.get(f"/{self.SITE}/nvidia/cublas/lib/libcublas.so.12"), "12.4")
+
+    def test_a_component_version_is_not_read_as_a_cuda_release(self) -> None:
+        """nvidia-cufft-cu12 is 11.2.1.3; reading 11.2 out of it invents a release."""
+        releases = self._releases(
+            (self._record("nvidia_cufft_cu12", "11.2.1.3", "nvidia/cufft/lib/libcufft.so.11"),)
+        )
+        self.assertEqual(releases, {})
+
+    def test_cuda_13_wheels_dropped_the_suffix_and_are_still_authoritative(self) -> None:
+        """runpod/pytorch installs nvidia-cuda-runtime 13.0.48, with no -cu13 on it.
+
+        NVIDIA moved the release into the module path at CUDA 13, so a rule that
+        demanded the suffix recognized no authoritative wheel at all. Nothing in
+        site-packages got a release, and libcufft.so.12 -- byte-identical to the copy
+        under /usr/local/cuda-13.0/ that the versioned path excused -- was sent to
+        review on its own sm_75-only code.
+        """
+        releases = self._releases(
+            (
+                self._record("nvidia_cuda_runtime", "13.0.48", "nvidia/cu13/lib/libcudart.so.13"),
+                self._record("nvidia_cufft", "12.0.0.15", "nvidia/cu13/lib/libcufft.so.12"),
+            )
+        )
+        self.assertEqual(releases.get(f"/{self.SITE}/nvidia/cu13/lib/libcufft.so.12"), "13.0")
+
+    def test_a_wheel_set_takes_the_release_its_runtime_wheel_pins(self) -> None:
+        """A cu12 wheel set in an image that reports a newer 12.x elsewhere."""
+        releases = self._releases(
+            (
+                self._record(
+                    "nvidia_cuda_runtime_cu12",
+                    "12.4.127",
+                    "nvidia/cuda_runtime/lib/libcudart.so.12",
+                ),
+                self._record("nvidia_cufft_cu12", "11.2.1.3", "nvidia/cufft/lib/libcufft.so.11"),
+                ("usr/local/cuda/version.txt", b"CUDA Version 12.9.41\n"),
+            )
+        )
+        # 12.4, the release the wheel set was built against, not the 12.9 installed
+        # elsewhere in the image.
+        self.assertEqual(releases.get(f"/{self.SITE}/nvidia/cufft/lib/libcufft.so.11"), "12.4")
+
+    def test_a_library_outside_any_wheel_is_unresolved(self) -> None:
+        releases = self._releases((("usr/local/lib/libnppc.so.12", elf_bytes()),))
+        self.assertEqual(releases, {})
+
+    def test_a_record_entry_cannot_name_a_path_outside_its_tree(self) -> None:
+        releases = self._releases(
+            (
+                self._record(
+                    "nvidia_cuda_runtime_cu12",
+                    "12.4.127",
+                    "../../../../usr/local/lib/libcublas.so.12",
+                    "/etc/libcublas.so.12",
+                ),
+            )
+        )
+        self.assertEqual(releases, {})
+
+
+def silent_cuobjdump(directory: str) -> object:
+    """A cuobjdump stand-in that completes and finds no device code."""
+    executable = Path(directory) / "cuobjdump"
+    executable.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then '
+        "echo 'Cuda compilation tools, release 13.4, V13.4.92'; exit 0; fi\n"
+        "echo 'does not contain device code' >&2; exit 1\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    return resolve_cuobjdump(str(executable), timeout_seconds=10, fallback_mode="off")
