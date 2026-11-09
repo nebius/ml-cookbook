@@ -1094,7 +1094,7 @@ class ImageInspectionTests(unittest.TestCase):
         text_report = render_text(report)
         self.assertNotIn("Assessment confidence", text_report)
         self.assertIn(
-            "  Discovered artifacts inspected: 100.0% (3/3 eligible runtime inspection units)",
+            "  Discovered artifacts inspected: 100.0% (3/3 inspection units successfully analyzed)",
             text_report,
         )
         self.assertIn("  Verified embedded CUDA targets: 3 unique", text_report)
@@ -1127,7 +1127,7 @@ class ImageInspectionTests(unittest.TestCase):
         html_report = render_html(report)
         self.assertIn('<div class="table-wrap finding-details"><table>', html_report)
         self.assertIn("Compatible older base cubin", html_report)
-        self.assertIn("3/3 eligible runtime inspection units", html_report)
+        self.assertIn("3/3 inspection units successfully analyzed", html_report)
         self.assertIn("Target relevance (gb300)", html_report)
         self.assertIn("CUDA compatibility review summary", html_report)
         self.assertIn("Complete CUDA compatibility inventory", html_report)

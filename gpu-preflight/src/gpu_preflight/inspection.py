@@ -1374,8 +1374,12 @@ def inspect(facts: ImageFacts, profiles: tuple[HardwareProfile, ...]) -> Inspect
             },
         ),
         disclaimer=(
-            "Static readiness is not hardware certification. Image contents, CUDA execution, "
-            "fabric selection, correctness, and performance require additional validation."
+            "GPU Preflight uses heuristic static analysis and can make mistakes: it may flag a "
+            "compatible component or miss an incompatibility. Read every finding and "
+            "compatibility label alongside its evidence. READY_FOR_HARDWARE_TESTING, or 100% "
+            "inspection coverage, does not guarantee compatibility, correctness, or "
+            "performance. Image contents, CUDA execution, fabric selection, correctness, and "
+            "performance are established by running your own workload on the target hardware."
         ),
         observations={
             "image_references": list(facts.image_references),

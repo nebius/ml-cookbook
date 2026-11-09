@@ -131,6 +131,7 @@ ARTIFACT_COVERAGE_SCOPE = (
     "catalog breadth (a sampled family represents operations, shapes and dtypes that "
     "were not individually inspected), and runtime-generated kernels"
 )
+ARTIFACT_COVERAGE_SCOPE_BRIEF = "Only artifacts that were discovered are counted. It is possible some artifacts were not found and not counted."
 
 
 def _artifact_coverage_text(
@@ -140,7 +141,7 @@ def _artifact_coverage_text(
 ) -> str:
     if percent is None:
         return "unavailable"
-    counts = f" ({covered}/{eligible} eligible runtime inspection units)" if eligible else ""
+    counts = f" ({covered}/{eligible} inspection units successfully analyzed)" if eligible else ""
     return f"{percent:.1f}%{counts}"
 
 
@@ -365,11 +366,14 @@ def render_text(report: InspectionReport) -> str:
             f"Report schema: v{report.schema_version}; tool: {report.tool.version}; "
             f"duration: {report.duration_seconds:.1f}s"
         ),
+        "",
+        "Disclaimer:",
+        f"  {report.disclaimer}",
     ]
     static_limitations = observations.get("static_analysis_limitations", [])
     if isinstance(static_limitations, list) and static_limitations:
-        lines.extend(["", "Static-analysis limitations:"])
-        lines.extend(f"  - {item}" for item in static_limitations)
+        lines.extend(["", "  Static-analysis limitations:"])
+        lines.extend(f"    - {item}" for item in static_limitations)
     for target in report.targets:
         actions = [
             *(
@@ -547,7 +551,6 @@ def render_text(report: InspectionReport) -> str:
         for finding in target.findings:
             lines.extend(_finding_text(finding))
     lines.extend(_cuda_compatibility_exception_lines(report))
-    lines.extend(["", f"Note: {report.disclaimer}"])
     return "\n".join(lines) + "\n"
 
 
@@ -677,15 +680,36 @@ def _cuda_compatibility_exceptions_html(report: InspectionReport) -> str:
     )
 
 
+_SECTION_HEADING = re.compile(r"(<section\b[^>]*)(>\s*<h2>)(.*?)(</h2>)", re.DOTALL)
+
+
+def _with_contents(sections_html: str) -> tuple[str, str]:
+    """Give every section an id and return the contents list that links to them."""
+    entries: list[tuple[str, str]] = []
+
+    def anchor(match: re.Match[str]) -> str:
+        identifier = f"s{len(entries) + 1}"
+        entries.append((identifier, match.group(3)))
+        return f'{match.group(1)} id="{identifier}"{match.group(2)}{match.group(3)}{match.group(4)}'
+
+    linked = _SECTION_HEADING.sub(anchor, sections_html)
+    if not entries:
+        return "", linked
+    items = "".join(f'<li><a href="#{identifier}">{title}</a></li>' for identifier, title in entries)
+    return f'<nav class="contents"><h2>Table of contents</h2><ol>{items}</ol></nav>', linked
+
+
 def render_html(report: InspectionReport) -> str:
     observations = report.observations
     static_limitations = observations.get("static_analysis_limitations", [])
     static_limitations_html = ""
     if isinstance(static_limitations, list) and static_limitations:
         items = "".join(f"<li>{escape(str(item))}</li>" for item in static_limitations)
-        static_limitations_html = (
-            f"<section><h2>Static-analysis limitations</h2><ul>{items}</ul></section>"
-        )
+        static_limitations_html = f"<h3>Static-analysis limitations</h3><ul>{items}</ul>"
+    disclaimer_html = (
+        f"<section><h2>Disclaimer</h2><p>{escape(report.disclaimer)}</p>"
+        f"{static_limitations_html}</section>"
+    )
     filesystem_scan = observations.get("image_scan_mode") == "filesystem"
     effective_targets = _effective_values(
         observations,
@@ -933,7 +957,7 @@ def render_html(report: InspectionReport) -> str:
             f'<span class="status'
             f'{_tone_class(_coverage_tone(target.artifact_inspection_coverage_percent))}">'
             f"{escape(_artifact_coverage_text(target.artifact_inspection_coverage_percent, target.artifact_inspection_covered_candidates, target.artifact_inspection_eligible_candidates))}"
-            f"</span><br><small>{escape(ARTIFACT_COVERAGE_SCOPE.capitalize())}.</small></div>"
+            f"</span><br><small>{escape(ARTIFACT_COVERAGE_SCOPE_BRIEF)}</small></div>"
             f"<div><strong>Reproducibility</strong><br>"
             f'<span class="status{_tone_class(REPRODUCIBILITY_TONE.get(target.reproducibility_status))}">'
             f"{escape(target.reproducibility_status)}</span></div></div>"
@@ -954,6 +978,32 @@ def render_html(report: InspectionReport) -> str:
             + "".join(_finding_html(finding) for finding in report.global_findings)
             + "</section>"
         )
+    observed_stack_section = f"""<section>\n    <h2>Observed stack</h2>
+    <div class="summary">
+      <div><strong>Image references</strong><br>{escape(", ".join(observations["image_references"]) or "none detected")}</div>
+      <div><strong>Resolved platform</strong><br>{escape(str(observations["final_platform"] or "unknown"))}</div>
+      <div><strong>{"Verified embedded CUDA targets" if filesystem_scan else "CUDA targets"}</strong><br>{escape(f"{len(effective_targets)} unique" if filesystem_scan else _compact(effective_targets))}</div>
+      {f"<div><strong>Unverified CUDA target strings</strong><br>{len(unverified_targets)} unique across {len(marker_records)} artifact(s); runtime-relevant artifacts: {runtime_marker_records}</div>" if filesystem_scan else ""}
+      <div><strong>CUDA versions</strong><br>{escape(_compact(effective_cuda_versions))}</div>
+      <div><strong>NCCL versions</strong><br>{escape(_compact(effective_nccl_versions))}</div>
+      <div><strong>Packages</strong><br>{escape(_compact(effective_packages))}</div>
+      {target_relevance_html}
+      {image_summary}
+    </div>
+  </section>"""
+    body_sections = "".join(
+        (
+            "".join(target_sections),
+            observed_stack_section,
+            nccl_evidence_section,
+            statistics_section,
+            cuda_exception_section,
+            artifact_section,
+            skipped_section,
+            global_section,
+        )
+    )
+    contents_html, body_sections = _with_contents(body_sections)
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1003,11 +1053,13 @@ def render_html(report: InspectionReport) -> str:
     .assessment div.keyed {{ border-left: .35rem solid var(--tone, #7776); }}
     .lead {{ font-size: 1.1rem; }}
     details summary {{ cursor: pointer; font-weight: 700; margin: 1rem 0; }}
+    section {{ scroll-margin-top: 1rem; }}
+    .contents ol {{ columns: 2; margin: .5rem 0 0; }}
+    .contents li {{ break-inside: avoid; }}
     .table-wrap {{ overflow-x: auto; }}
     table {{ border-collapse: collapse; width: 100%; font-size: .9rem; }}
     th, td {{ border: 1px solid #7776; padding: .45rem; text-align: left; vertical-align: top; }}
     code {{ overflow-wrap: anywhere; }}
-    footer {{ border-top: 1px solid #7776; padding-top: 1rem; }}
   </style>
 </head>
 <body>
@@ -1017,29 +1069,9 @@ def render_html(report: InspectionReport) -> str:
     <p>Schema v{report.schema_version} · tool {escape(report.tool.version)} ·
     {report.duration_seconds:.1f}s</p>
   </header>
-  {static_limitations_html}
-  {"".join(target_sections)}
-  <section>
-    <h2>Observed stack</h2>
-    <div class="summary">
-      <div><strong>Image references</strong><br>{escape(", ".join(observations["image_references"]) or "none detected")}</div>
-      <div><strong>Resolved platform</strong><br>{escape(str(observations["final_platform"] or "unknown"))}</div>
-      <div><strong>{"Verified embedded CUDA targets" if filesystem_scan else "CUDA targets"}</strong><br>{escape(f"{len(effective_targets)} unique" if filesystem_scan else _compact(effective_targets))}</div>
-      {f"<div><strong>Unverified CUDA target strings</strong><br>{len(unverified_targets)} unique across {len(marker_records)} artifact(s); runtime-relevant artifacts: {runtime_marker_records}</div>" if filesystem_scan else ""}
-      <div><strong>CUDA versions</strong><br>{escape(_compact(effective_cuda_versions))}</div>
-      <div><strong>NCCL versions</strong><br>{escape(_compact(effective_nccl_versions))}</div>
-      <div><strong>Packages</strong><br>{escape(_compact(effective_packages))}</div>
-      {target_relevance_html}
-      {image_summary}
-    </div>
-  </section>
-  {nccl_evidence_section}
-  {statistics_section}
-  {cuda_exception_section}
-  {artifact_section}
-  {skipped_section}
-  {global_section}
-  <footer><strong>Scope:</strong> {escape(report.disclaimer)}</footer>
+  {disclaimer_html}
+  {contents_html}
+  {body_sections}
 </body>
 </html>
 """
