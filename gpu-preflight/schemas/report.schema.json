@@ -17,7 +17,7 @@
     "targets"
   ],
   "properties": {
-    "schema_version": {"const": 2},
+    "schema_version": {"const": 1},
     "tool": {
       "type": "object",
       "additionalProperties": false,

@@ -1436,7 +1436,7 @@ class ImageInspectionTests(unittest.TestCase):
         self.assertIsNone(target.artifact_inspection_coverage_percent)
 
     def test_tag_and_digest_reference_is_inspected_by_digest(self) -> None:
-        # A customer Dockerfile pins the AWS DLC base this way; Docker rejects
+        # A real Dockerfile pins the AWS DLC base this way; Docker rejects
         # `manifest inspect` of tag@digest for a single-platform manifest.
         reference = (
             "public.ecr.aws/deep-learning-containers/pytorch:2.13-cu133-amzn2023"

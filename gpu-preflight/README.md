@@ -1,6 +1,6 @@
 # Nebius GPU Preflight
 
-GPU Preflight statically inspects a customer-owned container image for readiness on Nebius NVIDIA H100, H200, B200, B300, GB300, RTX PRO 6000, and Vera Rubin hardware. It resolves and pulls the selected platform, inventories the image configuration and merged filesystem, and inspects CUDA artifacts without starting the image.
+GPU Preflight statically inspects a container image for readiness on Nebius NVIDIA H100, H200, B200, B300, GB300, RTX PRO 6000, and Vera Rubin hardware. It resolves and pulls the selected platform, inventories the image configuration and merged filesystem, and inspects CUDA artifacts without starting the image.
 
 ## Disclaimer
 
@@ -61,18 +61,24 @@ Image programs are never passed to the host loader. GPU Preflight copies one can
 Every target gets an executive summary that answers three independent questions:
 
 ```text
-NVIDIA B300 (b300)
-  Compatibility: ACTION_REQUIRED
-  Discovered artifacts inspected: 71.4% (5/7 inspection units successfully analyzed)
+NVIDIA GB300 NVL72 (gb300)
+  Compatibility: REVIEW_REQUIRED
+  Discovered artifacts inspected: 100.0% (8499/8499 inspection units successfully analyzed)
   Reproducibility: UNPINNED
-  Summary: Address the listed compatibility risks before hardware testing.
+  Summary: Review artifacts whose workload relevance cannot be established by static inspection.
 ```
 
 - **Compatibility** is one of the five labels below.
 - **Coverage** is the share of eligible runtime inspection units `cuobjdump` read successfully.
 - **Reproducibility** is whether the reference is digest-pinned. An unpinned tag is a gap, because the registry owner can change what that tag points to.
 
-Every report also states the static-analysis boundary explicitly: the scanner cannot establish which NCCL installation, native extension, dispatch catalog, or CUDA kernel variant the workload will actually load, and it does not prove runtime correctness or performance.
+### What a result does and does not settle
+
+`nvcr.io/nvidia/pytorch:26.10-py3` scanned for GB300 returns `REVIEW_REQUIRED` at 100% coverage, 8499 of 8499 inspection units read. It settles that the arm64 variant matches, that CUDA 13.4, NCCL 2.32.3, UCX and HPC-X clear the GB300 floors, and that both `sm_103` and `sm_103a` code is present.
+
+It does not settle whether the workload ever loads the one artifact flagged for review — torchao's Hopper-only `_C_cutlass_90a.abi3.so` — which NCCL the process resolves at run time, or whether the Triton and CuTe DSL kernels compiled at startup will target `sm_103`. Those releases clear their floors, which says they can target the hardware, not that the workload's kernels will.
+
+[A worked example](docs/worked-example.md) reads that report end to end.
 
 ### Compatibility labels
 
@@ -144,7 +150,7 @@ The inspection:
 
 1. Verifies Docker daemon access and locates `cuobjdump`.
 2. Resolves registry manifests and the immutable platform digest.
-3. Pulls the selected platform using the customer's Docker configuration and credentials.
+3. Pulls the selected platform using the host's Docker configuration and credentials.
 4. Inspects image configuration and package metadata.
 5. Creates, but never starts, a temporary container and streams its merged root filesystem with `docker export`.
 6. Runs host `cuobjdump` against bounded candidate CUDA artifacts.
@@ -199,6 +205,8 @@ Each profile also names the compute-fabric adapter of its Nebius platform, which
 
 - [CUDA artifact inspection](docs/cuda-inspection.md): what counts as a CUDA artifact, the terms the report uses, and what can refuse a file.
 - [Compute fabric, UCX, and HPC-X checks](docs/fabric-checks.md): adapter support floors and the `GPF-UCX-*` findings.
+- [A worked example](docs/worked-example.md): one real GB300 scan, what it settles and what it leaves open.
+- [Agent skill](docs/skill/): the canonical `SKILL.md` for running GPU Preflight from a coding agent, with its evals.
 
 ## Known limitations
 

@@ -1,0 +1,45 @@
+{
+  "skill_name": "gpu-preflight",
+  "evals": [
+    {
+      "id": "gb300-arm64-check",
+      "prompt": "Will nvcr.io/nvidia/pytorch:25.04-py3 run on GB300?",
+      "expected_output": "Runs inspect with --target gb300, confirms 100% coverage before reporting, and reports ACTION_REQUIRED driven by GPF-NCCL-003 (NCCL 2.26.3 below the 2.27.5 baseline), notes the image is arm64 with sm_103 present, and states that hardware testing is still required."
+    },
+    {
+      "id": "missing-target",
+      "prompt": "Can you preflight this image for me? registry.example.com/team/train:latest",
+      "expected_output": "Asks which Nebius GPU hardware to target before running anything, since the whole report is target-relative, and notes that the unpinned :latest tag is a reproducibility gap that will also force exit code 2 under the default threshold."
+    },
+    {
+      "id": "insufficient-evidence-triage",
+      "prompt": "The preflight report for our CUDA 12.3 image came back INSUFFICIENT_EVIDENCE at 96.6% coverage. Can we move on to hardware testing?",
+      "expected_output": "Refuses to report a verdict below 100% coverage, identifies the cause as analyzer errors rather than free disk on the host, confirms the cuobjdump 13.0 fallback is installed, and re-runs \u2014 reaching 100% and READY_FOR_HARDWARE_TESTING \u2014 before answering."
+    },
+    {
+      "id": "incomplete-core-library-evidence",
+      "prompt": "Preflight came back INSUFFICIENT_EVIDENCE with GPF-CUDA-019 naming libnccl, but it also lists an NCCL version warning. We just want to know if bumping NCCL is enough.",
+      "expected_output": "Refuses to answer from that scan: GPF-CUDA-019 means a library every GPU job loads was never read, so the listed findings describe only the artifacts that were readable and a blocker could be hiding in the unread one. Resolves the analyzer error (confirming both installed analyzers are in use), re-runs to 100% coverage, and only then says what the image needs."
+    },
+    {
+      "id": "review-required-triage",
+      "prompt": "Our scan of the stock NGC PyTorch 25.04 image for H100 says REVIEW_REQUIRED. Is the image broken?",
+      "expected_output": "Explains that REVIEW_REQUIRED is normal for stock vendor images, drills into observations.cuda_compatibility_exceptions filtering status_effect == 'review-required', and reports that exactly one file (group_norm_v2_cuda, built only for sm_100) drives it while the rest are informational \u2014 then asks whether the workload uses that op."
+    },
+    {
+      "id": "ci-exit-code",
+      "prompt": "I wired gpu-preflight into CI. Should an unpinned tag fail my build?",
+      "expected_output": "Explains that reproducibility findings never set the exit code, so an unpinned tag does not fail the build, while the finding is still reported, since pinning the digest is what reproducible validation evidence requires. Notes that exit 2 still covers compatibility and evidence findings plus argparse usage errors, so the label should be read rather than the exit code."
+    },
+    {
+      "id": "local-image-not-pushed",
+      "prompt": "I built our image locally with docker build and preflight says unauthorized. What's wrong?",
+      "expected_output": "Explains that every image is resolved through its registry so the report can pin an immutable digest, so a never-pushed local image cannot be scanned, and tells the user to push it to a readable registry first."
+    },
+    {
+      "id": "dockerhub-rate-limit",
+      "prompt": "Preflight suddenly fails with toomanyrequests on an image I already pulled locally. Why?",
+      "expected_output": "Explains that every run re-resolves the manifest through the registry even for a cached image, so anonymous Docker Hub pulls are exhausted after roughly ten scans, and tells the user to docker login (noting nvcr.io has separate limits)."
+    }
+  ]
+}

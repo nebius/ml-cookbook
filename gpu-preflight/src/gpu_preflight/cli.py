@@ -42,7 +42,7 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser("profiles", help="list built-in hardware profiles")
 
     inspect_parser = subparsers.add_parser("inspect", help="inspect a container image")
-    inspect_parser.add_argument("image", help="customer-owned container image reference")
+    inspect_parser.add_argument("image", help="container image reference")
     inspect_parser.add_argument(
         "--platform",
         type=_platform_argument,

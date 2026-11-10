@@ -196,7 +196,7 @@ class InspectionReport:
 
 
 def order_findings(findings: tuple[Finding, ...]) -> tuple[Finding, ...]:
-    """Order customer-facing findings from platform prerequisites to detailed evidence."""
+    """Order user-facing findings from platform prerequisites to detailed evidence."""
     return tuple(
         sorted(
             findings,
@@ -1356,7 +1356,7 @@ def inspect(facts: ImageFacts, profiles: tuple[HardwareProfile, ...]) -> Inspect
             )
         )
     return InspectionReport(
-        schema_version=2,
+        schema_version=1,
         tool=ToolMetadata(name="nebius-gpu-preflight", version=__version__),
         generated_at=datetime.now(UTC).isoformat(),
         duration_seconds=0.0,

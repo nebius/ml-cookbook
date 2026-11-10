@@ -1752,7 +1752,7 @@ def _declares_other_architecture_only(path: str, targets: tuple[str, ...]) -> bo
 
 
 def _cuda_exception_component(path: str) -> str:
-    """Return a stable, customer-facing component name from an image path."""
+    """Return a stable, user-facing component name from an image path."""
     normalized = path.lower()
     if "flashinfer" in normalized:
         return "FlashInfer"
@@ -2013,7 +2013,7 @@ def _cuda_compatibility_exceptions(
 
 
 def _incomplete_reason_counts(rootfs: RootfsScan) -> dict[str, int]:
-    """Aggregate incomplete cuobjdump inspections into customer-facing reason groups."""
+    """Aggregate incomplete cuobjdump inspections into user-facing reason groups."""
     counts = {
         "timeout": 0,
         "analyzer-error": 0,
