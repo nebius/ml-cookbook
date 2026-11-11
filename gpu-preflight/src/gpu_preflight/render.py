@@ -695,7 +695,9 @@ def _with_contents(sections_html: str) -> tuple[str, str]:
     linked = _SECTION_HEADING.sub(anchor, sections_html)
     if not entries:
         return "", linked
-    items = "".join(f'<li><a href="#{identifier}">{title}</a></li>' for identifier, title in entries)
+    items = "".join(
+        f'<li><a href="#{identifier}">{title}</a></li>' for identifier, title in entries
+    )
     return f'<nav class="contents"><h2>Table of contents</h2><ol>{items}</ol></nav>', linked
 
 
