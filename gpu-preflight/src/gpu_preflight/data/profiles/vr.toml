@@ -4,7 +4,7 @@ aliases = ["vera-rubin", "vr-nvl72", "nvidia-vera-rubin"]
 display_name = "NVIDIA Vera Rubin NVL72"
 maturity = "provisional"
 notes = [
-  "NVIDIA documents SM107 support as developer preview.",
+  "CUDA 13.5 is the first toolkit with GA (production) support for Vera Rubin; 13.4 was a developer preview.",
   "NCCL 2.32.3 adds initial Rubin support but does not include Rubin performance-model tuning.",
   "Platform requirements and hardware evidence must be updated as Nebius service details stabilize.",
 ]
@@ -20,7 +20,7 @@ nebius_platforms = ["announced-vr-nvl72"]
 compute_adapter = "connectx-9"
 
 [validation]
-minimum_cuda_version = "13.4"
+minimum_cuda_version = "13.5"
 minimum_nccl_version = "2.32.3"
 runtime_checks = [
   "arm64-image",
@@ -86,6 +86,10 @@ url = "https://docs.nvidia.com/cuda/tile-ir/13.4/sections/stability.html#support
 [[sources]]
 title = "NVIDIA CUDA compiler SM107 support"
 url = "https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/"
+
+[[sources]]
+title = "NVIDIA CUDA 13.5 brings Vera Rubin GA support"
+url = "https://developer.nvidia.com/blog/nvidia-cuda-13-5-brings-nvidia-vera-rubin-ga-support/"
 
 [[sources]]
 title = "NVIDIA NCCL 2.32.3 release notes (initial Vera Rubin support)"
