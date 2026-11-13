@@ -1,0 +1,90 @@
+schema_version = 1
+id = "gb300"
+aliases = ["nvidia-gb300", "gpu-gb300", "gb300-nvl72"]
+display_name = "NVIDIA GB300 NVL72"
+maturity = "supported"
+notes = [
+  "GB300 shares SM103 with B300 but requires an ARM64 image.",
+  "Rack-scale and scale-out transport behavior must be validated independently.",
+]
+
+[hardware]
+cpu_architectures = ["arm64"]
+gpu_architecture = "grace-blackwell-ultra"
+compute_capability = "10.3"
+native_sm_targets = ["sm_103", "sm_103f", "sm_103a"]
+nebius_platforms = ["gpu-gb300"]
+
+[fabric]
+compute_adapter = "connectx-8"
+
+[validation]
+minimum_cuda_version = "12.9"
+minimum_nccl_version = "2.27.5"
+runtime_checks = [
+  "arm64-image",
+  "cuda-runtime",
+  "nccl-mnnvl",
+  "nccl-infiniband",
+  "gpu-direct-rdma",
+  "ucx-transport",
+  "library-resolution",
+  "framework-smoke",
+  "workload-smoke",
+]
+
+[[validation.runtime_packages]]
+package = "triton"
+role = "compiler"
+minimum_version = "3.5.1"
+note = """The only SM103 statement in Triton's release notes is 3.5.1, "Fix sm103 (GB300) support broken by Triton 3.5.0 release". 3.4 is reported to work with a CUDA 12.9 ptxas, but no release note says so, so 3.5.1 is the floor this profile can cite."""
+source = "https://github.com/triton-lang/triton/releases"
+
+[[validation.runtime_packages]]
+package = "nvidia-cutlass-dsl"
+role = "dsl"
+minimum_version = "4.4.0"
+note = """GB300 is a later floor than B300: SM103 reached CuTe DSL in 4.3.1, but the GB300 platform itself only in 4.4.0 -- "GB300 is now supported in CuTe DSL with CTK 13.1"."""
+source = "https://docs.nvidia.com/cutlass/latest/CHANGELOG.html"
+
+[[validation.runtime_packages]]
+package = "liger-kernel"
+role = "kernel-library"
+note = """Its Triton backend inherits Triton's architecture support rather than declaring its own floor, so the Triton entry governs. Present-but-unassessed."""
+
+[[validation.runtime_packages]]
+package = "numba"
+role = "compiler"
+note = """No published release note states a per-architecture floor. Present-but-unassessed: the installed version is reported, not judged."""
+
+[[validation.runtime_packages]]
+package = "flash-attn-4"
+role = "kernel-library"
+note = """Its own distribution, not a 4.x release of flash-attn. CuTeDSL, so it compiles at run time and leaves no cubin to inspect: the installed distribution is the only evidence. Every release so far is a beta whose suffix the version parser drops -- 4.0.0b19 and 4.0.0b37 both read as 4.0.0 -- so presence is recorded and no floor is stated."""
+source = "https://github.com/Dao-AILab/flash-attention"
+
+[[validation.runtime_packages]]
+package = "flashinfer-python"
+role = "kernel-library"
+note = """The distribution is flashinfer-python; precompiled kernels ship separately as per-architecture packages -- flashinfer-jit-cache-sm103a, -sm120f, -sm90a -- which name the architecture directly. No release note announces first support for this architecture: it predates the published highlights, and the mentions within that window are feature work, not support milestones. Rubin is the one architecture flashinfer states a milestone for."""
+source = "https://github.com/flashinfer-ai/flashinfer/releases"
+
+[[validation.runtime_packages]]
+package = "nvshmem"
+distributions = ["nvidia-nvshmem-cu12", "nvidia-nvshmem-cu13", "libnvshmem3-cuda-12", "libnvshmem3-cuda-13"]
+role = "kernel-library"
+minimum_version = "3.2.5"
+note = """No release note names SM103, B300 or GB300. 3.2.5 is the release that "Enables platform support for Blackwell SM100 architecture on NVLINK5 connected B200-based systems", and later notes list "NVIDIA Blackwell" as a family, so 3.2.5 is a lower bound for the generation rather than a statement about this part."""
+source = "https://docs.nvidia.com/nvshmem/release-notes-install-guide/prior-releases/"
+
+[[sources]]
+title = "NVIDIA CUDA GPU compute capability"
+url = "https://developer.nvidia.com/cuda/gpus"
+
+[[sources]]
+title = "NVIDIA CUDA 12.9 release notes"
+url = "https://docs.nvidia.com/cuda/archive/12.9.0/cuda-toolkit-release-notes/"
+
+[[sources]]
+title = "NVIDIA DGX GB300 NCCL support floor"
+url = "https://docs.nvidia.com/dgx/dgxgb300nvl72-release-notes/dgxgb300nvl72-release-notes.pdf"

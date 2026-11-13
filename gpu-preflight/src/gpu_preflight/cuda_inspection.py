@@ -1,0 +1,609 @@
+"""Bounded, non-executing inspection of CUDA objects with NVIDIA cuobjdump."""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import subprocess
+from dataclasses import dataclass, replace
+from pathlib import Path
+
+CUDA_TARGET_TEXT_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?P<kind>sm|compute)[_-]?(?P<number>\d{2,3})"
+    r"(?P<suffix>[af]?)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+# cuobjdump --list-elf/--list-ptx prints one line per embedded image, for example
+# "ELF file    1: libx.1.sm_90a.cubin" or "PTX file    1: libx.1.sm_90.ptx". The target is
+# the final ".sm_<NN>[a|f].<ext>" component; the rest of the name echoes the input filename.
+CUOBJDUMP_LISTING_RE = re.compile(
+    r"^\s*(?P<kind>ELF|PTX) file\s+\d+:\s*(?P<name>.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+CUOBJDUMP_LISTING_TARGET_RE = re.compile(
+    r"\.sm_(?P<number>\d{2,3})(?P<suffix>[af]?)\.(?:cubin|ptx)$",
+    re.IGNORECASE,
+)
+# A standalone .ptx file is PTX source, not a container with device code embedded in it,
+# so cuobjdump has nothing to list and its empty answer says nothing about the file. The
+# module declares its own architecture: the PTX ISA requires .version and then .target
+# before any statement, so the answer sits at the top of the file and can be read without
+# compiling anything.
+PTX_VERSION_RE = re.compile(r"^[ \t]*\.version[ \t]+(?P<version>\d+\.\d+)", re.MULTILINE)
+PTX_TARGET_RE = re.compile(r"^[ \t]*\.target[ \t]+(?P<targets>[^\n]+)", re.MULTILINE)
+# A target list is comma-separated and mixes architectures with options such as "debug"
+# or "map_f64_to_f32", which are not targets.
+PTX_TARGET_TOKEN_RE = re.compile(r"^sm_(?P<number>\d{2,3})(?P<suffix>[af]?)$", re.IGNORECASE)
+# The first directive that can only belong to a module body. Reaching one means the
+# preamble is over and no .target is coming.
+PTX_BODY_RE = re.compile(
+    r"^[ \t]*\.(?:visible|extern|weak|entry|func|global|const|shared|local|tex|reg|"
+    r"maxntid|minnctapersm|reqntid|pragma)\b"
+)
+# Methods whose targets are the file's own account of itself rather than a guess from
+# surrounding bytes. Both are evidence a compatibility verdict may rest on.
+VERIFIED_ANALYSIS_METHODS = frozenset({"cuobjdump", "ptx-source"})
+# cuobjdump 13.1+ rejects some fat binaries built by CUDA 12.x toolchains with "Invalid ELF"
+# and lists only part of the file. 13.0 lists them completely and still understands CUDA 13
+# targets, so it is the auto-discovered fallback for analyzer errors.
+FALLBACK_CUOBJDUMP_RELEASE = "13.0"
+FALLBACK_CUOBJDUMP_PATH = Path(f"/usr/local/cuda-{FALLBACK_CUOBJDUMP_RELEASE}/bin/cuobjdump")
+# cuobjdump writes its listing to stdout and its failure to stderr, so a partial listing
+# can be hundreds of characters of per-image lines before the one line that says why the
+# analysis failed. Those lines also echo the temporary input file's name, which means
+# nothing to a reader of the report.
+ANALYZER_ERROR_RE = re.compile(r"^.*\b(?:fatal|error)\b\s*:.*$", re.IGNORECASE | re.MULTILINE)
+# cuobjdump names each embedded image after its input file, so its output echoes the
+# temporary file's random stem. Left in, it both means nothing to a reader and makes the
+# report differ between runs of the same image.
+TEMPORARY_STEM_RE = re.compile(r"gpu-preflight-[A-Za-z0-9_]+")
+# Every PyTorch GPU job loads these; a multi-GPU job also loads NCCL. If one of them has no
+# code for the target GPU, the image cannot run a GPU training job there.
+REQUIRED_RUNTIME_LIBRARY_RE = re.compile(
+    r"/(?:libtorch_cuda\.so|libc10_cuda\.so|libnccl\.so(?:\.\d+)*)$",
+    re.IGNORECASE,
+)
+# Framework libraries whose kernels a training or inference job loads on every run. They are
+# named in the report when they cannot be inspected.
+CORE_FRAMEWORK_LIBRARY_RE = re.compile(
+    r"/(?:libtorch_cuda[^/]*\.so|libc10_cuda\.so|libnccl\.so(?:\.\d+)*|flash_attn[^/]*\.so"
+    r"|libtransformer_engine[^/]*\.so|transformer_engine[^/]*\.so)$",
+    re.IGNORECASE,
+)
+# Nsight ships one payload per target platform so a profiler on one machine can attach to
+# a process on another. The directory names the platform it is for, and only the one
+# matching the host is ever loaded.
+CROSS_PLATFORM_TOOLING_RE = re.compile(
+    r"/nsight-(?:compute|systems)/[^/]+/(?:target|host)/[^/]+/", re.IGNORECASE
+)
+# Clang's compiler-rt runtimes are build inputs, named for the architecture they will be
+# linked into, not libraries the container's own processes load.
+COMPILER_RESOURCE_RE = re.compile(r"/lib/clang/[^/]+/lib/|/libclang_rt\.", re.IGNORECASE)
+# debugpy ships one attach helper per platform and picks at run time by file name.
+DEBUGGER_PAYLOAD_RE = re.compile(r"/pydevd_attach_to_process/", re.IGNORECASE)
+FLASHINFER_JIT_CACHE_ROOT = "/flashinfer_jit_cache/"
+FLASHINFER_JIT_CACHE_SEGMENT = "/jit_cache/"
+FLASHINFER_PROVIDER_RE = re.compile(
+    r"^sm(?P<number>75|80|86|87|89|90|100|101|103|107|110|120|121)(?P<suffix>[af]?)$",
+    re.IGNORECASE,
+)
+FLASHINFER_SM_SELECTOR_RE = re.compile(
+    r"_sm(?P<number>75|80|86|87|89|90|100|101|103|107|110|120|121)"
+    r"(?P<suffix>[af]?)(?=_|$)",
+    re.IGNORECASE,
+)
+FLASHINFER_TRAILING_SELECTOR_RE = re.compile(
+    r"_(?P<number>75|80|86|87|89|90|100|101|103|107|110|120|121)"
+    r"(?P<suffix>[af]?)$",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class CudaArtifactEvidence:
+    """CUDA target evidence tied to one image filesystem artifact."""
+
+    path: str
+    size_bytes: int
+    targets: tuple[str, ...]
+    method: str
+    complete: bool
+    role: str
+    diagnostic: str | None = None
+    incomplete_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class CuobjdumpTool:
+    """Resolved host-side cuobjdump executable and bounded invocation settings."""
+
+    executable: str
+    version: str
+    timeout_seconds: int
+    fallback: CuobjdumpTool | None = None
+
+    def inspect(self, path: Path, image_path: str, size_bytes: int) -> CudaArtifactEvidence:
+        if image_path.lower().endswith(".ptx"):
+            declared = self._ptx_source_evidence(path, image_path, size_bytes)
+            if declared is not None:
+                return declared
+        try:
+            result = subprocess.run(  # noqa: S603 - explicit argv; shell is disabled
+                (self.executable, "--list-elf", "--list-ptx", str(path)),
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=self.timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            return CudaArtifactEvidence(
+                path=image_path,
+                size_bytes=size_bytes,
+                targets=(),
+                method="cuobjdump",
+                complete=False,
+                role=classify_artifact_role(image_path),
+                diagnostic=f"cuobjdump timed out after {self.timeout_seconds} seconds",
+                incomplete_reason="timeout",
+            )
+        except OSError as error:
+            return CudaArtifactEvidence(
+                path=image_path,
+                size_bytes=size_bytes,
+                targets=(),
+                method="cuobjdump",
+                complete=False,
+                role=classify_artifact_role(image_path),
+                diagnostic=f"cuobjdump could not inspect the artifact: {error}",
+                incomplete_reason="io-error",
+            )
+
+        output = f"{result.stdout}\n{result.stderr}".replace(str(path), image_path)
+        targets = cuda_targets_from_listing(output)
+        if result.returncode and NO_DEVICE_CODE_RE.search(output):
+            if image_path.lower().endswith(".ptx"):
+                # Source with no readable .target. cuobjdump finding no embedded device
+                # code in it is the expected answer for PTX and establishes nothing, so
+                # this is a gap in the evidence rather than a clean negative result.
+                return CudaArtifactEvidence(
+                    path=image_path,
+                    size_bytes=size_bytes,
+                    targets=(),
+                    method="cuobjdump",
+                    complete=False,
+                    role=classify_artifact_role(image_path),
+                    diagnostic=(
+                        "standalone PTX source declares no readable .target directive, and "
+                        "cuobjdump cannot establish the architecture of uncompiled source"
+                    ),
+                    incomplete_reason="analyzer-error",
+                )
+            return CudaArtifactEvidence(
+                path=image_path,
+                size_bytes=size_bytes,
+                targets=(),
+                method="cuobjdump",
+                complete=True,
+                role=classify_artifact_role(image_path),
+                diagnostic="cuobjdump reported no embedded CUDA device code",
+            )
+        if result.returncode:
+            detail = analyzer_error_detail(output, result.returncode)
+            if self.fallback is not None:
+                retried = self.fallback.inspect(path, image_path, size_bytes)
+                if retried.complete:
+                    return replace(
+                        retried,
+                        diagnostic=(
+                            f"cuobjdump {self.version} failed ({detail[-160:]}); listed with "
+                            f"fallback cuobjdump {self.fallback.version}"
+                        ),
+                    )
+            if legacy := removed_architectures(output):
+                # Only once the fallback has had its turn, since an older toolkit lists
+                # these files completely. Failing that, cuobjdump stops at the first
+                # architecture it refuses, so the artifact is known to hold sm_21 code --
+                # not to hold nothing else.
+                return CudaArtifactEvidence(
+                    path=image_path,
+                    size_bytes=size_bytes,
+                    targets=tuple(sorted(set(targets) | set(legacy))),
+                    method="cuobjdump",
+                    complete=False,
+                    role=classify_artifact_role(image_path),
+                    diagnostic=(
+                        f"artifact holds device code for {', '.join(legacy)}, which "
+                        f"cuobjdump {self.version} no longer reads; any further targets "
+                        "in it were not listed"
+                    ),
+                    incomplete_reason="unsupported-legacy-target",
+                )
+            return CudaArtifactEvidence(
+                path=image_path,
+                size_bytes=size_bytes,
+                targets=targets,
+                method="cuobjdump",
+                complete=False,
+                role=classify_artifact_role(image_path),
+                diagnostic=detail,
+                incomplete_reason="analyzer-error",
+            )
+        return CudaArtifactEvidence(
+            path=image_path,
+            size_bytes=size_bytes,
+            targets=targets,
+            method="cuobjdump",
+            complete=True,
+            role=classify_artifact_role(image_path),
+        )
+
+    def _ptx_source_evidence(
+        self, path: Path, image_path: str, size_bytes: int
+    ) -> CudaArtifactEvidence | None:
+        """Read a standalone PTX module's own target declaration, or None if it has none."""
+        targets, version = read_ptx_declaration(path)
+        if not targets:
+            return None
+        # The ISA version bounds the driver that can JIT this module, and the driver is
+        # not in the image, so it is reported as context and never as a verdict.
+        isa = f"; PTX ISA {version}, which the installed driver must support" if version else ""
+        return CudaArtifactEvidence(
+            path=image_path,
+            size_bytes=size_bytes,
+            targets=targets,
+            method="ptx-source",
+            complete=True,
+            role=classify_artifact_role(image_path),
+            diagnostic=(
+                f"PTX source declares .target {', '.join(targets)}; the driver compiles it at "
+                f"run time, so a newer GPU runs it unless the target is architecture-"
+                f"conditional{isa}"
+            ),
+        )
+
+
+def read_ptx_declaration(path: Path) -> tuple[tuple[str, ...], str | None]:
+    """Return the targets and ISA version a PTX module declares for itself.
+
+    Reading stops at the .target directive rather than at a size bound: the PTX ISA puts
+    .version and .target before any statement, so once .target is seen the rest of the
+    file cannot change the answer.
+
+    Targets become ``compute_<NN>`` because PTX is virtual-architecture code the driver
+    compiles at load time, so an older target still runs on a newer GPU. The exception is
+    an architecture-conditional target (the ``a`` suffix), which runs only on the chip it
+    names; the suffix is carried through so the compatibility rules can say so.
+    """
+    version: str | None = None
+    target_match = None
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                # Per line, not against the whole text read so far: both directives live
+                # on a line of their own, and re-searching a growing buffer costs time
+                # quadratic in the size of a file that declares neither.
+                if target_match := PTX_TARGET_RE.search(line):
+                    break
+                if version is None and (version_match := PTX_VERSION_RE.search(line)):
+                    version = version_match.group("version")
+                if PTX_BODY_RE.match(line):
+                    # The ISA puts .version and .target before any statement, so a
+                    # module body means there is no declaration left to find.
+                    break
+    except OSError:
+        return (), None
+    if target_match is None:
+        return (), version
+    targets = set()
+    for token in target_match.group("targets").split(","):
+        if token_match := PTX_TARGET_TOKEN_RE.match(token.strip()):
+            number = int(token_match.group("number"))
+            targets.add(f"compute_{number}{token_match.group('suffix').lower()}")
+    return tuple(sorted(targets)), version
+
+
+# cuobjdump exits non-zero for two different situations, and only one is a failure.
+# "does not contain device code" is its answer for an ELF it parsed. "Invalid fatbin
+# header" is its answer for a file that is not a CUDA container at all -- glibc's empty
+# stub archives (libdl.a, libpthread.a, librt.a). Both mean the complete file holds no
+# device code, which is a result; counting the second as an incomplete inspection would
+# understate coverage for every image that ships a static libc.
+NO_DEVICE_CODE_RE = re.compile(r"does not contain device code|invalid fatbin header", re.IGNORECASE)
+# cuobjdump refuses a fatbin holding device code for an architecture its toolkit has
+# dropped, and names the architecture while refusing: "Support for 'sm_21' has been
+# removed. Please use CUDA toolkit 9.1 or earlier." That sentence is evidence that the
+# artifact carries sm_21 code, so it is read rather than discarded as a parser error.
+REMOVED_ARCHITECTURE_RE = re.compile(r"Support for '(sm_\d+)' has been removed", re.IGNORECASE)
+
+
+def removed_architectures(output: str) -> tuple[str, ...]:
+    """Return the architectures cuobjdump named while refusing to read them."""
+    seen: list[str] = []
+    for name in REMOVED_ARCHITECTURE_RE.findall(output):
+        lowered = name.lower()
+        if lowered not in seen:
+            seen.append(lowered)
+    return tuple(seen)
+
+
+def analyzer_error_detail(output: str, returncode: int) -> str:
+    """Summarize a failed cuobjdump run, leading with the line that explains it."""
+    errors = [" ".join(line.split()) for line in ANALYZER_ERROR_RE.findall(output)]
+    unique: list[str] = []
+    for line in errors:
+        if line and line not in unique:
+            unique.append(line)
+    # The stem is scrubbed over the whole output, before any trimming, so that a
+    # stem spanning the trim boundary is still matched whole.
+    detail = "; ".join(unique) if unique else " ".join(output.split())
+    detail = TEMPORARY_STEM_RE.sub("<artifact>", detail)
+    detail = detail if unique else detail[-500:]
+    return detail[:500] or f"exit status {returncode}"
+
+
+def cuda_targets_from_listing(text: str) -> tuple[str, ...]:
+    """Normalize the targets in ``cuobjdump --list-elf --list-ptx`` output.
+
+    ELF entries are cubins and keep their ``sm_<NN>`` name. PTX entries are virtual
+    architecture code that the driver can JIT on the same or a newer GPU, so they map to
+    ``compute_<NN>`` even though cuobjdump spells the file name with ``sm_<NN>``.
+    """
+    targets: set[str] = set()
+    for line in CUOBJDUMP_LISTING_RE.finditer(text):
+        target = CUOBJDUMP_LISTING_TARGET_RE.search(line.group("name"))
+        if not target:
+            continue
+        kind = "compute" if line.group("kind").upper() == "PTX" else "sm"
+        targets.add(f"{kind}_{int(target.group('number'))}{target.group('suffix').lower()}")
+    return tuple(sorted(targets))
+
+
+def cuda_targets_from_text(text: str) -> tuple[str, ...]:
+    """Normalize CUDA target names that appear in free text such as file paths."""
+    return tuple(
+        sorted(
+            {
+                f"{match.group('kind').lower()}_{int(match.group('number'))}"
+                f"{match.group('suffix').lower()}"
+                for match in CUDA_TARGET_TEXT_RE.finditer(text)
+            }
+        )
+    )
+
+
+def is_required_runtime_library(image_path: str) -> bool:
+    """Return whether a path is a library that every PyTorch GPU job loads."""
+    return bool(REQUIRED_RUNTIME_LIBRARY_RE.search(f"/{image_path.strip('/')}"))
+
+
+def is_core_framework_library(image_path: str) -> bool:
+    """Return whether a path is a framework library that every GPU job is expected to load."""
+    return bool(CORE_FRAMEWORK_LIBRARY_RE.search(f"/{image_path.strip('/')}"))
+
+
+def classify_artifact_role(image_path: str) -> str:
+    """Estimate runtime relevance from well-known image path conventions."""
+    normalized = f"/{image_path.lower().strip('/')}"
+    basename = Path(normalized).name
+    if any(
+        marker in normalized
+        for marker in (
+            "/test/",
+            "/tests/",
+            "/testing/",
+            "/test_data/",
+            "/benchmarks/",
+            "/perftest/",
+            "/perftests/",
+            "/perf_test/",
+            "/perf-tests/",
+        )
+    ) or any(marker in basename for marker in ("perftest", "perf_test", "benchmark")):
+        return "test"
+    if any(
+        marker in normalized
+        for marker in (
+            "/samples/",
+            "/examples/",
+            "/stubs/",
+            "/nsightsystems",
+            "/compute-sanitizer/",
+            "/nvvm/",
+        )
+    ) or (
+        basename.startswith(("libaccinj", "libcuinj"))
+        # libaccinj64/libcuinj64 are CUDA Toolkit profiler-injection libraries; they carry a
+        # single placeholder cubin and are only loaded by profiling tools.
+        or CROSS_PLATFORM_TOOLING_RE.search(normalized)
+        or COMPILER_RESOURCE_RE.search(normalized)
+        or DEBUGGER_PAYLOAD_RE.search(normalized)
+    ):
+        return "tooling"
+    if (
+        "/compat/" in normalized
+        or basename.startswith("libcudart.so")
+        or basename.startswith("libcufile")
+        or basename.startswith("libcuda.so")
+        or "libnvidia-ptxjitcompiler" in basename
+        or "libnvidia-nvvm" in basename
+        or "libnvvm" in basename
+    ):
+        return "host-runtime"
+    if kernel_catalog_group(image_path):
+        return "kernel-catalog"
+    return "runtime"
+
+
+def kernel_catalog_group(image_path: str) -> str | None:
+    """Group runtime-selected CUDA artifacts shipped in precompiled catalogs.
+
+    Framework images can contain tens of thousands of shape-specific cubins below a
+    dispatch catalog. Those files are alternatives selected by the runtime, not
+    libraries that every workload necessarily loads. The containing directory is a
+    stable, narrow grouping boundary; ordinary standalone cubins outside an explicit
+    ``cubins`` tree remain normal runtime artifacts.
+
+    FlashInfer also ships architecture-selected modules in ``flashinfer_jit_cache``.
+    A generic module and explicitly suffixed variants such as ``_sm90`` are one
+    dispatch family. Plain numeric suffixes are accepted only in that known cache
+    layout (for example ``fp4_quantization_100``), avoiding broad filename guesses.
+    """
+    normalized = f"/{image_path.lower().strip('/')}"
+    if normalized.endswith(".cubin") and "/cubins/" in normalized:
+        return str(Path(normalized).parent)
+    dispatch = _flashinfer_dispatch_module(normalized)
+    return dispatch[0] if dispatch else None
+
+
+def kernel_catalog_kind(image_path: str) -> str | None:
+    """Return the catalog classification for an image artifact, or None."""
+    normalized = f"/{image_path.lower().strip('/')}"
+    if normalized.endswith(".cubin") and "/cubins/" in normalized:
+        return "precompiled-cubin"
+    return "architecture-module" if _flashinfer_dispatch_module(normalized) else None
+
+
+def kernel_catalog_declared_targets(image_path: str) -> tuple[str, ...]:
+    """Read architecture selectors encoded in known catalog member paths."""
+    normalized = f"/{image_path.lower().strip('/')}"
+    targets = set(cuda_targets_from_text(normalized))
+    dispatch = _flashinfer_dispatch_module(normalized)
+    if dispatch:
+        targets.update(dispatch[1])
+    return tuple(sorted(targets))
+
+
+def _flashinfer_dispatch_module(image_path: str) -> tuple[str, tuple[str, ...]] | None:
+    """Return a normalized FlashInfer dispatch-family path and declared targets."""
+    if (
+        FLASHINFER_JIT_CACHE_ROOT not in image_path
+        or FLASHINFER_JIT_CACHE_SEGMENT not in image_path
+        or not image_path.endswith(".so")
+    ):
+        return None
+    path = Path(image_path)
+    stem = path.stem
+    # The cache layout is <module>/<module>.so. Requiring that shape keeps this
+    # package-specific rule from absorbing unrelated shared libraries.
+    if path.parent.name != stem:
+        return None
+
+    targets: set[str] = set()
+
+    cache_root = path.parent.parent
+    provider_match = None
+    if cache_root.name == "jit_cache" and cache_root.parent.parent.name == "providers":
+        provider_match = FLASHINFER_PROVIDER_RE.match(cache_root.parent.name)
+    if provider_match:
+        targets.add(
+            f"sm_{int(provider_match.group('number'))}{provider_match.group('suffix').lower()}"
+        )
+        # Collapse providers/<sm>/jit_cache back onto the cache root so every
+        # provider's build of one module shares a dispatch family.
+        cache_root = cache_root.parent.parent.parent / "jit_cache"
+
+    def remove_sm_selector(match: re.Match[str]) -> str:
+        targets.add(f"sm_{int(match.group('number'))}{match.group('suffix').lower()}")
+        return ""
+
+    family = FLASHINFER_SM_SELECTOR_RE.sub(remove_sm_selector, stem)
+    trailing = FLASHINFER_TRAILING_SELECTOR_RE.search(family)
+    if trailing:
+        targets.add(f"sm_{int(trailing.group('number'))}{trailing.group('suffix').lower()}")
+        family = family[: trailing.start()]
+    group = str(cache_root / family)
+    return group, tuple(sorted(targets))
+
+
+def resolve_cuobjdump(
+    mode: str,
+    timeout_seconds: int,
+    fallback_mode: str = "auto",
+) -> CuobjdumpTool | None:
+    """Resolve cuobjdump from PATH, a well-known CUDA path, an explicit path, or off.
+
+    ``fallback_mode`` selects a second analyzer that is retried when the primary one
+    reports an error: ``auto`` uses a CUDA 13.0 cuobjdump when one is installed, ``off``
+    disables the retry, and any other value is an explicit executable path.
+    """
+    if mode == "off":
+        return None
+    if timeout_seconds <= 0:
+        raise ValueError("cuobjdump timeout must be greater than zero")
+
+    candidate: str | None
+    if mode == "auto":
+        candidate = shutil.which("cuobjdump")
+        if candidate is None:
+            well_known = Path("/usr/local/cuda/bin/cuobjdump")
+            candidate = (
+                str(well_known) if well_known.is_file() and os.access(well_known, os.X_OK) else None
+            )
+        if candidate is None:
+            return None
+    else:
+        candidate = _explicit_executable(mode)
+
+    tool = CuobjdumpTool(candidate, _cuobjdump_version(candidate, timeout_seconds), timeout_seconds)
+    fallback_candidate: str | None = None
+    if fallback_mode == "auto":
+        if FALLBACK_CUOBJDUMP_PATH.is_file() and os.access(FALLBACK_CUOBJDUMP_PATH, os.X_OK):
+            fallback_candidate = str(FALLBACK_CUOBJDUMP_PATH)
+    elif fallback_mode != "off":
+        fallback_candidate = _explicit_executable(fallback_mode)
+    if fallback_candidate is None or os.path.realpath(fallback_candidate) == os.path.realpath(
+        candidate
+    ):
+        return tool
+    fallback_version = _cuobjdump_version(fallback_candidate, timeout_seconds)
+    if fallback_version == tool.version:
+        return tool
+    return replace(
+        tool,
+        fallback=CuobjdumpTool(fallback_candidate, fallback_version, timeout_seconds),
+    )
+
+
+def _explicit_executable(value: str) -> str:
+    explicit = Path(value).expanduser()
+    if not explicit.is_file():
+        raise ValueError(f"cuobjdump executable not found: {value}")
+    if not os.access(explicit, os.X_OK):
+        raise ValueError(f"cuobjdump is not executable: {value}")
+    return str(explicit)
+
+
+def _cuobjdump_version(candidate: str, timeout_seconds: int) -> str:
+    version = "unknown"
+    try:
+        result = subprocess.run(  # noqa: S603 - explicit argv; shell is disabled
+            (candidate, "--version"),
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=min(timeout_seconds, 10),
+        )
+        version_text = " ".join(f"{result.stdout} {result.stderr}".split())
+        if version_text:
+            match = re.search(
+                r"release\s+(?P<release>\d+(?:\.\d+)+),\s+V(?P<build>\d+(?:\.\d+)+)",
+                version_text,
+                re.IGNORECASE,
+            )
+            version = (
+                f"CUDA {match.group('release')} (V{match.group('build')})"
+                if match
+                else version_text[-120:]
+            )
+    except OSError as error:
+        raise ValueError(f"cuobjdump could not be executed: {candidate}: {error}") from error
+    except subprocess.TimeoutExpired as error:
+        raise ValueError(f"cuobjdump --version timed out: {candidate}") from error
+    if result.returncode:
+        detail = " ".join(f"{result.stdout} {result.stderr}".split())[-500:]
+        raise ValueError(
+            f"cuobjdump --version failed for {candidate}: "
+            f"{detail or f'exit status {result.returncode}'}"
+        )
+    return version

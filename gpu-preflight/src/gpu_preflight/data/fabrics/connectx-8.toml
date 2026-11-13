@@ -1,0 +1,30 @@
+schema_version = 1
+id = "connectx-8"
+display_name = "NVIDIA ConnectX-8"
+generation = 8
+notes = [
+  "Nebius pairs ConnectX-8 with the B300 platform at 800 Gbps per host.",
+  "GB300 NVL72 uses ConnectX-8 SuperNICs on the scale-out InfiniBand fabric.",
+  "HPC-X 2.21.1 is the first release whose change log adds ConnectX-8 SuperNIC support.",
+  "The UCX floor is the version bundled with that HPC-X release, not a UCX minimum NVIDIA states separately.",
+]
+
+[validation]
+minimum_ucx_version = "1.18.0"
+minimum_hpcx_version = "2.21.1"
+
+[[sources]]
+title = "Nebius presets for GPU platforms"
+url = "https://docs.nebius.com/compute/virtual-machines/types#presets-for-gpu-platforms"
+
+[[sources]]
+title = "NVIDIA GB300 NVL72 ConnectX-8 SuperNIC"
+url = "https://www.nvidia.com/en-us/data-center/gb300-nvl72/"
+
+[[sources]]
+title = "NVIDIA HPC-X release notes change log history (2.21.1 adds ConnectX-8 SuperNIC)"
+url = "https://networking-docs.nvidia.com/hpcxum/223/release+notes+change+log+history"
+
+[[sources]]
+title = "NVIDIA HPC-X Software Toolkit Rev 2.21.1 (bundled UCX 1.18.0)"
+url = "https://docs.nvidia.com/networking/display/nvidia-hpc-x-software-toolkit-rev-2-21-1.1.pdf"

@@ -1,0 +1,96 @@
+schema_version = 1
+id = "vr"
+aliases = ["vera-rubin", "vr-nvl72", "nvidia-vera-rubin"]
+display_name = "NVIDIA Vera Rubin NVL72"
+maturity = "provisional"
+notes = [
+  "CUDA 13.5 is the first toolkit with GA (production) support for Vera Rubin; 13.4 was a developer preview.",
+  "NCCL 2.32.3 adds initial Rubin support but does not include Rubin performance-model tuning.",
+  "Platform requirements and hardware evidence must be updated as Nebius service details stabilize.",
+]
+
+[hardware]
+cpu_architectures = ["arm64"]
+gpu_architecture = "vera-rubin"
+compute_capability = "10.7"
+native_sm_targets = ["sm_107", "sm_107f", "sm_107a"]
+nebius_platforms = ["announced-vr-nvl72"]
+
+[fabric]
+compute_adapter = "connectx-9"
+
+[validation]
+minimum_cuda_version = "13.5"
+minimum_nccl_version = "2.32.3"
+runtime_checks = [
+  "arm64-image",
+  "cuda-sm107-runtime",
+  "rack-fabric",
+  "scaleout-network",
+  "gpu-direct-rdma",
+  "ucx-transport",
+  "library-resolution",
+  "framework-smoke",
+  "workload-smoke",
+]
+
+[[validation.runtime_packages]]
+package = "nvidia-cutlass-dsl"
+role = "dsl"
+minimum_version = "4.8.0"
+note = """CuTe DSL gained "Initial Rubin support to accelerate dense GEMMs" in 4.8.0, alongside C++ "initial Rubin support (SM107)". 4.8.1 then fixes a TMA descriptor "possible illegal memory access on Blackwell/Rubin", and still lists a known issue: "specific packed mixed-input ops have mis-compilation issue on sm107a/sm107f"."""
+source = "https://docs.nvidia.com/cutlass/latest/CHANGELOG.html"
+
+[[validation.runtime_packages]]
+package = "triton"
+role = "compiler"
+minimum_version = "3.8.0"
+note = """Triton 3.8.0: "Added initial NVIDIA Rubin (SM107) support, including MMA updates, multicast barrier arrival, and a Rubin-specific Gluon module"."""
+source = "https://github.com/triton-lang/triton/releases"
+
+[[validation.runtime_packages]]
+package = "flash-attn-4"
+role = "kernel-library"
+note = """Its own distribution, not a 4.x release of flash-attn. The README claims "Hopper and Blackwell GPUs (e.g. H100, B200)" and names no part of this generation, so support here is neither stated nor denied. Reported, not judged."""
+source = "https://github.com/Dao-AILab/flash-attention"
+
+[[validation.runtime_packages]]
+package = "liger-kernel"
+role = "kernel-library"
+note = """Its Triton backend inherits Triton's architecture support rather than declaring its own floor, so the Triton entry governs. Present-but-unassessed."""
+
+[[validation.runtime_packages]]
+package = "numba"
+role = "compiler"
+note = """numba-cuda's release notes announce no GPU architectures at all, so no floor can be cited for any target. Present-but-unassessed."""
+
+[[validation.runtime_packages]]
+package = "flashinfer-python"
+role = "kernel-library"
+minimum_version = "0.6.18"
+note = """0.6.18: "FlashInfer 0.6.18 completes support for NVIDIA Rubin (SM107), begun in 0.6.16." 0.6.16 "Adds SM107 support" and 0.6.17 only relands it onto the release branch; 0.6.18 is the first release claiming the architecture is finished, and it carries five SM107 fixes clearing 133 CI failures."""
+source = "https://github.com/flashinfer-ai/flashinfer/releases"
+
+[[validation.runtime_packages]]
+package = "nvshmem"
+distributions = ["nvidia-nvshmem-cu12", "nvidia-nvshmem-cu13", "libnvshmem3-cuda-12", "libnvshmem3-cuda-13"]
+role = "kernel-library"
+minimum_version = "3.8.0"
+note = """3.7.2's compatibility list stops at "NVIDIA Blackwell"; 3.8.0 is the first to list "NVIDIA Rubin" and to add "CUDA 13.4 features for Vera Rubin architectures, including support for locality domains and fabric-clique detection"."""
+source = "https://docs.nvidia.com/nvshmem/release-notes-install-guide/prior-releases/"
+
+[[sources]]
+title = "NVIDIA Tile IR supported architectures"
+url = "https://docs.nvidia.com/cuda/tile-ir/13.4/sections/stability.html#supported-architectures"
+
+[[sources]]
+title = "NVIDIA CUDA compiler SM107 support"
+url = "https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/"
+
+[[sources]]
+title = "NVIDIA CUDA 13.5 brings Vera Rubin GA support"
+url = "https://developer.nvidia.com/blog/nvidia-cuda-13-5-brings-nvidia-vera-rubin-ga-support/"
+
+[[sources]]
+title = "NVIDIA NCCL 2.32.3 release notes (initial Vera Rubin support)"
+url = "https://docs.nvidia.com/deeplearning/nccl/archives/nccl_2323/release-notes/rel_2-32-3.html"

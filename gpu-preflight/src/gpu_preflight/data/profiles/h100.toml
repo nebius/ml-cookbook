@@ -1,0 +1,83 @@
+schema_version = 1
+id = "h100"
+aliases = ["nvidia-h100", "gpu-h100-sxm"]
+display_name = "NVIDIA H100"
+maturity = "supported"
+notes = ["H100 and H200 share compute capability 9.0 but remain separate evidence targets."]
+
+[hardware]
+cpu_architectures = ["amd64"]
+gpu_architecture = "hopper"
+compute_capability = "9.0"
+native_sm_targets = ["sm_90", "sm_90a"]
+nebius_platforms = ["gpu-h100-sxm"]
+
+[fabric]
+compute_adapter = "connectx-7"
+
+[validation]
+minimum_cuda_version = "11.8"
+minimum_nccl_version = "2.15.1"
+runtime_checks = [
+  "cuda-runtime",
+  "nccl-intra-node",
+  "nccl-infiniband",
+  "ucx-transport",
+  "library-resolution",
+  "framework-smoke",
+  "workload-smoke",
+]
+
+[[validation.runtime_packages]]
+package = "triton"
+role = "compiler"
+note = """Hopper predates the window GitHub publishes release notes for (the list begins at 3.4.0), so no citable floor exists; sm_90 support long precedes any documented release."""
+source = "https://github.com/triton-lang/triton/releases"
+
+[[validation.runtime_packages]]
+package = "nvidia-cutlass-dsl"
+role = "dsl"
+minimum_version = "4.0.0"
+note = """The CuTe DSL arrived in CUTLASS 4.0.0 -- "CuTe DSL, a Python DSL centered around CuTe's abstractions" -- with Hopper GEMM among its first examples. Nothing earlier ships the DSL at all."""
+source = "https://docs.nvidia.com/cutlass/latest/CHANGELOG.html"
+
+[[validation.runtime_packages]]
+package = "flash-attn-4"
+role = "kernel-library"
+note = """Its own distribution, not a 4.x release of flash-attn. CuTeDSL, so it compiles at run time and leaves no cubin to inspect: the installed distribution is the only evidence. Every release so far is a beta whose suffix the version parser drops -- 4.0.0b19 and 4.0.0b37 both read as 4.0.0 -- so presence is recorded and no floor is stated."""
+source = "https://github.com/Dao-AILab/flash-attention"
+
+[[validation.runtime_packages]]
+package = "liger-kernel"
+role = "kernel-library"
+note = """Its Triton backend inherits Triton's architecture support rather than declaring its own floor, so the Triton entry governs. Present-but-unassessed."""
+
+[[validation.runtime_packages]]
+package = "numba"
+role = "compiler"
+note = """numba-cuda's release notes announce no GPU architectures at all, so no floor can be cited for any target. Present-but-unassessed."""
+
+[[validation.runtime_packages]]
+package = "flashinfer-python"
+role = "kernel-library"
+note = """The distribution is flashinfer-python; precompiled kernels ship separately as per-architecture packages -- flashinfer-jit-cache-sm103a, -sm120f, -sm90a -- which name the architecture directly. No release note announces first support for this architecture: it predates the published highlights, and the mentions within that window are feature work, not support milestones. Rubin is the one architecture flashinfer states a milestone for."""
+source = "https://github.com/flashinfer-ai/flashinfer/releases"
+
+[[validation.runtime_packages]]
+package = "nvshmem"
+distributions = ["nvidia-nvshmem-cu12", "nvidia-nvshmem-cu13", "libnvshmem3-cuda-12", "libnvshmem3-cuda-13"]
+role = "kernel-library"
+note = """Hopper has been in the compatibility list since before the window these release notes cover, so no first-support release can be cited. Present-but-unassessed."""
+source = "https://docs.nvidia.com/nvshmem/release-notes-install-guide/prior-releases/"
+
+[[sources]]
+title = "NVIDIA CUDA GPU compute capability"
+url = "https://developer.nvidia.com/cuda/gpus"
+
+[[sources]]
+title = "NVIDIA CUDA 11.8 release notes"
+url = "https://docs.nvidia.com/cuda/archive/11.8.0/cuda-toolkit-release-notes/"
+
+[[sources]]
+title = "NVIDIA NCCL 2.15.1 release notes (H100 support)"
+url = "https://docs.nvidia.com/deeplearning/nccl/archives/nccl_2203/release-notes/rel_2-15-1.html"

@@ -1,0 +1,1501 @@
+"""Regressions for the defects found by replaying the scanner over a public image corpus.
+
+Each test names the image that exposed its defect. The scanner is judged on images nobody
+curated for it, so the cases that matter are the ones a hand-written fixture would not
+have thought to build: an executable with no extension, firmware for a processor inside
+the GPU, a deliberately corrupt file a packaging tool ships on purpose.
+"""
+
+from __future__ import annotations
+
+import errno
+import gzip
+import io
+import json
+import tarfile
+import tempfile
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import patch
+
+from gpu_preflight.cli import main as cli_main
+from gpu_preflight.compatibility import evaluate_cuda_target, summarize_compatibility
+from gpu_preflight.cuda_inspection import (
+    classify_artifact_role,
+    read_ptx_declaration,
+    resolve_cuobjdump,
+)
+from gpu_preflight.facts import ImageFacts, elf_architecture, is_gpu_firmware
+from gpu_preflight.image import (
+    NCCL_EVIDENCE_SOURCES,
+    CudaArtifactEvidence,
+    DockerImageClient,
+    ImageInspectionError,
+    ImageManifestSet,
+    PlatformManifest,
+    PulledImageFacts,
+    SkippedCudaCandidate,
+    _nccl_path_evidence,
+    _select_manifest,
+    inspect_image_reference,
+    merge_discovered_observations,
+    scan_rootfs_tar,
+    verified_targets,
+)
+from gpu_preflight.inspection import _target_findings
+from gpu_preflight.profiles import load_profiles
+from gpu_preflight.render import NCCL_SOURCE_LABEL
+from tests.test_image import FakeImageClient, artifact_findings, manifest, rootfs_with
+
+
+def unresolved_facts(final_platform: str | None = None) -> ImageFacts:
+    return ImageFacts(
+        path="",
+        reference="example/image:latest",
+        final_platform=final_platform,
+        cuda_targets=(),
+        cuda_versions=(),
+        nccl_versions=(),
+        detected_packages=(),
+        environment={},
+    )
+
+
+def commandless_facts() -> tuple[PlatformManifest, PulledImageFacts]:
+    manifest = PlatformManifest(
+        platform="linux/amd64",
+        digest="sha256:" + "0" * 64,
+        config_digest=None,
+        compressed_size_bytes=0,
+    )
+    config = PulledImageFacts(
+        platform="linux/amd64",
+        digest=manifest.digest,
+        environment={},
+        known_packages=(),
+        installed_packages=(),
+        cuda_targets=(),
+        cuda_versions=(),
+        nccl_versions=(),
+        user=None,
+        entrypoint=(),
+        command=(),
+    )
+    return manifest, config
+
+
+class CommandlessImageTests(unittest.TestCase):
+    """docker/docker-model-backend-llamacpp:v0.0.34-cuda declares no CMD and no ENTRYPOINT.
+
+    docker create refuses such an image, so the scan died before reading a single file.
+    The export container is never started, so any command satisfies it.
+    """
+
+    def test_export_supplies_an_entrypoint_that_cannot_run(self) -> None:
+        client = DockerImageClient(cuobjdump_mode="off")
+        manifest, config = commandless_facts()
+        # An empty container ID aborts right after create, which is all this needs.
+        with (
+            patch.object(client, "_run", return_value="") as run,
+            self.assertRaises(ImageInspectionError),
+        ):
+            client.scan_filesystem("example/commandless:latest", manifest, config)
+        arguments = run.call_args.args[0]
+        self.assertIn("--entrypoint", arguments)
+        entrypoint = arguments[arguments.index("--entrypoint") + 1]
+        self.assertTrue(entrypoint.startswith("/"))
+        self.assertIn("never_executed", entrypoint)
+
+
+class GpuFirmwareTests(unittest.TestCase):
+    """nvcr.io/nvidia/driver ships RISC-V GSP firmware under /lib/firmware/nvidia.
+
+    It runs on a processor inside the GPU, so counting it as a host CPU dependency
+    put an architecture the host never executes into the report.
+    """
+
+    def test_driver_firmware_is_not_a_host_dependency(self) -> None:
+        for path in (
+            "/lib/firmware/nvidia/615.71.09/gsp_ga10x.bin",
+            "usr/lib/firmware/nvidia/580.65.06/gsp_tu10x.bin",
+        ):
+            self.assertTrue(is_gpu_firmware(path, "riscv64"), path)
+
+    def test_an_ordinary_riscv_binary_still_answers_for_itself(self) -> None:
+        for path in (
+            "/usr/lib/riscv64-linux-gnu/libfoo.so",
+            "/opt/vendor/gsp_ga10x.bin",
+            "/lib/firmware/nvidia/615.71.09/notgsp.bin",
+        ):
+            self.assertFalse(is_gpu_firmware(path, "riscv64"), path)
+
+    def test_the_path_alone_does_not_excuse_another_architecture(self) -> None:
+        self.assertFalse(is_gpu_firmware("/lib/firmware/nvidia/615.71.09/gsp_ga10x.bin", "amd64"))
+
+
+def elf_bytes(machine: int = 0x3E, payload: bytes = b"") -> bytes:
+    """Build a minimal 64-bit little-endian ELF header plus optional payload."""
+    header = bytearray(64)
+    header[0:4] = b"\x7fELF"
+    header[4] = 2
+    header[5] = 1
+    header[6] = 1
+    header[16:18] = (3).to_bytes(2, "little")
+    header[18:20] = machine.to_bytes(2, "little")
+    return bytes(header) + payload
+
+
+class GpuCodeObjectTests(unittest.TestCase):
+    """nvcr.io/nvidia/pytorch:26.10 ships 5,623 AITER .co objects for AMD GPUs.
+
+    They are ELF, but EM_AMDGPU, so the host CPU never loads them. Read as host
+    libraries they drowned the two files that really were built for another CPU.
+    """
+
+    def test_amd_device_code_is_not_a_host_architecture(self) -> None:
+        self.assertIsNone(elf_architecture(elf_bytes(machine=0xE0)))
+
+    def test_cuda_device_code_is_not_a_host_architecture(self) -> None:
+        self.assertIsNone(elf_architecture(elf_bytes(machine=0xBE)))
+
+    def test_host_architectures_are_still_read(self) -> None:
+        self.assertEqual(elf_architecture(elf_bytes(machine=0x3E)), "amd64")
+        self.assertEqual(elf_architecture(elf_bytes(machine=0xB7)), "arm64")
+
+
+def tar_of(members: tuple[tuple[str, bytes], ...]) -> io.BytesIO:
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w") as archive:
+        for name, data in members:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+    stream.seek(0)
+    return stream
+
+
+class CondaMetadataTests(unittest.TestCase):
+    """dklabjan/keras-gpu stores gzip-compressed records under conda-meta.
+
+    json.loads raises UnicodeDecodeError on those bytes, not JSONDecodeError, so the
+    exception escaped the scan and the image produced no report at all.
+    """
+
+    def _packages(self, data: bytes) -> tuple[str, ...]:
+        scan = scan_rootfs_tar(
+            tar_of((("root/miniconda/conda-meta/keras-2.2.4-py36_0.json", data),)),
+            cuobjdump=None,
+        )
+        return scan.installed_packages
+
+    def test_a_gzipped_record_is_read_rather_than_crashing(self) -> None:
+        record = json.dumps({"name": "keras", "version": "2.2.4"}).encode()
+        self.assertEqual(self._packages(gzip.compress(record)), ("keras==2.2.4",))
+
+    def test_a_plain_record_is_still_read(self) -> None:
+        record = json.dumps({"name": "keras", "version": "2.2.4"}).encode()
+        self.assertEqual(self._packages(record), ("keras==2.2.4",))
+
+    def test_an_unreadable_record_is_skipped_without_aborting_the_scan(self) -> None:
+        for data in (b"\x1f\x8bnot really gzip", b"\xa3\xff\x00 not utf-8", b"{"):
+            self.assertEqual(self._packages(data), (), data)
+
+
+def listing_cuobjdump(directory: str, capture: Path | None = None) -> object:
+    """A cuobjdump stand-in reporting one sm_103 image, optionally saving its input."""
+    executable = Path(directory) / "cuobjdump"
+    # The analyzer is invoked with flags first and the file last.
+    copy = (
+        f'for a in "$@"; do last=$a; done; cp "$last" "{capture}"\n' if capture is not None else ""
+    )
+    executable.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then '
+        "echo 'Cuda compilation tools, release 13.4, V13.4.92'; exit 0; fi\n"
+        f"{copy}"
+        "echo 'ELF file    1: payload.1.sm_103.cubin'\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    return resolve_cuobjdump(str(executable), timeout_seconds=10, fallback_mode="off")
+
+
+class ElfDiscoveryTests(unittest.TestCase):
+    """tensorflow/serving keeps its whole workload in /usr/bin/tensorflow_model_server.
+
+    An executable carries no suffix to recognize it by, so a name-only candidate gate
+    never saw the one file in that image that actually runs.
+    """
+
+    def _scan(self, name: str, data: bytes, directory: str):
+        return scan_rootfs_tar(tar_of(((name, data),)), cuobjdump=listing_cuobjdump(directory))
+
+    def test_an_extensionless_executable_is_discovered_by_its_header(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scan = self._scan("usr/bin/tensorflow_model_server", elf_bytes(), directory)
+        self.assertEqual(scan.cuda_candidate_files, 1)
+        self.assertEqual(
+            [a.path for a in scan.cuda_artifacts], ["/usr/bin/tensorflow_model_server"]
+        )
+
+    def test_a_file_that_is_not_elf_is_still_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scan = self._scan("usr/share/doc/readme", b"just text, no header at all", directory)
+        self.assertEqual(scan.cuda_candidate_files, 0)
+
+    def test_a_file_too_short_to_hold_a_header_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scan = self._scan("usr/bin/tiny", b"\x7fELF", directory)
+        self.assertEqual(scan.cuda_candidate_files, 0)
+
+    def test_a_discovered_artifact_reaches_the_analyzer_whole(self) -> None:
+        """The probe consumes bytes a tar stream cannot give back, so they must replay."""
+        payload = bytes(range(256)) * 40
+        with tempfile.TemporaryDirectory() as directory:
+            captured = Path(directory) / "captured.bin"
+            tool = listing_cuobjdump(directory, capture=captured)
+            scan_rootfs_tar(
+                tar_of((("usr/bin/server", elf_bytes(payload=payload)),)), cuobjdump=tool
+            )
+            self.assertEqual(captured.read_bytes(), elf_bytes(payload=payload))
+
+
+class ReviewedDiscoveryGapTests(unittest.TestCase):
+    """The libraries the PR review found by inspecting images independently.
+
+    Five CUDA-bearing TRT-LLM libraries and two vLLM extensions were absent from the
+    scan while it reported 100% coverage, because a generic .so was a candidate only
+    where the path mentioned a CUDA-bearing project. libth_common.so carries native
+    sm_103a. The review asked for regression fixtures with CUDA-bearing libraries
+    under neutral paths, so these are named for the files that were missed.
+    """
+
+    OMITTED = (
+        "opt/tensorrt_llm/lib/libtensorrt_llm.so",
+        "opt/tensorrt_llm/lib/libth_common.so",
+        "usr/local/lib/python3.12/dist-packages/vllm/_deepselect_C.abi3.so",
+        "usr/local/lib/python3.12/dist-packages/vllm/_qutlass_C.abi3.so",
+    )
+
+    def test_every_library_the_review_found_is_discovered(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scan = scan_rootfs_tar(
+                tar_of(tuple((name, elf_bytes()) for name in self.OMITTED)),
+                cuobjdump=listing_cuobjdump(directory),
+            )
+        self.assertEqual(scan.cuda_candidate_files, len(self.OMITTED))
+        self.assertEqual(
+            sorted(a.path for a in scan.cuda_artifacts),
+            sorted(f"/{name}" for name in self.OMITTED),
+        )
+
+    def test_their_targets_reach_the_image_inventory(self) -> None:
+        """Discovery is only half of it: an omitted sm_103a build has to be reported."""
+        with tempfile.TemporaryDirectory() as directory:
+            scan = scan_rootfs_tar(
+                tar_of((("opt/tensorrt_llm/lib/libth_common.so", elf_bytes()),)),
+                cuobjdump=listing_cuobjdump(directory),
+            )
+        self.assertIn("sm_103", scan.cuda_targets)
+
+
+class ForeignExtensionFixtureTests(unittest.TestCase):
+    """The review's own suggested fixture: an arm64 image with an x86-64 extension.
+
+    It noted this as a code-level gap rather than an observed false pass, because the
+    CPU check compared the manifest platform with the profile and never looked at an
+    individual library's ELF machine type.
+    """
+
+    @staticmethod
+    def _census(name: str, machine: int, directory: str):
+        scan = scan_rootfs_tar(
+            tar_of(((name, elf_bytes(machine=machine)),)),
+            cuobjdump=silent_cuobjdump(directory),
+            native_architecture="arm64",
+            library_path=(),
+        )
+        return {item.architecture: item for item in scan.library_architectures}
+
+    def test_an_x86_64_extension_in_an_arm64_image_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            groups = self._census(
+                "usr/lib/python3.12/site-packages/pkg/_ext.abi3.so", 0x3E, directory
+            )
+        self.assertIn("amd64", groups)
+        self.assertEqual(groups["amd64"].count, 1)
+
+    def test_a_native_extension_is_the_images_own_architecture(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            groups = self._census(
+                "usr/lib/python3.12/site-packages/pkg/_ext.abi3.so", 0xB7, directory
+            )
+        self.assertEqual(sorted(groups), ["arm64"])
+
+    def test_a_deep_extension_is_not_a_loader_dependency(self) -> None:
+        """ld.so searches /usr/lib; it does not walk site-packages beneath it.
+
+        A prefix test put every foreign binary under any loader root into the review
+        tier, which is the over-flagging the tier exists to avoid. An extension that
+        deep is imported by path, not resolved by SONAME.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            groups = self._census(
+                "usr/lib/python3.12/site-packages/pkg/_ext.abi3.so", 0x3E, directory
+            )
+        self.assertEqual(groups["amd64"].review_paths, ())
+
+    def test_a_library_in_the_loader_directory_itself_still_reaches_review(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            groups = self._census("usr/lib/libodd.so", 0x3E, directory)
+        self.assertEqual(groups["amd64"].review_paths, ("/usr/lib/libodd.so",))
+
+
+class StandalonePtxTests(unittest.TestCase):
+    """chrstnhntschl/gpu_burn ships /root/compare.ptx, which it compiles at run time.
+
+    cuobjdump finds no embedded device code in PTX source, which is the expected answer
+    and establishes nothing. The module declares its own architecture at the top.
+    """
+
+    def _declare(self, text: str) -> tuple[tuple[str, ...], str | None]:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "compare.ptx"
+            source.write_text(text, encoding="utf-8")
+            return read_ptx_declaration(source)
+
+    def test_a_target_becomes_a_jit_compilable_virtual_architecture(self) -> None:
+        targets, version = self._declare("//\n.version 6.5\n.target sm_52\n.address_size 64\n")
+        self.assertEqual(targets, ("compute_52",))
+        self.assertEqual(version, "6.5")
+
+    def test_options_in_the_target_list_are_not_architectures(self) -> None:
+        targets, _ = self._declare(".version 7.0\n.target sm_70, debug, map_f64_to_f32\n")
+        self.assertEqual(targets, ("compute_70",))
+
+    def test_an_architecture_conditional_target_keeps_its_suffix(self) -> None:
+        targets, _ = self._declare(".version 8.3\n.target sm_90a\n")
+        self.assertEqual(targets, ("compute_90a",))
+
+    def test_several_architectures_are_all_reported(self) -> None:
+        targets, _ = self._declare(".version 8.3\n.target sm_80, sm_90\n")
+        self.assertEqual(targets, ("compute_80", "compute_90"))
+
+    def test_a_module_without_a_target_declares_nothing(self) -> None:
+        targets, version = self._declare(".version 6.5\n// no target directive here\n")
+        self.assertEqual(targets, ())
+        self.assertEqual(version, "6.5")
+
+    def test_an_older_target_is_compatible_with_a_newer_gpu(self) -> None:
+        """PTX is the one artifact where an older target is good news, not a shortfall."""
+        profile = load_profiles()["b300"]
+        summary = summarize_compatibility(("compute_52",), profile.compute_capability_number)
+        self.assertTrue(summary.compatible)
+
+    def test_an_architecture_conditional_target_does_not_carry_forward(self) -> None:
+        profile = load_profiles()["b300"]
+        summary = summarize_compatibility(("compute_90a",), profile.compute_capability_number)
+        self.assertFalse(summary.compatible)
+
+    def test_a_ptx_file_in_an_image_yields_verified_evidence(self) -> None:
+        source = b".version 6.5\n.target sm_52\n.address_size 64\n.visible .entry burn()\n"
+        with tempfile.TemporaryDirectory() as directory:
+            scan = scan_rootfs_tar(
+                tar_of((("root/compare.ptx", source),)),
+                cuobjdump=listing_cuobjdump(directory),
+            )
+        self.assertEqual(len(scan.cuda_artifacts), 1)
+        artifact = scan.cuda_artifacts[0]
+        self.assertEqual(artifact.path, "/root/compare.ptx")
+        self.assertEqual(artifact.method, "ptx-source")
+        self.assertTrue(artifact.complete)
+        self.assertEqual(artifact.targets, ("compute_52",))
+        self.assertIn("compiles it at run time", artifact.diagnostic)
+
+    def test_unreadable_ptx_is_an_evidence_gap_not_a_clean_negative(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "cuobjdump"
+            executable.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = "--version" ]; then '
+                "echo 'Cuda compilation tools, release 13.4, V13.4.92'; exit 0; fi\n"
+                "echo 'does not contain device code' >&2; exit 1\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            tool = resolve_cuobjdump(str(executable), timeout_seconds=10, fallback_mode="off")
+            scan = scan_rootfs_tar(
+                tar_of((("root/opaque.ptx", b"// nothing a parser can use\n" * 4),)),
+                cuobjdump=tool,
+            )
+        self.assertEqual(len(scan.cuda_artifacts), 1)
+        artifact = scan.cuda_artifacts[0]
+        self.assertFalse(artifact.complete)
+        self.assertEqual(artifact.incomplete_reason, "analyzer-error")
+        self.assertIn("uncompiled source", artifact.diagnostic)
+
+
+class PtxPreambleReadTests(unittest.TestCase):
+    """A file named .ptx is not always PTX, and the reader has to cope either way."""
+
+    def _declaration(self, body: str) -> tuple[tuple[str, ...], str | None]:
+        with tempfile.TemporaryDirectory() as directory:
+            module = Path(directory) / "kernel.ptx"
+            module.write_text(body, encoding="utf-8")
+            return read_ptx_declaration(module)
+
+    def test_the_declaration_is_read_from_the_preamble(self) -> None:
+        self.assertEqual(
+            self._declaration(".version 8.5\n.target sm_90\n.address_size 64\n"),
+            (("compute_90",), "8.5"),
+        )
+
+    def test_the_read_stops_once_the_module_body_starts(self) -> None:
+        """Without a stop, a .ptx declaring no target is read to its last byte.
+
+        berkeleydsep/datahub-scipy-ml-notebook ships eighteen of them.
+        """
+        body = ".version 8.5\n.visible .entry k()\n" + "add.s32 %r1, %r2, %r3;\n" * 50000
+        targets, version = self._declaration(body)
+        self.assertEqual(targets, ())
+        self.assertEqual(version, "8.5")
+
+    def test_a_file_that_is_not_ptx_at_all_declares_nothing(self) -> None:
+        self.assertEqual(self._declaration("\x7fELF not really ptx\n" * 100), ((), None))
+
+    def test_an_architecture_conditional_target_keeps_its_suffix(self) -> None:
+        self.assertEqual(self._declaration(".target sm_90a\n")[0], ("compute_90a",))
+
+    def test_several_targets_on_one_directive_are_all_read(self) -> None:
+        self.assertEqual(
+            self._declaration(".target sm_80, sm_90\n")[0], ("compute_80", "compute_90")
+        )
+
+
+class PtxJitFloorTests(unittest.TestCase):
+    """gpu-burn ships /root/compare.ptx declaring .target sm_20.
+
+    Reading it was the point of the standalone-PTX work, and having read it the scan
+    called compute_20 JIT-compatible with sm_103 and asked only for a native build.
+    No driver that runs a B300 can assemble compute_20: CUDA 12.8's Virtual
+    Architecture Feature List begins at compute_50 and CUDA 13's at compute_75.
+    """
+
+    def test_fermi_ptx_cannot_jit_on_hardware_no_toolkit_pairs_it_with(self) -> None:
+        for target in ("compute_20", "compute_21", "compute_30", "compute_35"):
+            evaluation = evaluate_cuda_target(target, 103)
+            self.assertFalse(evaluation.compatible, target)
+            self.assertEqual(evaluation.classification, "incompatible", target)
+
+    def test_the_band_only_cuda_12_assembles_is_not_a_clean_pass(self) -> None:
+        for target in ("compute_50", "compute_61", "compute_70"):
+            evaluation = evaluate_cuda_target(target, 103)
+            self.assertTrue(evaluation.compatible, target)
+            self.assertEqual(evaluation.classification, "ptx-jit-driver-dependent", target)
+
+    def test_ptx_both_toolkits_assemble_is_unchanged(self) -> None:
+        self.assertEqual(
+            evaluate_cuda_target("compute_75", 103).classification, "ptx-jit-compatible"
+        )
+        self.assertEqual(
+            evaluate_cuda_target("compute_90", 103).classification, "ptx-jit-compatible"
+        )
+
+    def test_a_newer_virtual_architecture_is_still_refused(self) -> None:
+        self.assertFalse(evaluate_cuda_target("compute_120", 103).compatible)
+
+    def test_an_image_whose_only_ptx_is_fermi_is_incompatible(self) -> None:
+        summary = summarize_compatibility(("compute_20",), 103)
+        assert summary is not None
+        self.assertFalse(summary.compatible)
+        self.assertEqual(summary.classification, "incompatible")
+
+    def test_a_native_cubin_still_outranks_a_driver_dependent_jit(self) -> None:
+        summary = summarize_compatibility(("compute_52", "sm_103"), 103)
+        assert summary is not None
+        self.assertEqual(summary.classification, "native")
+
+
+class DriverDependentPtxFindingTests(unittest.TestCase):
+    """The action for PTX a CUDA 13 driver refuses is not "add a native build"."""
+
+    @staticmethod
+    def _findings(targets: tuple[str, ...]) -> dict[str, object]:
+        facts = unresolved_facts(final_platform="linux/amd64")
+        facts = replace(facts, cuda_targets=targets)
+        return {finding.id: finding for finding in _target_findings(facts, load_profiles()["b300"])}
+
+    def test_the_driver_release_is_the_thing_to_establish(self) -> None:
+        finding = self._findings(("compute_61",))["GPF-CUDA-004"]
+        self.assertIn("CUDA 13", finding.remediation)
+        self.assertIn("compute_75", finding.remediation)
+        self.assertIn("older driver", finding.title)
+
+    def test_an_ordinary_jit_still_asks_only_for_a_native_build(self) -> None:
+        finding = self._findings(("compute_90",))["GPF-CUDA-004"]
+        self.assertNotIn("CUDA 13", finding.remediation)
+        self.assertIn("native", finding.remediation)
+        self.assertEqual(finding.title, "CUDA code is compatible but not native")
+
+
+class WheelToolkitProvenanceTests(unittest.TestCase):
+    """jrottenberg/ffmpeg cleared four NPP copies with a CUDA release found elsewhere.
+
+    A library's CUDA release has to come from something that names that library: its
+    versioned install directory, or the wheel whose RECORD lists it.
+    """
+
+    SITE = "usr/local/lib/python3.12/site-packages"
+
+    def _releases(self, members: tuple[tuple[str, bytes], ...]) -> dict[str, str]:
+        scan = scan_rootfs_tar(tar_of(members), cuobjdump=None)
+        return dict(scan.wheel_toolkit_releases)
+
+    def _record(self, distribution: str, version: str, *paths: str) -> tuple[str, bytes]:
+        body = "".join(f"{path},sha256=0,1\n" for path in paths)
+        return (
+            f"{self.SITE}/{distribution}-{version}.dist-info/RECORD",
+            (body + "x/__init__.py,,\n").encode(),
+        )
+
+    def test_a_wheel_versioned_as_the_toolkit_names_the_release(self) -> None:
+        releases = self._releases(
+            (
+                self._record(
+                    "nvidia_cuda_runtime_cu12",
+                    "12.4.127",
+                    "nvidia/cuda_runtime/lib/libcudart.so.12",
+                ),
+                self._record("nvidia_cublas_cu12", "12.4.5.8", "nvidia/cublas/lib/libcublas.so.12"),
+            )
+        )
+        self.assertEqual(releases.get(f"/{self.SITE}/nvidia/cublas/lib/libcublas.so.12"), "12.4")
+
+    def test_a_component_version_is_not_read_as_a_cuda_release(self) -> None:
+        """nvidia-cufft-cu12 is 11.2.1.3; reading 11.2 out of it invents a release."""
+        releases = self._releases(
+            (self._record("nvidia_cufft_cu12", "11.2.1.3", "nvidia/cufft/lib/libcufft.so.11"),)
+        )
+        self.assertEqual(releases, {})
+
+    def test_cuda_13_wheels_dropped_the_suffix_and_are_still_authoritative(self) -> None:
+        """runpod/pytorch installs nvidia-cuda-runtime 13.0.48, with no -cu13 on it.
+
+        NVIDIA moved the release into the module path at CUDA 13, so a rule that
+        demanded the suffix recognized no authoritative wheel at all. Nothing in
+        site-packages got a release, and libcufft.so.12 -- byte-identical to the copy
+        under /usr/local/cuda-13.0/ that the versioned path excused -- was sent to
+        review on its own sm_75-only code.
+        """
+        releases = self._releases(
+            (
+                self._record("nvidia_cuda_runtime", "13.0.48", "nvidia/cu13/lib/libcudart.so.13"),
+                self._record("nvidia_cufft", "12.0.0.15", "nvidia/cu13/lib/libcufft.so.12"),
+            )
+        )
+        self.assertEqual(releases.get(f"/{self.SITE}/nvidia/cu13/lib/libcufft.so.12"), "13.0")
+
+    def test_a_wheel_set_takes_the_release_its_runtime_wheel_pins(self) -> None:
+        """A cu12 wheel set in an image that reports a newer 12.x elsewhere."""
+        releases = self._releases(
+            (
+                self._record(
+                    "nvidia_cuda_runtime_cu12",
+                    "12.4.127",
+                    "nvidia/cuda_runtime/lib/libcudart.so.12",
+                ),
+                self._record("nvidia_cufft_cu12", "11.2.1.3", "nvidia/cufft/lib/libcufft.so.11"),
+                ("usr/local/cuda/version.txt", b"CUDA Version 12.9.41\n"),
+            )
+        )
+        # 12.4, the release the wheel set was built against, not the 12.9 installed
+        # elsewhere in the image.
+        self.assertEqual(releases.get(f"/{self.SITE}/nvidia/cufft/lib/libcufft.so.11"), "12.4")
+
+    def test_a_library_outside_any_wheel_is_unresolved(self) -> None:
+        releases = self._releases((("usr/local/lib/libnppc.so.12", elf_bytes()),))
+        self.assertEqual(releases, {})
+
+    def test_a_record_entry_cannot_name_a_path_outside_its_tree(self) -> None:
+        releases = self._releases(
+            (
+                self._record(
+                    "nvidia_cuda_runtime_cu12",
+                    "12.4.127",
+                    "../../../../usr/local/lib/libcublas.so.12",
+                    "/etc/libcublas.so.12",
+                ),
+            )
+        )
+        self.assertEqual(releases, {})
+
+
+def silent_cuobjdump(directory: str) -> object:
+    """A cuobjdump stand-in that completes and finds no device code."""
+    executable = Path(directory) / "cuobjdump"
+    executable.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then '
+        "echo 'Cuda compilation tools, release 13.4, V13.4.92'; exit 0; fi\n"
+        "echo 'does not contain device code' >&2; exit 1\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    return resolve_cuobjdump(str(executable), timeout_seconds=10, fallback_mode="off")
+
+
+class HostArchitectureCensusTests(unittest.TestCase):
+    """A wrong-CPU binary with no device code is usually a spare build, not a defect.
+
+    nvcr.io/nvidia/pytorch:26.10 has two out of 2,701; RAPIDS' devcontainer has 274.
+    Calling every one of them a problem is the false alarm this separates out.
+    """
+
+    def _groups(self, members, native="amd64", library_path=()):
+        with tempfile.TemporaryDirectory() as directory:
+            scan = scan_rootfs_tar(
+                tar_of(members),
+                cuobjdump=silent_cuobjdump(directory),
+                native_architecture=native,
+                library_path=library_path,
+            )
+        return {item.architecture: item for item in scan.library_architectures}
+
+    def test_a_sole_foreign_library_in_a_loader_directory_is_held_for_review(self) -> None:
+        groups = self._groups((("usr/lib/libodd.so", elf_bytes(machine=0xB7)),))
+        self.assertEqual(groups["arm64"].review_paths, ("/usr/lib/libodd.so",))
+
+    def test_a_native_copy_of_the_same_name_settles_it(self) -> None:
+        groups = self._groups(
+            (
+                ("usr/lib/libodd.so", elf_bytes(machine=0xB7)),
+                ("usr/lib/x86_64-linux-gnu/libodd.so", elf_bytes(machine=0x3E)),
+            )
+        )
+        self.assertEqual(groups["arm64"].review_paths, ())
+
+    def test_a_private_directory_is_not_somewhere_the_loader_looks(self) -> None:
+        groups = self._groups((("opt/app/vendor/payloads/libodd.so", elf_bytes(machine=0xB7)),))
+        self.assertEqual(groups["arm64"].review_paths, ())
+
+    def test_the_images_own_library_path_counts_as_searched(self) -> None:
+        groups = self._groups(
+            (("opt/app/vendor/libodd.so", elf_bytes(machine=0xB7)),),
+            library_path=("/opt/app/vendor",),
+        )
+        self.assertEqual(groups["arm64"].review_paths, ("/opt/app/vendor/libodd.so",))
+
+    def test_multilib_directories_are_not_a_64_bit_workloads_dependency(self) -> None:
+        for name in ("usr/lib32/libfoo.so", "usr/lib/i386-linux-gnu/libbar.so"):
+            self.assertEqual(self._groups(((name, elf_bytes(machine=0x03)),)), {}, name)
+
+    def test_cross_platform_payloads_are_tooling_not_host_libraries(self) -> None:
+        for path in (
+            "/opt/nvidia/nsight-compute/2026.3.1/target/linux-desktop-t210-a64/libcuda-injection.so",
+            "/usr/lib/llvm-18/lib/clang/18/lib/linux/libclang_rt.asan-aarch64.so",
+            "/usr/local/lib/python3.12/dist-packages/debugpy/_vendored/pydevd"
+            "/pydevd_attach_to_process/attach_linux_amd64.so",
+        ):
+            self.assertEqual(classify_artifact_role(path), "tooling", path)
+
+    def test_a_private_copy_outside_those_roots_still_answers_for_itself(self) -> None:
+        self.assertEqual(classify_artifact_role("/opt/app/vendor/libclang_rt_x.so"), "runtime")
+        self.assertEqual(classify_artifact_role("/opt/app/target/libfoo.so"), "runtime")
+
+
+class WindowsManifestTests(unittest.TestCase):
+    """docker-model-backend-llamacpp:v0.0.34-cuda.
+
+    Its index lists windows/amd64 before linux/amd64. Selecting on the architecture
+    alone took the Windows image, scanned its 26 files, found no CUDA anywhere and
+    called the result insufficient evidence -- while reporting the CPU architecture as
+    a match. A clean bill of health for an image that was never looked at.
+    """
+
+    @staticmethod
+    def _manifests(*platforms: str) -> ImageManifestSet:
+        return ImageManifestSet(
+            reference="example/multi:latest",
+            platforms=tuple(
+                PlatformManifest(
+                    platform=platform,
+                    digest=f"sha256:{index:064d}",
+                    config_digest=None,
+                    compressed_size_bytes=1,
+                )
+                for index, platform in enumerate(platforms)
+            ),
+        )
+
+    @staticmethod
+    def _profile():
+        return load_profiles()["h100"]
+
+    def test_the_linux_manifest_is_taken_even_when_windows_is_listed_first(self) -> None:
+        selected = _select_manifest(
+            self._manifests("windows/amd64", "linux/amd64", "linux/arm64"),
+            unresolved_facts(),
+            self._profile(),
+        )
+        assert selected is not None
+        self.assertEqual(selected.platform, "linux/amd64")
+
+    def test_a_windows_only_image_matches_nothing(self) -> None:
+        self.assertIsNone(
+            _select_manifest(self._manifests("windows/amd64"), unresolved_facts(), self._profile())
+        )
+
+    def test_an_os_less_platform_is_read_as_linux(self) -> None:
+        selected = _select_manifest(self._manifests("amd64"), unresolved_facts(), self._profile())
+        assert selected is not None
+        self.assertEqual(selected.platform, "amd64")
+
+    def test_a_resolved_windows_platform_is_not_reported_as_a_match(self) -> None:
+        findings = {
+            finding.id
+            for finding in _target_findings(
+                unresolved_facts(final_platform="windows/amd64"), self._profile()
+            )
+        }
+        self.assertIn("GPF-CPU-001", findings)
+        self.assertNotIn("GPF-CPU-002", findings)
+
+
+class RemovedArchitectureTests(unittest.TestCase):
+    """bvlc/caffe:gpu, and 1,566 artifacts across the corpus.
+
+    cuobjdump refuses a fatbin built for an architecture its toolkit has dropped, and
+    names the architecture while refusing. Treating that as a parser error threw away
+    the most decisive fact about a Fermi-era build and charged it to coverage: caffe
+    came back INSUFFICIENT_EVIDENCE at 95.7% with a 194-line appendix of analyzer
+    failures, when every one of them said sm_20 or sm_21.
+    """
+
+    @staticmethod
+    def _refusing_cuobjdump(directory: str, message: str) -> object:
+        executable = Path(directory) / "cuobjdump"
+        executable.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "--version" ]; then '
+            "echo 'Cuda compilation tools, release 13.4, V13.4.92'; exit 0; fi\n"
+            f'echo "{message}" >&2; exit 1\n',
+            encoding="utf-8",
+        )
+        executable.chmod(0o755)
+        return resolve_cuobjdump(str(executable), timeout_seconds=10, fallback_mode="off")
+
+    def _inspect(self, message: str):
+        with tempfile.TemporaryDirectory() as directory:
+            tool = self._refusing_cuobjdump(directory, message)
+            artifact = Path(directory) / "libcaffe.so.1.0.0"
+            artifact.write_bytes(b"\x7fELF" + b"\0" * 64)
+            return tool.inspect(artifact, "/opt/caffe/build/lib/libcaffe.so.1.0.0", 68)
+
+    def test_the_refused_architecture_is_recorded_as_a_target(self) -> None:
+        evidence = self._inspect(
+            "cuobjdump fatal : Support for 'sm_21' has been removed. "
+            "Please use CUDA toolkit 9.1 or earlier."
+        )
+        self.assertEqual(evidence.targets, ("sm_21",))
+
+    def test_the_listing_is_still_incomplete_because_cuobjdump_stopped(self) -> None:
+        evidence = self._inspect(
+            "cuobjdump fatal : Support for 'sm_35' has been removed. "
+            "Please use CUDA toolkit 11.8 or earlier."
+        )
+        self.assertFalse(evidence.complete)
+        self.assertEqual(evidence.incomplete_reason, "unsupported-legacy-target")
+
+    def test_every_named_architecture_is_kept(self) -> None:
+        evidence = self._inspect(
+            "cuobjdump fatal : Support for 'sm_20' has been removed.\n"
+            "cuobjdump fatal : Support for 'sm_21' has been removed."
+        )
+        self.assertEqual(evidence.targets, ("sm_20", "sm_21"))
+
+    def test_an_older_toolkit_gets_its_turn_before_the_refusal_is_read(self) -> None:
+        """The fallback analyzer exists for exactly these files.
+
+        An older cuobjdump lists an sm_21 fatbin completely, which beats reading the
+        architecture out of a newer one's refusal. Returning the refusal first would
+        disable the one mechanism that can finish the job.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            older = Path(directory) / "cuobjdump-9"
+            older.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = "--version" ]; then '
+                "echo 'Cuda compilation tools, release 9.1, V9.1.85'; exit 0; fi\n"
+                "echo 'ELF file    1: payload.1.sm_21.cubin'\n",
+                encoding="utf-8",
+            )
+            older.chmod(0o755)
+            newer = Path(directory) / "cuobjdump"
+            newer.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = "--version" ]; then '
+                "echo 'Cuda compilation tools, release 13.4, V13.4.92'; exit 0; fi\n"
+                "echo \"cuobjdump fatal : Support for 'sm_21' has been removed.\" >&2\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            newer.chmod(0o755)
+            tool = resolve_cuobjdump(str(newer), timeout_seconds=10, fallback_mode=str(older))
+            artifact = Path(directory) / "libcaffe.so"
+            artifact.write_bytes(b"\x7fELF" + b"\0" * 64)
+            evidence = tool.inspect(artifact, "/opt/caffe/lib/libcaffe.so", 68)
+        self.assertTrue(evidence.complete)
+        self.assertEqual(evidence.targets, ("sm_21",))
+
+    def test_an_ordinary_parser_error_is_still_an_analyzer_error(self) -> None:
+        evidence = self._inspect("cuobjdump fatal : Cannot open input file")
+        self.assertEqual(evidence.targets, ())
+        self.assertEqual(evidence.incomplete_reason, "analyzer-error")
+
+
+class LegacyListingIsEvidenceTests(unittest.TestCase):
+    """bvlc/caffe:gpu came back INSUFFICIENT_EVIDENCE over 188 files it had read.
+
+    Every CUDA object in the image lists sm_20 or sm_21, and cuobjdump named the
+    architecture as it refused to read past it. Treating that listing as absent left
+    the image with no targets at all and invalidated the whole assessment, so the
+    report asked for more evidence about a Fermi-era build it had already identified.
+    """
+
+    @staticmethod
+    def _artifact(**overrides) -> CudaArtifactEvidence:
+        fields = {
+            "path": "/opt/caffe/build/lib/libcaffe.so.1.0.0",
+            "size_bytes": 12307472,
+            "targets": ("sm_20",),
+            "method": "cuobjdump",
+            "complete": False,
+            "role": "runtime",
+            "incomplete_reason": "unsupported-legacy-target",
+        }
+        fields.update(overrides)
+        return CudaArtifactEvidence(**fields)
+
+    def test_a_truncated_listing_still_reports_what_it_listed(self) -> None:
+        self.assertEqual(
+            verified_targets((self._artifact(),), analyzer_matches_image=True), ("sm_20",)
+        )
+
+    def test_an_inspection_that_listed_nothing_contributes_nothing(self) -> None:
+        self.assertEqual(
+            verified_targets(
+                (self._artifact(targets=(), incomplete_reason="analyzer-error"),),
+                analyzer_matches_image=True,
+            ),
+            (),
+        )
+
+    def test_an_ordinary_analyzer_failure_is_still_not_evidence(self) -> None:
+        self.assertEqual(
+            verified_targets(
+                (self._artifact(targets=("sm_80",), incomplete_reason="timeout"),),
+                analyzer_matches_image=True,
+            ),
+            (),
+        )
+
+    def test_an_analyzer_older_than_the_image_is_trusted_for_nothing(self) -> None:
+        self.assertEqual(verified_targets((self._artifact(),), analyzer_matches_image=False), ())
+
+    def test_marker_evidence_is_still_not_a_verified_listing(self) -> None:
+        self.assertEqual(
+            verified_targets(
+                (self._artifact(method="marker-scan", complete=True, incomplete_reason=None),),
+                analyzer_matches_image=True,
+            ),
+            (),
+        )
+
+
+class CoverageGuidanceTests(unittest.TestCase):
+    """The coverage note should name the flag that would close the gap it reports."""
+
+    def _coverage(self, artifacts: tuple[CudaArtifactEvidence, ...]):
+        rootfs = replace(
+            rootfs_with(artifacts),
+            cuobjdump_files_analyzed=len(artifacts),
+            cuobjdump_incomplete=sum(1 for item in artifacts if not item.complete),
+        )
+        return {
+            finding.id: finding
+            for finding in artifact_findings(
+                rootfs, load_profiles()["h100"], ("12.3",), cuobjdump_timeout_seconds=30
+            )
+        }["GPF-CUDA-014"]
+
+    def test_a_legacy_gap_points_at_the_toolkit_that_would_close_it(self) -> None:
+        finding = self._coverage(
+            (
+                CudaArtifactEvidence(
+                    path="/opt/caffe/lib/libcaffe.so",
+                    size_bytes=68,
+                    targets=("sm_21",),
+                    method="cuobjdump",
+                    complete=False,
+                    role="runtime",
+                    incomplete_reason="unsupported-legacy-target",
+                ),
+            )
+        )
+        self.assertIn("--cuobjdump-fallback", finding.remediation)
+
+    def test_a_timeout_is_not_a_reason_to_change_analyzer(self) -> None:
+        finding = self._coverage(
+            (
+                CudaArtifactEvidence(
+                    path="/opt/app/lib/libbig.so",
+                    size_bytes=68,
+                    targets=(),
+                    method="cuobjdump",
+                    complete=False,
+                    role="runtime",
+                    incomplete_reason="timeout",
+                ),
+            )
+        )
+        self.assertNotIn("--cuobjdump-fallback", finding.remediation)
+
+    def test_the_title_no_longer_claims_a_bound(self) -> None:
+        finding = self._coverage(
+            (
+                CudaArtifactEvidence(
+                    path="/opt/caffe/lib/libcaffe.so",
+                    size_bytes=68,
+                    targets=("sm_21",),
+                    method="cuobjdump",
+                    complete=False,
+                    role="runtime",
+                    incomplete_reason="unsupported-legacy-target",
+                ),
+            )
+        )
+        self.assertNotIn("bounded", finding.title)
+        self.assertNotIn("bounded", finding.evidence)
+
+
+class DeadLibraryQuestionTests(unittest.TestCase):
+    """The PR review asked it directly: is a library nothing loads still flagged?
+
+    Yes, and the report has to say why that is the honest answer rather than leave a
+    reader to work it out. A CUDA extension is imported by path, not resolved by
+    SONAME, so neither the loader search path nor its absence establishes deadness --
+    which is exactly why this reaches review and stops there.
+    """
+
+    def _finding(self):
+        artifact = CudaArtifactEvidence(
+            path="/opt/build/stale/libcustom_op.so",
+            size_bytes=4096,
+            targets=("sm_70",),
+            method="cuobjdump",
+            complete=True,
+            role="runtime",
+        )
+        findings = {
+            finding.id: finding
+            for finding in artifact_findings(
+                rootfs_with((artifact,)),
+                load_profiles()["b300"],
+                ("12.8",),
+                cuobjdump_timeout_seconds=30,
+            )
+        }
+        return findings["GPF-CUDA-016"]
+
+    def test_an_unreachable_artifact_is_still_reported(self) -> None:
+        self.assertEqual(self._finding().severity, "warning")
+
+    def test_it_stops_at_review_rather_than_demanding_a_change(self) -> None:
+        from gpu_preflight.inspection import REVIEW_ONLY_FINDINGS
+
+        self.assertIn("GPF-CUDA-016", REVIEW_ONLY_FINDINGS)
+
+    def test_the_report_says_why_deadness_cannot_be_established(self) -> None:
+        remediation = self._finding().remediation
+        self.assertIn("imported by path", remediation)
+        self.assertIn("/proc/<pid>/maps", remediation)
+        self.assertIn("needs no action", remediation)
+
+
+class DiskFullDuringCopyTests(unittest.TestCase):
+    """anyscale/ray:2.59.1-py310-cu130 met a full filesystem 1164 seconds into its scan.
+
+    The artifact copy was guarded by try/finally with no except, so the ENOSPC from one
+    write ended the whole scan: 2172 artifacts had already been analyzed and the image
+    produced no report at all. Refusing the one artifact is the policy the size pre-check
+    already applies a few lines above; a filesystem that fills after that check is the
+    same fact found later, not a reason to discard everything read so far.
+    """
+
+    LIBRARY = "usr/local/lib/python3.10/site-packages/torch/lib/libtorch_cuda.so"
+
+    def _scan(self, failure: OSError, members: tuple[tuple[str, bytes], ...] | None = None):
+        members = members or ((self.LIBRARY, elf_bytes()),)
+        real = scan_rootfs_tar.__globals__["_stream_cuda_member"]
+
+        def stream(archive, member, destination=None, **kwargs):
+            if destination is not None:
+                raise failure
+            return real(archive, member, destination, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            analyzer = listing_cuobjdump(directory)
+            with patch("gpu_preflight.image._stream_cuda_member", side_effect=stream):
+                return scan_rootfs_tar(tar_of(members), cuobjdump=analyzer)
+
+    def test_a_full_filesystem_refuses_the_artifact_and_the_scan_goes_on(self) -> None:
+        scan = self._scan(OSError(errno.ENOSPC, "No space left on device"))
+        self.assertEqual(scan.skipped_temporary_space, 1)
+        self.assertEqual(
+            [(c.path, c.reason) for c in scan.skipped_cuda_candidates],
+            [(f"/{self.LIBRARY}", "temporary-space")],
+        )
+        # Refused, not analyzed: no evidence record claims to have read it.
+        self.assertEqual(scan.cuda_artifacts, ())
+
+    def test_a_quota_or_size_limit_is_read_as_space_as_well(self) -> None:
+        for number in (errno.EDQUOT, errno.EFBIG):
+            with self.subTest(errno=number):
+                scan = self._scan(OSError(number, "limit"))
+                self.assertEqual(scan.skipped_temporary_space, 1)
+
+    def test_a_broken_device_is_reported_as_an_io_error_rather_than_as_space(self) -> None:
+        scan = self._scan(OSError(errno.EIO, "Input/output error"))
+        self.assertEqual(scan.skipped_temporary_space, 0)
+        self.assertEqual(scan.cuobjdump_incomplete, 1)
+        artifact = scan.cuda_artifacts[0]
+        self.assertEqual(artifact.incomplete_reason, "io-error")
+        self.assertEqual(artifact.targets, ())
+        self.assertIn("Input/output error", artifact.diagnostic or "")
+
+    def test_the_next_artifact_is_still_read_and_inherits_nothing(self) -> None:
+        """The raising call leaves read_size and marker_targets holding the last file's
+        values, so the failed iteration must end before anything downstream reads them."""
+        failing = "usr/lib/libfirst.so"
+        real = scan_rootfs_tar.__globals__["_stream_cuda_member"]
+
+        def stream(archive, member, destination=None, **kwargs):
+            if destination is not None and member.name == failing:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real(archive, member, destination, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            analyzer = listing_cuobjdump(directory)
+            with patch("gpu_preflight.image._stream_cuda_member", side_effect=stream):
+                scan = scan_rootfs_tar(
+                    tar_of(((failing, elf_bytes()), ("usr/lib/libsecond.so", elf_bytes()))),
+                    cuobjdump=analyzer,
+                )
+        self.assertEqual(scan.skipped_temporary_space, 1)
+        self.assertEqual([a.path for a in scan.cuda_artifacts], ["/usr/lib/libsecond.so"])
+        self.assertEqual(scan.cuda_targets, ("sm_103",))
+
+
+class NcclSonameTests(unittest.TestCase):
+    """nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubi10 ships libnccl.so.2.30.7 and nothing else.
+
+    No nccl.h, no package record, no NCCL_VERSION in the config -- so the scan reported that
+    no NCCL version was established, and because that finding is an unresolved one the whole
+    assessment fell to INSUFFICIENT_EVIDENCE. The image's own CUDA evidence was complete and
+    positive at the time: sm_90 and sm_103 both present, 100% coverage, nothing incomplete.
+    The version was in the filename of a file the scan had already opened for cuobjdump.
+    """
+
+    DCGM = "usr/libexec/datacenter-gpu-manager-4/cuda12/lib/libnccl.so.2.30.7"
+    OLLAMA = "usr/lib/ollama/mlx_cuda_v13/libnccl.so.2.32.3"
+
+    def _scan(self, name: str):
+        return scan_rootfs_tar(tar_of(((name, elf_bytes()),)), cuobjdump=None)
+
+    def test_the_version_in_the_library_name_is_read(self) -> None:
+        for path, version in ((self.DCGM, "2.30.7"), (self.OLLAMA, "2.32.3")):
+            with self.subTest(path=path):
+                scan = self._scan(path)
+                self.assertEqual(scan.nccl_versions, (version,))
+
+    def test_the_evidence_names_the_file_it_came_from(self) -> None:
+        scan = self._scan(self.DCGM)
+        signal = next(e for e in scan.nccl_evidence if e.version == "2.30.7")
+        self.assertEqual(signal.source, "library-soname")
+        self.assertEqual(signal.name, "libnccl.so.2.30.7")
+        self.assertEqual(signal.path, f"/{self.DCGM}")
+
+    def test_a_major_only_soname_is_not_guessed_at(self) -> None:
+        """libnccl.so.2 cannot be compared against a three-part baseline. Reporting the gap
+        is correct; inventing a minor to clear the baseline would not be."""
+        for name in ("usr/lib/libnccl.so.2", "usr/lib/libnccl.so", "usr/lib/libnccl.so.2.30"):
+            with self.subTest(name=name):
+                self.assertEqual(self._scan(name).nccl_versions, ())
+
+    def test_an_unrelated_library_is_not_read_as_nccl(self) -> None:
+        for name in ("usr/lib/libncclx.so.2.30.7", "usr/lib/libnvidia-ml.so.1.2.3"):
+            with self.subTest(name=name):
+                self.assertEqual(self._scan(name).nccl_versions, ())
+
+    def test_the_static_archive_sibling_is_read_too(self) -> None:
+        scan = self._scan("usr/lib/libnccl_static.so.2.30.7")
+        self.assertEqual(scan.nccl_versions, ("2.30.7",))
+
+
+class NcclEvidenceSourceContractTests(unittest.TestCase):
+    """A new NCCL evidence source has to reach the schema and the renderers too.
+
+    "library-soname" reached neither. The scanner emitted it, 35 reports in the corpus
+    failed schema validation against an enum that did not list it, and the text and HTML
+    renderers fell back to printing the raw slug next to "System package". The 342 tests
+    passing at the time is the point: nothing tied the values the code produces to the two
+    tables that have to accept them.
+    """
+
+    def schema(self) -> dict:
+        path = Path(__file__).resolve().parents[1] / "schemas" / "report.schema.json"
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_the_schema_enum_matches_the_sources_the_scanner_emits(self) -> None:
+        enum = set(self.schema()["$defs"]["ncclEvidence"]["properties"]["source"]["enum"])
+        self.assertEqual(enum, set(NCCL_EVIDENCE_SOURCES))
+
+    def test_every_source_has_a_renderer_label(self) -> None:
+        missing = sorted(NCCL_EVIDENCE_SOURCES - set(NCCL_SOURCE_LABEL))
+        self.assertEqual(missing, [], f"no label for {missing}; reports print the raw slug")
+
+    def test_no_label_names_a_source_that_cannot_occur(self) -> None:
+        extra = sorted(set(NCCL_SOURCE_LABEL) - NCCL_EVIDENCE_SOURCES)
+        self.assertEqual(extra, [])
+
+    def test_the_soname_reader_emits_a_source_the_schema_accepts(self) -> None:
+        # Ties the two together at the one site that exposed the gap, so the contract is
+        # not just two tables agreeing with a third list that nothing produces.
+        evidence = _nccl_path_evidence("usr/lib/x86_64-linux-gnu/libnccl.so.2.30.7")
+        self.assertEqual(len(evidence), 1)
+        source = next(iter(evidence)).source
+        enum = set(self.schema()["$defs"]["ncclEvidence"]["properties"]["source"]["enum"])
+        self.assertIn(source, enum)
+        self.assertIn(source, NCCL_SOURCE_LABEL)
+
+
+class MergedObservationTests(unittest.TestCase):
+    """Every report in the corpus said cuda_targets: [] -- all 25 of them.
+
+    The base report is built from the registry manifest and the image configuration. A
+    filesystem scan files what it finds under image_cuda_targets and leaves the unprefixed
+    key at whatever the config said, which is nothing for an image that declares no
+    TORCH_CUDA_ARCH_LIST. nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubi10 reported 34 verified
+    targets under one key and none under the other, and reading the empty one is how a
+    reader concludes an image carries no CUDA at all.
+    """
+
+    def test_the_unprefixed_key_carries_what_the_filesystem_found(self) -> None:
+        observations: dict[str, object] = {
+            "cuda_targets": [],
+            "cuda_versions": [],
+            "nccl_versions": [],
+            "image_cuda_targets": ["sm_103", "sm_90"],
+            "image_cuda_versions": ["13.3"],
+            "image_nccl_versions": ["2.30.7"],
+        }
+        merge_discovered_observations(observations)
+        self.assertEqual(observations["cuda_targets"], ["sm_103", "sm_90"])
+        self.assertEqual(observations["cuda_versions"], ["13.3"])
+        self.assertEqual(observations["nccl_versions"], ["2.30.7"])
+
+    def test_a_configuration_declaration_is_kept_alongside_it(self) -> None:
+        observations: dict[str, object] = {
+            "cuda_targets": ["sm_80"],
+            "image_cuda_targets": ["sm_90"],
+        }
+        merge_discovered_observations(observations)
+        self.assertEqual(observations["cuda_targets"], ["sm_80", "sm_90"])
+
+    def test_versions_keep_numeric_order_rather_than_string_order(self) -> None:
+        observations: dict[str, object] = {
+            "nccl_versions": [],
+            "image_nccl_versions": ["2.9.9", "2.30.7", "2.17.1"],
+        }
+        merge_discovered_observations(observations)
+        self.assertEqual(observations["nccl_versions"], ["2.9.9", "2.17.1", "2.30.7"])
+
+    def test_an_image_with_no_cuda_still_reports_none(self) -> None:
+        observations: dict[str, object] = {"cuda_targets": [], "image_cuda_targets": []}
+        merge_discovered_observations(observations)
+        self.assertEqual(observations["cuda_targets"], [])
+
+    def test_a_missing_prefixed_key_leaves_the_plain_one_alone(self) -> None:
+        """Static mode never builds the image_ keys, and its unprefixed values are already
+        the effective ones."""
+        observations: dict[str, object] = {"cuda_targets": ["sm_90"]}
+        merge_discovered_observations(observations)
+        self.assertEqual(observations["cuda_targets"], ["sm_90"])
+
+
+class NoDeviceCodeIsAnAnswerTests(unittest.TestCase):
+    """nvcr.io/nvidia/k8s-device-plugin:v0.20.1 is a Go binary that talks to the kubelet.
+
+    The scan read all 288 of its CUDA candidates with cuobjdump and none held a kernel, and
+    the report still said "Per-artifact CUDA evidence is incomplete" because "cuobjdump did
+    not successfully enumerate targets in any CUDA artifacts". cuobjdump did succeed; the
+    image has no device code. Reporting a tool failure that did not happen sends a reader
+    looking for a scan problem instead of reading GPF-CUDA-001, which already says plainly
+    that no targets were found.
+    """
+
+    def _findings(self, **overrides: object) -> dict[str, str]:
+        profile = load_profiles()["h100"]
+        rootfs = replace(rootfs_with(), **overrides)
+        return {
+            f.id: f.evidence
+            for f in artifact_findings(rootfs, profile, cuobjdump_timeout_seconds=30)
+        }
+
+    def test_a_clean_scan_that_found_no_kernels_reports_no_tool_failure(self) -> None:
+        found = self._findings(
+            cuda_candidate_files=288,
+            cuobjdump_files_analyzed=288,
+            cuobjdump_targets_found=0,
+            cuobjdump_no_device_code=288,
+            cuobjdump_incomplete=0,
+        )
+        self.assertNotIn("GPF-CUDA-011", found)
+
+    def test_a_missing_analyzer_is_still_an_evidence_gap(self) -> None:
+        found = self._findings(
+            cuobjdump_available=False,
+            cuda_candidate_files=288,
+            cuobjdump_files_analyzed=0,
+            cuobjdump_targets_found=0,
+        )
+        self.assertIn("GPF-CUDA-011", found)
+        self.assertIn("not available", found["GPF-CUDA-011"])
+
+    def test_an_analyzer_that_read_nothing_is_still_an_evidence_gap(self) -> None:
+        found = self._findings(
+            cuda_candidate_files=288,
+            cuobjdump_files_analyzed=0,
+            cuobjdump_targets_found=0,
+        )
+        self.assertIn("GPF-CUDA-011", found)
+        self.assertIn("inspected no CUDA artifacts", found["GPF-CUDA-011"])
+
+    def test_an_artifact_read_only_in_part_is_still_an_evidence_gap(self) -> None:
+        """This is the case the finding is for: something was unreadable, so the absence of
+        targets cannot be trusted."""
+        found = self._findings(
+            cuda_candidate_files=288,
+            cuobjdump_files_analyzed=288,
+            cuobjdump_targets_found=0,
+            cuobjdump_incomplete=4,
+        )
+        self.assertIn("GPF-CUDA-011", found)
+        self.assertIn("4 artifact(s) were not read in full", found["GPF-CUDA-011"])
+
+
+class ReportWriteFailureTests(unittest.TestCase):
+    """A finished assessment must not be reported as a scan that failed.
+
+    nvcr.io/nvidia/ai-workbench/python-cuda117:1.0.8 read all 26374 of its files and
+    completed all 1023 cuobjdump inspections, then printed "[Errno 28] No space left on
+    device" and exited 1. The message named neither the report nor the fact that the
+    analysis had already succeeded, so the only reading available to an operator was that
+    the scanner had broken.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.profiles = load_profiles()
+
+    def report(self):
+        return inspect_image_reference(
+            "registry.example/pytorch:1",
+            (self.profiles["h100"],),
+            platform="linux/amd64",
+            scan_mode="none",
+        )
+
+    def run_bundle(self, output_dir: Path, failing: str, err: int = errno.ENOSPC):
+        """Run the CLI with the bundle write failing on one report file."""
+        report = self.report()
+        real_write_text = Path.write_text
+
+        def write_text(self_path, *args, **kwargs):
+            if self_path.name == failing:
+                raise OSError(err, "No space left on device")
+            return real_write_text(self_path, *args, **kwargs)
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            patch("gpu_preflight.cli.inspect_image_reference", return_value=report),
+            patch.object(Path, "write_text", write_text),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            code = cli_main(
+                [
+                    "inspect",
+                    "registry.example/pytorch:1",
+                    "--target",
+                    "h100",
+                    "--output-dir",
+                    str(output_dir),
+                    "--fail-on",
+                    "never",
+                ]
+            )
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_the_message_names_the_report_and_says_the_assessment_finished(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "reports"
+            code, _, stderr = self.run_bundle(out, "report.json")
+        self.assertEqual(code, 1)
+        self.assertIn("the assessment completed", stderr)
+        self.assertIn("report.json", stderr)
+        self.assertIn(str(out), stderr)
+        self.assertIn("No space left on device", stderr)
+
+    def test_the_errno_survives_the_rewrapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, stderr = self.run_bundle(Path(tmp) / "reports", "report.json")
+        self.assertIn(f"[Errno {errno.ENOSPC}]", stderr)
+
+    def test_no_partial_bundle_is_left_for_the_harness_to_count(self) -> None:
+        # report.txt is written before report.json. The sweep harness decides an image
+        # succeeded by testing for report.json alone, so a half-written bundle has to go.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "reports"
+            self.run_bundle(out, "report.json")
+            left = sorted(path.name for path in out.iterdir()) if out.exists() else []
+        self.assertEqual(left, [])
+
+    def test_a_failure_on_the_last_file_also_clears_the_earlier_two(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "reports"
+            self.run_bundle(out, "report.html")
+            left = sorted(path.name for path in out.iterdir()) if out.exists() else []
+        self.assertEqual(left, [])
+
+    def test_the_completed_assessment_still_reaches_stdout(self) -> None:
+        # stdout can be a terminal, a pipe or another filesystem. Reading on past a full
+        # disk exists so the scan is not lost; discarding it at the last step undoes that.
+        with tempfile.TemporaryDirectory() as tmp:
+            _, stdout, _ = self.run_bundle(Path(tmp) / "reports", "report.txt")
+        self.assertIn("registry.example/pytorch:1", stdout)
+
+    def test_a_write_failure_that_is_not_about_space_is_reported_the_same_way(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "reports"
+            code, _, stderr = self.run_bundle(out, "report.json", err=errno.EROFS)
+            left = sorted(path.name for path in out.iterdir()) if out.exists() else []
+        self.assertEqual(code, 1)
+        self.assertEqual(left, [])
+        self.assertIn("the assessment completed", stderr)
+        self.assertIn(f"[Errno {errno.EROFS}]", stderr)
+
+
+class ObservationsAreNotRepeatedPerProfileTests(unittest.TestCase):
+    """Every artifact record in every corpus report appeared once per target.
+
+    nvcr.io/nvidia/tensorrt-llm/release:1.4.0rc3.dev202611040008 listed 602 artifact
+    records for 301 paths, byte-identical in pairs; lmsysorg/sglang:v0.5.23 listed 7492 for
+    3746. 42 of the 42 corpus reports that carried artifacts at all were duplicated at
+    exactly the target count, because the observation loop runs once per profile and both
+    h100 and b300 select the same linux/amd64 content. Anything that counts the list -- a
+    coverage figure, an artifact census, the size of report.json itself -- doubled.
+
+    The neighbouring observations (kernel catalogs, NCCL and UCX evidence) were already
+    keyed by (platform, ...) dicts for this reason. These two stayed lists.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.profiles = load_profiles()
+
+    def report_observations(self, profile_names: tuple[str, ...]) -> dict:
+        amd64 = manifest("linux/amd64", "amd64")
+        artifacts = (
+            CudaArtifactEvidence(
+                path="/usr/lib/libtensorrt_llm.so",
+                size_bytes=2026851312,
+                role="runtime",
+                method="cuobjdump",
+                targets=("sm_90a", "sm_100"),
+                complete=True,
+                incomplete_reason=None,
+                diagnostic=None,
+            ),
+            CudaArtifactEvidence(
+                path="/usr/lib/libth_common.so",
+                size_bytes=523962312,
+                role="runtime",
+                method="cuobjdump",
+                targets=("sm_103a",),
+                complete=True,
+                incomplete_reason=None,
+                diagnostic=None,
+            ),
+        )
+        skipped = (SkippedCudaCandidate(path="/usr/lib/huge.so", size_bytes=1, reason="size"),)
+        pulled = PulledImageFacts(
+            platform="linux/amd64",
+            digest=amd64.digest,
+            environment={},
+            known_packages=(),
+            installed_packages=(),
+            cuda_targets=(),
+            cuda_versions=(),
+            nccl_versions=(),
+            user=None,
+            entrypoint=(),
+            command=(),
+            rootfs=rootfs_with(artifacts, skipped=skipped),
+        )
+        report = inspect_image_reference(
+            "nvcr.io/nvidia/tensorrt-llm/release:1",
+            tuple(self.profiles[name] for name in profile_names),
+            platform="linux/amd64",
+            scan_mode="filesystem",
+            client=FakeImageClient((amd64,), pulled=pulled),
+        )
+        return report.observations
+
+    def test_two_targets_do_not_double_the_artifact_list(self) -> None:
+        observations = self.report_observations(("h100", "b300"))
+        records = observations["cuda_artifacts"]
+        paths = [record["path"] for record in records]
+        self.assertEqual(len(records), 2, f"expected 2 records, got {len(records)}")
+        self.assertEqual(len(paths), len(set(paths)))
+
+    def test_two_targets_do_not_double_the_skipped_list(self) -> None:
+        observations = self.report_observations(("h100", "b300"))
+        records = observations["skipped_cuda_candidates"]
+        self.assertEqual(len(records), 1, f"expected 1 record, got {len(records)}")
+
+    def test_one_target_still_lists_every_artifact(self) -> None:
+        """The dedup must not be a one-record-per-path-ever rule: a single profile has
+        always been correct and has to stay correct."""
+        observations = self.report_observations(("h100",))
+        self.assertEqual(len(observations["cuda_artifacts"]), 2)
+        self.assertEqual(len(observations["skipped_cuda_candidates"]), 1)
+
+    def test_the_record_contents_survive_the_dedup(self) -> None:
+        observations = self.report_observations(("h100", "b300"))
+        by_path = {record["path"]: record for record in observations["cuda_artifacts"]}
+        common = by_path["/usr/lib/libth_common.so"]
+        self.assertEqual(common["platform"], "linux/amd64")
+        self.assertEqual(common["role"], "runtime")
+        self.assertEqual(common["method"], "cuobjdump")
+        self.assertEqual(list(common["targets"]), ["sm_103a"])
+        self.assertTrue(common["complete"])
+
+    def test_the_list_is_ordered_by_path(self) -> None:
+        """A list built from a dict keyed by (platform, path) is emitted in sorted key
+        order, so the report stays byte-comparable between runs of the same image."""
+        observations = self.report_observations(("h100", "b300"))
+        paths = [record["path"] for record in observations["cuda_artifacts"]]
+        self.assertEqual(paths, sorted(paths))
