@@ -17,6 +17,7 @@ To get started, first choose:
 | --- | --- |
 | Nebius Soperator / Slurm cluster | [`slurm/`](./slurm/) |
 | Nebius Managed Kubernetes | [`volcano/`](./volcano/) and [`common/`](./common/) |
+| Kubernetes without a batch scheduler (raw Jobs + DRA) | [`k8s/`](./k8s/) |
 | SkyPilot | [`skypilot/`](./skypilot/) |
 | Run:ai | [`runai/`](./runai/) |
 
@@ -37,6 +38,7 @@ To get started, first choose:
 | Download model weights or datasets to shared storage | [`common/hf-downloader/`](./common/hf-downloader/) |
 | Serve Llama 4 with SkyPilot + SGLang | [`skypilot/examples/llama4-sglang.yaml`](./skypilot/examples/llama4-sglang.yaml) |
 | Run the large-scale DeepSeek-V3 B200 recipe | [`pytorch-dsv3-mxfp8/`](./pytorch-dsv3-mxfp8/) |
+| Run cross-rack NIXL-EP (MoE all-to-all) on GB300 | [`k8s/nixl/`](./k8s/nixl/) |
 
 ### 3. Recommended first path for new users
 
@@ -77,6 +79,7 @@ Most recipes follow the same high-level flow:
 - [`agents/tavily/`](./agents/tavily/) - Tavily-based agent recipes for search, extraction, mapping, crawling, and research
 - [`deepep/`](./deepep/) - DeepEP installation and RDMA / NVSHMEM setup guidance
 - [`gpu-preflight/`](./gpu-preflight/) - Local static readiness reports for H100, H200, B200, B300, GB300, and Vera Rubin container stacks
+- [`k8s/`](./k8s/) - Kubernetes-native recipes that run on raw Jobs + NVIDIA DRA (no batch scheduler), such as cross-rack NIXL-EP on GB300
 - [`pytorch-dsv3-mxfp8/`](./pytorch-dsv3-mxfp8/) - DeepSeek-V3 pre-training recipes for large B200 Slurm clusters
 - [`runai/`](./runai/) - Run:ai examples for distributed MPI / NCCL validation
 - [`skypilot/`](./skypilot/) - SkyPilot job examples for training, inference, storage, and migration
