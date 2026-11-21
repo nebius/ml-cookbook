@@ -1,0 +1,20 @@
+# GPU + InfiniBand device claim for one node: 4 GB300 GPUs and 4 fabric NICs.
+# Both Jobs reference this template (one ResourceClaim is created per pod).
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: dra-four-gpus-four-ib
+  labels:
+    app.kubernetes.io/part-of: nixl-ep-example
+spec:
+  spec:
+    devices:
+      requests:
+        - name: gpus
+          exactly:
+            deviceClassName: gpu.nvidia.com
+            count: 4
+        - name: ib
+          exactly:
+            deviceClassName: ib.networking.nebius.ai
+            count: 4

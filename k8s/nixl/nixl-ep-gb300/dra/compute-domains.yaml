@@ -1,0 +1,33 @@
+# Two ComputeDomains, one per rack-local NVLink clique. The NVIDIA DRA driver
+# reconciles each ComputeDomain and then CREATES the named channel
+# ResourceClaimTemplate (dra-two-clique-a-channel / -b-channel). Those channel
+# templates do not exist until the driver has reconciled these objects, so apply
+# this file first and wait for the templates before applying the workload (see
+# ../README is one level up: nixl/README.md).
+#
+# numNodes: 2 == the nodes in one rack's clique (NNODES=4 total across both).
+# The IMEX channel is intra-clique; cross-rack dispatch/combine rides IB, which
+# is why the workload sets UCX_TLS=^cuda_ipc.
+apiVersion: resource.nvidia.com/v1beta1
+kind: ComputeDomain
+metadata:
+  name: dra-two-clique-a
+  labels:
+    app.kubernetes.io/part-of: nixl-ep-example
+spec:
+  numNodes: 2
+  channel:
+    resourceClaimTemplate:
+      name: dra-two-clique-a-channel
+---
+apiVersion: resource.nvidia.com/v1beta1
+kind: ComputeDomain
+metadata:
+  name: dra-two-clique-b
+  labels:
+    app.kubernetes.io/part-of: nixl-ep-example
+spec:
+  numNodes: 2
+  channel:
+    resourceClaimTemplate:
+      name: dra-two-clique-b-channel

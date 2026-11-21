@@ -1,0 +1,320 @@
+# Cross-rack NIXL-EP on GB300 (two racks, four nodes, EP16).
+#
+# Headless Service for rank discovery + two Indexed Jobs, one per rack-local
+# clique. Each pod launches SGLang with the NIXL expert-parallel all-to-all
+# backend and verifies distributed generation. Scripts are mounted at
+# /opt/validation from the gpu-validation-scripts ConfigMap (created from
+# ./scripts; see ../README.md).
+#
+# Prerequisites and the apply order are in nixl/README.md. In short:
+#   1. kubectl apply -f dra/           # ComputeDomains + GPU/IB claim template
+#   2. wait for dra-two-clique-{a,b}-channel ResourceClaimTemplates
+#   3. kubectl create configmap gpu-validation-scripts --from-file=scripts/ -n <namespace>
+#   4. kubectl apply -f manifest.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    validation.nebius.ai/test-id: sglang-nixl-ep
+  name: sglang-nixl-ep
+spec:
+  clusterIP: None
+  ports:
+  - name: distributed
+    port: 29664
+  publishNotReadyAddresses: true
+  selector:
+    validation.nebius.ai/test-id: sglang-nixl-ep
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    app.kubernetes.io/part-of: nixl-ep-example
+    validation.nebius.ai/rack-side: a
+    validation.nebius.ai/test-id: sglang-nixl-ep
+  name: sglang-nixl-ep
+spec:
+  backoffLimit: 0
+  completionMode: Indexed
+  completions: 2
+  parallelism: 2
+  template:
+    metadata:
+      labels:
+        validation.nebius.ai/compute-domain: dra-two-clique-a
+        validation.nebius.ai/rack-side: a
+        validation.nebius.ai/test-id: sglang-nixl-ep
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: topology.nebius.com/tier-0
+                operator: Exists
+      containers:
+      - args:
+        - 'set -euo pipefail
+
+          export MASTER_ADDR=sglang-nixl-ep-0.sglang-nixl-ep
+
+          until getent hosts "$MASTER_ADDR" >/dev/null; do sleep 1; done
+
+          /opt/validation/sglang_smoke.sh
+
+          '
+        command:
+        - bash
+        - -lc
+        env:
+        - name: NCCL_DEBUG
+          value: INFO
+        - name: NNODES
+          value: '4'
+        - name: GPUS_PER_NODE
+          value: '4'
+        - name: EP_SIZE
+          value: '16'
+        - name: NCCL_CUMEM_ENABLE
+          value: '1'
+        - name: NCCL_NVLS_ENABLE
+          value: '1'
+        - name: NCCL_MNNVL_ENABLE
+          value: '1'
+        - name: NCCL_IB_QPS_PER_CONNECTION
+          value: '2'
+        - name: NCCL_BUFFSIZE
+          value: '8388608'
+        - name: NCCL_IB_HCA
+          value: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1
+        - name: NCCL_SOCKET_IFNAME
+          value: eth0
+        - name: DIST_PORT
+          value: '29664'
+        - name: PORT
+          value: '30064'
+        - name: STATUS_PORT
+          value: '29964'
+        - name: MODEL_PATH
+          value: deepseek-ai/DeepSeek-V2-Lite
+        - name: HF_HOME
+          value: /models/huggingface
+        - name: MOE_A2A_BACKEND
+          value: nixl
+        - name: DEEPEP_MODE
+          value: low_latency
+        - name: SGLANG_NIXL_EP_BF16_DISPATCH
+          value: '1'
+        - name: SGLANG_DEEPEP_BF16_DISPATCH
+          value: '1'
+        - name: UCX_TLS
+          value: ^cuda_ipc
+        - name: SGLANG_EXTRA_ARGS
+          value: --moe-dense-tp-size 1 --flashinfer-mla-disable-ragged --disable-custom-all-reduce
+            --disable-cuda-graph --moe-runner-backend deep_gemm
+        - name: NCCL_MNNVL_CLIQUE_ID
+          value: '1'
+        # Validation
+        - name: SGLANG_EXPECT_TEXT
+          value: Paris
+        envFrom:
+        - secretRef:
+            name: hf-token
+            optional: true
+        image: lmsysorg/sglang:v0.5.20
+        name: server-and-client
+        resources:
+          claims:
+          - name: devices
+          - name: imex-channel
+          requests:
+            cpu: '24'
+            memory: 128Gi
+        securityContext:
+          capabilities:
+            add:
+            - IPC_LOCK
+            - SYS_RESOURCE
+          runAsUser: 0
+        volumeMounts:
+        - mountPath: /opt/validation
+          name: scripts
+          readOnly: true
+        - mountPath: /models
+          name: models
+        - mountPath: /dev/shm
+          name: dshm
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      resourceClaims:
+      - name: devices
+        resourceClaimTemplateName: dra-four-gpus-four-ib
+      - name: imex-channel
+        resourceClaimTemplateName: dra-two-clique-a-channel
+      restartPolicy: Never
+      subdomain: sglang-nixl-ep
+      volumes:
+      - configMap:
+          defaultMode: 365
+          name: gpu-validation-scripts
+        name: scripts
+      - emptyDir:
+          sizeLimit: 150Gi
+        name: models
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 32Gi
+        name: dshm
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    app.kubernetes.io/part-of: nixl-ep-example
+    validation.nebius.ai/rack-side: b
+    validation.nebius.ai/test-id: sglang-nixl-ep
+  name: sglang-nixl-ep-b
+spec:
+  backoffLimit: 0
+  completionMode: Indexed
+  completions: 2
+  parallelism: 2
+  template:
+    metadata:
+      labels:
+        validation.nebius.ai/compute-domain: dra-two-clique-b
+        validation.nebius.ai/rack-side: b
+        validation.nebius.ai/test-id: sglang-nixl-ep
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: topology.nebius.com/tier-0
+                operator: Exists
+      containers:
+      - args:
+        - 'set -euo pipefail
+
+          export MASTER_ADDR=sglang-nixl-ep-0.sglang-nixl-ep
+
+          until getent hosts "$MASTER_ADDR" >/dev/null; do sleep 1; done
+
+          /opt/validation/sglang_smoke.sh
+
+          '
+        command:
+        - bash
+        - -lc
+        env:
+        - name: NCCL_DEBUG
+          value: INFO
+        - name: NNODES
+          value: '4'
+        - name: GPUS_PER_NODE
+          value: '4'
+        - name: EP_SIZE
+          value: '16'
+        - name: NCCL_CUMEM_ENABLE
+          value: '1'
+        - name: NCCL_NVLS_ENABLE
+          value: '1'
+        - name: NCCL_MNNVL_ENABLE
+          value: '1'
+        - name: NCCL_IB_QPS_PER_CONNECTION
+          value: '2'
+        - name: NCCL_BUFFSIZE
+          value: '8388608'
+        - name: NCCL_IB_HCA
+          value: mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1
+        - name: NCCL_SOCKET_IFNAME
+          value: eth0
+        - name: DIST_PORT
+          value: '29664'
+        - name: PORT
+          value: '30064'
+        - name: STATUS_PORT
+          value: '29964'
+        - name: MODEL_PATH
+          value: deepseek-ai/DeepSeek-V2-Lite
+        - name: HF_HOME
+          value: /models/huggingface
+        - name: MOE_A2A_BACKEND
+          value: nixl
+        - name: DEEPEP_MODE
+          value: low_latency
+        - name: SGLANG_NIXL_EP_BF16_DISPATCH
+          value: '1'
+        - name: SGLANG_DEEPEP_BF16_DISPATCH
+          value: '1'
+        - name: UCX_TLS
+          value: ^cuda_ipc
+        - name: SGLANG_EXTRA_ARGS
+          value: --moe-dense-tp-size 1 --flashinfer-mla-disable-ragged --disable-custom-all-reduce
+            --disable-cuda-graph --moe-runner-backend deep_gemm
+        - name: RANK_OFFSET
+          value: '2'
+        - name: NCCL_MNNVL_CLIQUE_ID
+          value: '2'
+        # Validation
+        - name: SGLANG_EXPECT_TEXT
+          value: Paris
+        envFrom:
+        - secretRef:
+            name: hf-token
+            optional: true
+        image: lmsysorg/sglang:v0.5.20
+        name: server-and-client
+        resources:
+          claims:
+          - name: devices
+          - name: imex-channel
+          requests:
+            cpu: '24'
+            memory: 128Gi
+        securityContext:
+          capabilities:
+            add:
+            - IPC_LOCK
+            - SYS_RESOURCE
+          runAsUser: 0
+        volumeMounts:
+        - mountPath: /opt/validation
+          name: scripts
+          readOnly: true
+        - mountPath: /models
+          name: models
+        - mountPath: /dev/shm
+          name: dshm
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      resourceClaims:
+      - name: devices
+        resourceClaimTemplateName: dra-four-gpus-four-ib
+      - name: imex-channel
+        resourceClaimTemplateName: dra-two-clique-b-channel
+      restartPolicy: Never
+      subdomain: sglang-nixl-ep
+      volumes:
+      - configMap:
+          defaultMode: 365
+          name: gpu-validation-scripts
+        name: scripts
+      - emptyDir:
+          sizeLimit: 150Gi
+        name: models
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 32Gi
+        name: dshm
