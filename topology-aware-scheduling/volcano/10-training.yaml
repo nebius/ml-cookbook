@@ -1,0 +1,141 @@
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: megatron-tas-volcano
+  namespace: tas-volcano
+spec:
+  schedulerName: volcano
+  queue: gb300-tas-volcano
+  minAvailable: 32
+  minSuccess: 32
+  maxRetry: 0
+  networkTopology:
+    mode: hard
+    highestTierName: topology.nebius.com/gpu-cluster-id
+  plugins:
+    env: []
+    svc:
+      - --publish-not-ready-addresses=true
+      - --disable-network-policy=true
+  policies:
+    - event: PodFailed
+      action: AbortJob
+    - event: PodEvicted
+      action: AbortJob
+  tasks:
+    - name: trainer
+      replicas: 32
+      minAvailable: 32
+      maxRetry: 0
+      partitionPolicy:
+        totalPartitions: 2
+        partitionSize: 16
+        minPartitions: 2
+        networkTopology:
+          mode: hard
+          highestTierName: topology.nebius.com/nvl-instance-group-id
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: megatron-tas-volcano
+        spec:
+          restartPolicy: Never
+          activeDeadlineSeconds: 21600
+          terminationGracePeriodSeconds: 120
+          nodeSelector:
+            node.kubernetes.io/instance-type: gpu-gb300
+          tolerations:
+            - key: nvidia.com/gpu
+              operator: Exists
+              effect: NoSchedule
+          initContainers:
+            - name: wait-master
+              image: busybox:1.36.1
+              imagePullPolicy: IfNotPresent
+              command:
+                - /opt/tas/wait-master.sh
+              env:
+                - name: MASTER_ADDR
+                  value: megatron-tas-volcano-trainer-0.megatron-tas-volcano
+              volumeMounts:
+                - name: scripts
+                  mountPath: /opt/tas
+                  readOnly: true
+          containers:
+            - name: megatron-bridge
+              image: nvcr.io/nvidia/nemo:26.06
+              imagePullPolicy: IfNotPresent
+              command:
+                - /opt/tas/train.sh
+              ports:
+                - name: rendezvous
+                  containerPort: 12345
+              env:
+                - name: MASTER_ADDR
+                  value: megatron-tas-volcano-trainer-0.megatron-tas-volcano
+                - name: HF_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: hf-token
+                      key: HF_TOKEN
+                - name: TORCH_NCCL_AVOID_RECORD_STREAMS
+                  value: "1"
+                - name: TOKENIZERS_PARALLELISM
+                  value: "False"
+                - name: TORCH_NCCL_HIGH_PRIORITY
+                  value: "1"
+                - name: CUDA_DEVICE_MAX_CONNECTIONS
+                  value: "32"
+                - name: NVTE_FWD_LAYERNORM_SM_MARGIN
+                  value: "20"
+                - name: NVTE_BWD_LAYERNORM_SM_MARGIN
+                  value: "20"
+                - name: NCCL_MNNVL_ENABLE
+                  value: "1"
+                - name: NCCL_DEBUG
+                  value: INFO
+                - name: NCCL_DEBUG_SUBSYS
+                  value: INIT,NET,GRAPH,NVLS
+              resources:
+                requests:
+                  nvidia.com/gpu: "4"
+                  cpu: "108"
+                  memory: 720Gi
+                limits:
+                  nvidia.com/gpu: "4"
+                  cpu: "112"
+                  memory: 760Gi
+              securityContext:
+                privileged: true
+                runAsUser: 0
+                capabilities:
+                  add:
+                    - IPC_LOCK
+                    - SYS_RESOURCE
+              volumeMounts:
+                - name: scripts
+                  mountPath: /opt/tas
+                  readOnly: true
+                - name: dshm
+                  mountPath: /dev/shm
+                - name: infiniband
+                  mountPath: /dev/infiniband
+                - name: imex-channels
+                  mountPath: /dev/nvidia-caps-imex-channels
+          volumes:
+            - name: scripts
+              configMap:
+                name: megatron-tas-scripts
+                defaultMode: 365
+            - name: dshm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 64Gi
+            - name: infiniband
+              hostPath:
+                path: /dev/infiniband
+                type: Directory
+            - name: imex-channels
+              hostPath:
+                path: /dev/nvidia-caps-imex-channels
+                type: Directory
