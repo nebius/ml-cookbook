@@ -1,0 +1,30 @@
+# GPU smoke test — validates bare Kubernetes GPU allocation on driverful nodes.
+#
+# This runs BEFORE installing Run:ai. It confirms:
+#   1. Kubernetes can schedule a pod with nvidia.com/gpu: 1
+#   2. The container runtime injects GPU device access
+#   3. The host driver is usable inside a container
+#
+# Pinned image: nvcr.io/nvidia/cuda:12.6.3-base-ubuntu24.04
+# Validated on: NVIDIA B200 / driver 580.173.02 / CUDA UMD 13.0
+# A newer driver (610.57.04 / CUDA UMD 13.3) also passed this test.
+#
+# Usage:
+#   kubectl apply -f gpu-smoke-test.yaml
+#   kubectl wait pod/gpu-smoke-test --for=condition=Succeeded --timeout=120s
+#   kubectl logs gpu-smoke-test
+#   kubectl delete pod gpu-smoke-test
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-smoke-test
+  namespace: default
+spec:
+  restartPolicy: Never
+  containers:
+    - name: nvidia-smi
+      image: nvcr.io/nvidia/cuda:12.6.3-base-ubuntu24.04
+      command: ["nvidia-smi"]
+      resources:
+        limits:
+          nvidia.com/gpu: "1"

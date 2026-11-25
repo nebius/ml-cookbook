@@ -1,0 +1,26 @@
+# NVIDIA device-plugin chart — used only for NFD + GFD on driverful nodes.
+# Chart: nvidia/gpu-feature-discovery (device-plugin umbrella), version 0.20.2
+#
+# Nebius already provides the NVIDIA device plugin, so we disable it here.
+# NFD and GFD supply the node labels that Run:ai requires to discover GPUs.
+
+devicePlugin:
+  enabled: false
+
+gfd:
+  enabled: true
+
+nfd:
+  enabled: true
+
+# No NVIDIA RuntimeClass on driverful nodes — the driver and container-runtime
+# integration is provided by the node image, not by a toolkit sidecar.
+runtimeClassName: ""
+
+# Whole-GPU allocation only. MIG is not configured or validated for this recipe.
+migStrategy: none
+
+# Restrict GFD to GPU nodes only. NFD workers run on all nodes by default
+# (required so that hardware feature labels are populated cluster-wide).
+nodeSelector:
+  nebius.com/gpu: "true"

@@ -1,0 +1,106 @@
+# Shared-storage cross-node test.
+#
+# Writes a file on GPU node 0, then reads it back on GPU node 1.
+# Requires the runai-shared-storage PVC from shared-storage-pvc.example.yaml.
+#
+# Usage:
+#   # Apply and wait for the writer to complete
+#   kubectl apply -f shared-storage-test.yaml -n runai
+#   kubectl wait pod/shared-storage-writer -n runai \
+#     --for=condition=Succeeded --timeout=60s
+#
+#   # Verify the reader found the file
+#   kubectl logs shared-storage-reader -n runai
+#   # Expected output: "read-test OK"
+#
+#   # Clean up
+#   kubectl delete -f shared-storage-test.yaml -n runai
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: shared-storage-writer
+  namespace: runai
+spec:
+  restartPolicy: Never
+  # Schedule on the FIRST GPU node (adjust the hostname if your node names differ)
+  nodeSelector:
+    nebius.com/gpu: "true"
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app: shared-storage-reader
+          topologyKey: kubernetes.io/hostname
+  containers:
+    - name: writer
+      image: busybox:1.37
+      command:
+        - sh
+        - -c
+        - |
+          echo "write-test OK" > /shared/rw-test.txt
+          echo "Wrote: $(cat /shared/rw-test.txt)"
+      volumeMounts:
+        - name: shared
+          mountPath: /shared
+  volumes:
+    - name: shared
+      persistentVolumeClaim:
+        claimName: runai-shared-storage
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: shared-storage-reader
+  namespace: runai
+  labels:
+    app: shared-storage-reader
+spec:
+  restartPolicy: Never
+  # Schedule on a DIFFERENT GPU node than the writer
+  nodeSelector:
+    nebius.com/gpu: "true"
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app: shared-storage-writer
+          topologyKey: kubernetes.io/hostname
+  # Wait for the writer to finish before starting the reader
+  initContainers:
+    - name: wait-for-writer
+      image: busybox:1.37
+      command:
+        - sh
+        - -c
+        - |
+          until [ -f /shared/rw-test.txt ]; do
+            echo "Waiting for writer..."; sleep 2
+          done
+      volumeMounts:
+        - name: shared
+          mountPath: /shared
+  containers:
+    - name: reader
+      image: busybox:1.37
+      command:
+        - sh
+        - -c
+        - |
+          content=$(cat /shared/rw-test.txt)
+          echo "Read: $content"
+          if [ "$content" = "write-test OK" ]; then
+            echo "read-test OK"
+          else
+            echo "read-test FAILED" && exit 1
+          fi
+      volumeMounts:
+        - name: shared
+          mountPath: /shared
+  volumes:
+    - name: shared
+      persistentVolumeClaim:
+        claimName: runai-shared-storage

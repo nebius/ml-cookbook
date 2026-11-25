@@ -1,5 +1,12 @@
 # Run:ai examples on Nebius infrastructure
 
+## Recipes
+
+| Recipe | Description |
+|---|---|
+| [mpi/](mpi/) | Distributed MPI NCCL test via Run:ai (driverless path) |
+| [driverful-mk8s/](driverful-mk8s/) | Full Run:ai installation on driverful GPU nodes |
+
 ## Prerequisites
 
 You will need to setup an integration between Run:ai platform and Nebius Managed Kubernetes. Follow [our documentation on how to set it up](https://docs.nebius.com/3p-integrations/run-ai).

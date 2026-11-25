@@ -1,0 +1,66 @@
+# Run:ai installer configuration — sanitized example.
+# Replace every ${...} placeholder before running the installer.
+# Tested with Run:ai 3.0.20.
+#
+# IMPORTANT: Run the installer from a native Linux filesystem that supports
+# 0700 directory permissions (e.g., /home or /tmp on a Linux host).
+# Windows-mounted WSL paths (e.g., /mnt/c/...) may not satisfy this
+# requirement and will cause the installer to abort with a permissions error.
+
+install:
+  mode: full_installation
+  connectivity: connected
+
+registry:
+  type: ngc
+
+controlPlane:
+  enabled: true
+  version: 3.0.20
+  domain: ${RUNAI_DOMAIN}
+  customHelmValues: {}
+
+cluster:
+  enabled: true
+  version: 3.0.20
+  name: ${RUNAI_CLUSTER_NAME}
+  workloadRouting: path
+  customHelmValues:
+    # Tell Run:ai where the standalone DCGM Exporter lives.
+    clusterConfig.global.nvidiaDcgmExporter.namespace: gpu-monitoring
+
+prerequisites:
+  gpuOperator:
+    # skip — driverful nodes already have the driver and container runtime.
+    # Do NOT let the installer add a second GPU stack.
+    mode: skip
+  prometheus:
+    # skip — kube-prometheus-stack was installed separately (see Section 9).
+    mode: skip
+  networkOperator:
+    # skip — not required unless your workload topology needs it.
+    mode: skip
+
+features:
+  skip: true
+
+externalConnection:
+  type: ingress
+  ingress:
+    className: haproxy
+
+# ---------------------------------------------------------------------------
+# TLS — choose ONE block below and delete the other.
+# ---------------------------------------------------------------------------
+
+# PRODUCTION: supply a real trusted certificate and private key.
+# tls:
+#   secretName: runai-tls
+#   # Create the secret before running the installer:
+#   #   kubectl create secret tls runai-tls \
+#   #     --cert=fullchain.pem --key=privkey.pem \
+#   #     -n runai
+#
+# LAB ONLY (self-signed, not for production):
+# tls:
+#   generateSelfSigned: true

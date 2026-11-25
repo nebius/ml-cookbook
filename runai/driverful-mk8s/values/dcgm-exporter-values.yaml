@@ -1,0 +1,33 @@
+# Standalone DCGM Exporter for Run:ai GPU monitoring on driverful nodes.
+# Chart: gpu-helm-charts/dcgm-exporter, version 4.9.0
+#
+# This is a SEPARATE deployment from the Nebius-managed nebius-dcgm DaemonSet.
+# Do not modify or delete the Nebius-managed release.
+#
+# Motivation: nebius-dcgm expects GPU Operator toolkit labels and an NVIDIA
+# RuntimeClass that are absent on driverful nodes. This standalone instance
+# avoids those dependencies entirely.
+
+# No NVIDIA RuntimeClass on driverful nodes.
+runtimeClassName: ""
+
+# Run only on GPU nodes.
+nodeSelector:
+  nebius.com/gpu: "true"
+
+# Make all GPUs visible inside the exporter container.
+# No RuntimeClass means we must set these explicitly.
+extraEnv:
+  - name: NVIDIA_VISIBLE_DEVICES
+    value: all
+  - name: NVIDIA_DRIVER_CAPABILITIES
+    value: compute,utility
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 25s
+  # Must match the serviceMonitorSelector label used by both Prometheus instances
+  # (kube-prometheus-stack and the Run:ai internal Prometheus).
+  additionalLabels:
+    release: prometheus
