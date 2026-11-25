@@ -197,7 +197,7 @@ Kubernetes.
 > step during a maintenance window and ensure your workloads tolerate node
 > replacement.
 
-Follow the [Nebius documentation](https://docs.nebius.com/storage/serverless-filesystem/create)
+Follow the [Nebius documentation on shared filesystems and CSI](https://docs.nebius.com/kubernetes/storage/filesystem-over-csi)
 to:
 
 1. Create a Nebius SFS in the same availability zone as your cluster.
@@ -235,7 +235,7 @@ helm install csi-mounted-fs-path nebius-csi/csi-mounted-fs-path \
 ```
 
 > Verify the chart name and repo URL against the
-> [Nebius GitHub repository](https://github.com/nebius/csi-mounted-fs-path)
+> [Nebius filesystem-over-CSI documentation](https://docs.nebius.com/kubernetes/storage/filesystem-over-csi)
 > before running this command.
 
 ### 6.3 Create the RWX PVC
@@ -568,9 +568,9 @@ TLS against the system CA will fail.
 
 ### 12.1 Download and verify
 
-Download the Run:ai 3.0.20 installer from
-[NGC](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/runai/resources/runai-installer)
-and verify the checksum as documented on the NGC download page.
+Download the Run:ai 3.0.20 installer by following the
+[Run:ai self-hosted installation guide](https://run-ai-docs.nvidia.com/self-hosted/getting-started/installation),
+which includes the NGC download link and checksum verification steps.
 
 > **Filesystem requirement:** The installer must be run from a directory on a
 > Linux filesystem that supports `0700` permissions. If you are using WSL with
@@ -754,7 +754,7 @@ prerequisites. Do not conflate them.
 ### GPU fractions — planning notes
 
 As of the time of writing, Run:ai GPU fractions require (verify against the
-[Run:ai support matrix](https://run-ai-docs.nvidia.com/self-hosted/latest/admin/hardware/hardware-requirements/)
+[Run:ai support matrix](https://run-ai-docs.nvidia.com/self-hosted/getting-started/installation/support-matrix)
 before planning):
 
 | Requirement | Note |
@@ -765,7 +765,7 @@ before planning):
 | cgroup v2 | On all GPU nodes |
 
 Consult the
-[NVIDIA Run:ai GPU fractions documentation](https://run-ai-docs.nvidia.com/self-hosted/latest/admin/workloads/gpu-fractions/)
+[NVIDIA Run:ai GPU fractions documentation](https://run-ai-docs.nvidia.com/self-hosted/platform-management/runai-scheduler/resource-optimization/fractions)
 for authoritative requirements, as version numbers change between releases.
 
 ### Driverful integration model for GPU fractions
