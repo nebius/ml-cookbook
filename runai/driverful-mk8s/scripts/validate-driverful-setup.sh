@@ -43,23 +43,40 @@ require_tool jq
 
 section "Nodes"
 
-GPU_NODES=$(kubectl get nodes -l nebius.com/gpu=true -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
-GPU_NODE_COUNT=$(echo "$GPU_NODES" | wc -w)
+# Only count nodes that are Ready AND not cordoned.
+# Including NotReady or cordoned nodes would give false-positive pass results
+# for GPU allocation checks — a cordoned node passes label checks but cannot
+# accept new pods.
+GPU_NODES=$(kubectl get nodes -l nebius.com/gpu=true -o json 2>/dev/null \
+    | jq -r '.items[]
+        | select(
+            ((.spec.unschedulable // false) | not)
+            and any(.status.conditions[];
+                    .type == "Ready" and .status == "True")
+          )
+        | .metadata.name')
+GPU_NODE_COUNT=$(echo "$GPU_NODES" | grep -c . || true)
 
 if [[ "$GPU_NODE_COUNT" -ge 1 ]]; then
-    pass "GPU node(s) found: $GPU_NODE_COUNT"
+    pass "Ready GPU node(s) found: $GPU_NODE_COUNT"
     for n in $GPU_NODES; do
         echo "    $n"
     done
 else
-    fail "No nodes with label nebius.com/gpu=true"
+    fail "No Ready, schedulable nodes with label nebius.com/gpu=true"
 fi
 
-CPU_NODES=$(kubectl get nodes -l '!nebius.com/gpu' --field-selector='metadata.name!=.' -o name 2>/dev/null | wc -l) || CPU_NODES=0
+CPU_NODES=$(kubectl get nodes -l '!nebius.com/gpu' -o json 2>/dev/null \
+    | jq '[.items[]
+        | select(
+            ((.spec.unschedulable // false) | not)
+            and any(.status.conditions[];
+                    .type == "Ready" and .status == "True")
+          )] | length') || CPU_NODES=0
 if [[ "$CPU_NODES" -ge 1 ]]; then
-    pass "CPU node(s) found: $CPU_NODES"
+    pass "Ready CPU-only node(s) found: $CPU_NODES"
 else
-    warn "No CPU-only nodes detected"
+    warn "No Ready CPU-only nodes detected"
 fi
 
 # --------------------------------------------------------------------------- #

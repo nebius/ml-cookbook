@@ -1,7 +1,17 @@
 # Shared-storage cross-node test.
 #
-# Writes a file on GPU node 0, then reads it back on GPU node 1.
+# Writes a file on one GPU node and reads it back from a different GPU node.
 # Requires the runai-shared-storage PVC from shared-storage-pvc.example.yaml.
+#
+# MINIMUM REQUIREMENT: at least 2 Ready GPU nodes with label nebius.com/gpu=true.
+# The reader uses required pod anti-affinity so that it is forced onto a different
+# node than the writer, proving cross-node visibility. If only 1 GPU node is
+# available the reader pod will stay in Pending — skip this test on single-node
+# clusters and verify shared storage manually.
+#
+# CONCURRENT USE: pod names are fixed (shared-storage-writer / shared-storage-reader).
+# If another user has already applied this manifest in the same namespace, delete
+# their pods first or run the test in a separate namespace.
 #
 # Usage:
 #   # Apply and wait for the writer to complete
@@ -23,16 +33,8 @@ metadata:
   namespace: runai
 spec:
   restartPolicy: Never
-  # Schedule on the FIRST GPU node (adjust the hostname if your node names differ)
   nodeSelector:
     nebius.com/gpu: "true"
-  affinity:
-    podAntiAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector:
-            matchLabels:
-              app: shared-storage-reader
-          topologyKey: kubernetes.io/hostname
   containers:
     - name: writer
       image: busybox:1.37
@@ -77,8 +79,14 @@ spec:
         - sh
         - -c
         - |
+          i=0
           until [ -f /shared/rw-test.txt ]; do
-            echo "Waiting for writer..."; sleep 2
+            i=$(( i + 1 ))
+            if [ "$i" -ge 30 ]; then
+              echo "ERROR: timed out after 60s waiting for writer to create /shared/rw-test.txt"
+              exit 1
+            fi
+            echo "Waiting for writer... ($i/30)"; sleep 2
           done
       volumeMounts:
         - name: shared

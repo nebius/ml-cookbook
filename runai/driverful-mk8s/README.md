@@ -142,6 +142,10 @@ allocation works. This test bypasses Run:ai entirely and verifies:
 2. The container runtime injects device access
 3. The host driver is usable inside a container
 
+> **Concurrent use:** the pod name `gpu-smoke-test` is fixed. If another user
+> in the same namespace has already applied this manifest, delete their pod
+> first or run the test in a different namespace to avoid a conflict.
+
 ```bash
 kubectl apply -f manifests/gpu-smoke-test.yaml
 kubectl wait pod/gpu-smoke-test --for=condition=Ready --timeout=60s
@@ -250,10 +254,18 @@ expected until a pod mounts it.
 
 ### 6.4 Test cross-node read-write
 
+> **Requires 2 Ready GPU nodes.** The reader pod uses required anti-affinity
+> so it is forced onto a different node than the writer, proving that the
+> shared filesystem is visible across nodes. If your cluster has only one GPU
+> node the reader will stay in `Pending` — skip this test and verify shared
+> storage manually instead.
+
 ```bash
 kubectl apply -f manifests/shared-storage-test.yaml -n runai
 kubectl wait pod/shared-storage-writer -n runai \
   --for=condition=Succeeded --timeout=60s
+kubectl wait pod/shared-storage-reader -n runai \
+  --for=condition=Succeeded --timeout=90s
 kubectl logs shared-storage-reader -n runai
 # Expected: "read-test OK"
 kubectl delete -f manifests/shared-storage-test.yaml -n runai
