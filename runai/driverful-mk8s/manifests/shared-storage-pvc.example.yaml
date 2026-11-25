@@ -1,0 +1,27 @@
+# Shared RWX PVC backed by Nebius SFS via csi-mounted-fs-path.
+#
+# Prerequisites (see Section 6 of the README):
+#   1. A Nebius SFS filesystem has been created.
+#   2. The filesystem is attached read-write to both CPU and GPU node groups.
+#   3. The mount path /mnt/runai-shared is configured in each node-group template.
+#   4. The csi-mounted-fs-path StorageClass (csi-mounted-fs-path-sc) is installed.
+#
+# Note on capacity: the size request (1Gi below) is passed to the driver for
+# API conformance only. The PVC will expose the full capacity of the underlying
+# SFS, not a 1 GiB slice. Plan your SFS size according to actual workload needs.
+#
+# StorageClass: csi-mounted-fs-path-sc supplies ReadWriteMany access.
+# WaitForFirstConsumer: the PVC stays Pending until a pod mounts it — this is
+# expected behaviour with this StorageClass.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: runai-shared-storage
+  namespace: runai
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: csi-mounted-fs-path-sc
+  resources:
+    requests:
+      storage: 1Gi

@@ -1,0 +1,23 @@
+# HAProxy Kubernetes Ingress Controller for Run:ai on Nebius MK8S.
+# Chart: haproxytech/kubernetes-ingress, version 1.57.1
+#
+# Placed on CPU nodes. Exposes only HTTP and HTTPS through a Nebius
+# LoadBalancer. Unused public ports are disabled to reduce attack surface.
+
+controller:
+  ingressClass: haproxy
+
+  # Pin to CPU nodes so GPU capacity is reserved for workloads.
+  nodeSelector:
+    nebius.com/node-group-id: "${CPU_NODE_GROUP_ID}"
+
+  service:
+    type: LoadBalancer
+
+  # Disable admin/stats/metrics/QUIC ports that are not required.
+  # Enable them deliberately if your environment needs them.
+  extraArgs:
+    - --disable-service-externalIPs
+
+defaultBackend:
+  enabled: true

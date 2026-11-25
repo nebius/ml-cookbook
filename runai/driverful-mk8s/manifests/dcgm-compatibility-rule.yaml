@@ -1,0 +1,36 @@
+# PrometheusRule: DCGM metric compatibility shim for Run:ai 3.0.20.
+#
+# Problem: DCGM Exporter 4.9.0 emits renamed high-resolution metrics:
+#   DCGM_FI_DEV_GPU_UTIL_RATIO  (0.0-1.0 fraction)
+#   DCGM_FI_DEV_FB_USED_BYTES   (bytes)
+#
+# Run:ai 3.0.20 queries the original metric names:
+#   DCGM_FI_DEV_GPU_UTIL        (0-100 integer)
+#   DCGM_FI_DEV_FB_USED         (MiB)
+#
+# These recording rules derive the expected names from the available ones,
+# preserving all existing labels so Run:ai can correlate per-GPU and
+# per-workload metrics correctly.
+#
+# Namespace: runai — where the Run:ai Prometheus instance watches for rules.
+# Adjust if your Run:ai Prometheus is configured to watch a different namespace.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: dcgm-compat
+  namespace: runai
+  labels:
+    # Must match the ruleSelector used by BOTH Prometheus instances.
+    release: prometheus
+spec:
+  groups:
+    - name: dcgm-compat
+      interval: 30s
+      rules:
+        # GPU utilisation: scale ratio (0-1) → percentage (0-100)
+        - record: DCGM_FI_DEV_GPU_UTIL
+          expr: DCGM_FI_DEV_GPU_UTIL_RATIO * 100
+
+        # Framebuffer used: convert bytes → MiB
+        - record: DCGM_FI_DEV_FB_USED
+          expr: DCGM_FI_DEV_FB_USED_BYTES / 1024 / 1024
